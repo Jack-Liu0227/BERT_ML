@@ -43,6 +43,19 @@ If you prefer a standard pip workflow:
 pip install -r requirements.txt
 ```
 
+### 📥 Model Preparation
+
+Before running the training or prediction scripts, you need to download the pre-trained BERT models (MatSciBERT, SciBERT, SteelBERT). We provided a script to automate this process.
+
+```bash
+# Download all required models
+python models/download_bert_models.py
+```
+
+> **Note**: **SteelBERT** is a gated repository on Hugging Face. You must:
+> 1. Run `huggingface-cli login` to authenticate.
+> 2. Request access at [https://huggingface.co/MGE-LLMs/SteelBERT](https://huggingface.co/MGE-LLMs/SteelBERT).
+
 ### 📂 Project Structure
 
 - **`models/`**: Stores pre-trained models (MatSciBERT, SciBERT, etc.).
@@ -174,6 +187,19 @@ conda activate llm
 ```bash
 pip install -r requirements.txt
 ```
+
+### 📥 模型准备
+
+在开始训练或预测之前，您需要下载预训练的 BERT 模型 (MatSciBERT, SciBERT, SteelBERT)。我们提供了一个自动化脚本来完成此步骤。
+
+```bash
+# 下载所有需要的模型
+python models/download_bert_models.py
+```
+
+> **注意**: **SteelBERT** 是 Hugging Face 上的受控仓库。您必须：
+> 1. 运行 `huggingface-cli login` 进行登录。
+> 2. 在 [https://huggingface.co/MGE-LLMs/SteelBERT](https://huggingface.co/MGE-LLMs/SteelBERT) 申请访问权限。
 
 ### 📂 项目结构
 
