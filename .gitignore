@@ -1,0 +1,89 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+pip-wheel-metadata/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Jupyter Notebook
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+
+# Model Files (预训练模型)
+models/matscibert/
+models/scibert/
+models/steelbert/
+
+# Features (生成的特征文件)
+Features/
+
+# Output (输出结果)
+output/
+
+# Logs
+*.log
+*.log.*
+batch_run_*.log
+
+# Temporary files
+*.tmp
+*.temp
+.batch_progress.json
+
+# CatBoost
+catboost_info/
+
+# Datasets (默认忽略所有数据集，但保留配置中使用的特定文件)
+datasets/
+# 白名单：保留项目配置中使用的数据集
+!datasets/HEA_data/
+!datasets/HEA_data/SHU/
+!datasets/HEA_data/SHU/Pitting*potential*data_xiongjie_processed.csv
+!datasets/HEA_data/RoomTemperature_HEA_train_with_ID.csv
+!datasets/Ti_alloys/
+!datasets/Ti_alloys/Titanium_Alloy_Dataset_Processed_cleaned.csv
+!datasets/Al_Alloys/
+!datasets/Al_Alloys/USTB/
+!datasets/Al_Alloys/USTB/USTB_Al_alloys_processed_split_withID.csv
+!datasets/Steel/
+!datasets/Steel/USTB_steel_processed_withID.csv
+
+# OS
+Thumbs.db
+.DS_Store
+
+# Specific exclusions requested
+batch_run_20260115_123810.log
+catboost_info

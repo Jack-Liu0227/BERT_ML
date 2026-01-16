@@ -1,0 +1,311 @@
+"""
+Alloy model evaluator implementation
+"""
+
+import os
+import numpy as np
+import pandas as pd
+import torch
+from typing import Dict, List, Optional, Union, Any, Callable, Tuple
+from .base_evaluator import BaseEvaluator
+# import xgboost as xgb
+from ..visualization.plot_utils import plot_all_sets_compare_scatter
+from sklearn.preprocessing import StandardScaler
+import shap
+import matplotlib.pyplot as plt
+import matplotlib as mpl
+import traceback
+from tqdm import tqdm
+import json
+
+# Configure Matplotlib for CJK characters
+try:
+    # plt.rcParams['font.sans-serif'] = ['Arial Unicode MS'] # 尝试多种字体以确保C℃显示
+    plt.rcParams['axes.unicode_minus'] = False
+    print("[Matplotlib Config] Font set to 'Microsoft YaHei', 'SimHei', 'Arial Unicode MS' for CJK support.")
+except Exception as e:
+    print(f"[Matplotlib Config] Warning: Could not set preferred fonts. Error: {e}")
+
+class AlloysEvaluator(BaseEvaluator):
+    """
+    Evaluator for alloy property prediction models
+    
+    Args:
+        result_dir (str): Directory to save evaluation results
+        model_name (str): Name of the model
+        target_names (List[str]): List of target names
+        target_scaler (Optional[StandardScaler]): Scaler for the target variable.
+    """
+    def __init__(self, 
+                 result_dir: str,
+                 model_name: str,
+                 target_names: List[str],
+                 target_scaler: Optional[StandardScaler] = None):
+        super().__init__(result_dir, model_name, target_names)
+        print(f"\n[AlloysEvaluator] Initialized for model '{self.model_name}'.")
+        print(f"[AlloysEvaluator] Results will be saved in: {self.result_dir}")
+        print(f"[AlloysEvaluator] Target names: {self.target_names}")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"[AlloysEvaluator] Using device: {self.device}")
+        self.target_scaler = target_scaler
+    def _inverse_transform_y(self, y_scaled: np.ndarray) -> np.ndarray:
+        """
+        Inverse transforms the scaled target variable if a scaler is provided.
+        """
+        if self.target_scaler:
+            return self.target_scaler.inverse_transform(y_scaled)
+        return y_scaled
+        
+    def _predict_and_unscale(self, model: Any, data: Optional[Dict[str, np.ndarray]]) -> Tuple[Optional[np.ndarray], Optional[np.ndarray]]:
+        """
+        Makes predictions on the given data and inverse transforms the output.
+        """
+        if data is None:
+            return None, None
+            
+        X_tensor = torch.tensor(data['X'], dtype=torch.float32).to(self.device)
+        pred_scaled = model(X_tensor).detach().cpu().numpy()
+        pred_unscaled = self._inverse_transform_y(pred_scaled)
+        
+        # Get the true values
+        y_true = data['y']
+        
+        # Check if the data is already unscaled (common for test data)
+        # This is a heuristic - if the target_scaler exists and the data looks normalized (close to 0 mean, ~1 std),
+        # then we assume it needs to be unscaled
+        if self.target_scaler is not None:
+            # If the data looks normalized (mean close to 0, std close to 1), then unscale it
+            is_scaled = np.all(np.abs(np.mean(y_true, axis=0)) < 0.5) and np.all(np.std(y_true, axis=0) < 2.0)
+            if is_scaled:
+                y_true_unscaled = self._inverse_transform_y(y_true)
+            else:
+                # Data is already unscaled (e.g., test data)
+                y_true_unscaled = y_true
+        else:
+            # No scaler available, use as is
+            y_true_unscaled = y_true
+        
+        return y_true_unscaled, pred_unscaled
+        
+    def evaluate_model(self,
+                      model: Any,
+                      train_data: Dict[str, np.ndarray],
+                      test_data: Dict[str, np.ndarray],
+                      val_data: Optional[Dict[str, np.ndarray]] = None,
+                      save_prefix: str = '',
+                      feature_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Evaluate model performance on train and test data
+        
+        Args:
+            model: Trained model object
+            train_data (Dict[str, np.ndarray]): Training data dictionary
+            test_data (Dict[str, np.ndarray]): Test data dictionary
+            val_data (Optional[Dict[str, np.ndarray]]): Validation data dictionary
+            save_prefix (str): Prefix for saved files
+            feature_names (Optional[List[str]]): List of feature names for saving data.
+            
+        Returns:
+            Dict[str, Any]: Evaluation metrics and results
+        """
+        print(f"\n[AlloysEvaluator] Starting standard evaluation for model: {self.model_name}")
+        
+        # --- Get Predictions and Unscaled True Values ---
+        train_y_unscaled, train_pred_unscaled = self._predict_and_unscale(model, train_data)
+        val_y_unscaled, val_pred_unscaled = self._predict_and_unscale(model, val_data)
+        test_y_unscaled, test_pred_unscaled = self._predict_and_unscale(model, test_data)
+
+        # --- Debug output to help diagnose issues ---
+        if test_y_unscaled is not None:
+            print(f"\n[AlloysEvaluator] Debug - Test data statistics:")
+            print(f"  Test y shape: {test_y_unscaled.shape}")
+            print(f"  Test y mean: {np.mean(test_y_unscaled, axis=0)}")
+            print(f"  Test y std: {np.std(test_y_unscaled, axis=0)}")
+            print(f"  Test pred shape: {test_pred_unscaled.shape}")
+            print(f"  Test pred mean: {np.mean(test_pred_unscaled, axis=0)}")
+            print(f"  Test pred std: {np.std(test_pred_unscaled, axis=0)}")
+
+        # --- Compute, Print, and Save Metrics ---
+        print("\n[AlloysEvaluator] Computing metrics on original scale data...")
+        all_metrics = {}
+        
+        train_metrics = {}
+        if train_data:
+            train_metrics = self.compute_metrics(train_y_unscaled, train_pred_unscaled, prefix='train_')
+            all_metrics.update(train_metrics)
+        
+        test_metrics = self.compute_metrics(test_y_unscaled, test_pred_unscaled, prefix='test_')
+        all_metrics.update(test_metrics)
+
+        val_metrics = {}
+        if val_data:
+            val_metrics = self.compute_metrics(val_y_unscaled, val_pred_unscaled, prefix='val_')
+            all_metrics.update(val_metrics)
+        
+        # --- Prepare Summary ---
+        summary = {
+            'model_name': self.model_name,
+            'evaluation_type': 'standard',
+            'train_set_metrics': train_metrics if train_data else "N/A",
+            'validation_set_metrics': val_metrics if val_data else "N/A",
+            'test_set_metrics': test_metrics
+        }
+        
+        # --- Print & Save ---
+        self.print_metrics_summary({
+            'train': train_metrics,
+            'val': val_metrics,
+            'test': test_metrics
+        })
+        
+        metrics_path = os.path.join(self.result_dir, f'{save_prefix}{self.model_name}_evaluation_summary.json')
+        self.save_metrics(summary, metrics_path)
+
+        # --- Save Predictions (using unscaled data) ---
+        # Clear previous prediction file if it exists
+        prediction_filepath = os.path.join(self.predictions_dir, f'{save_prefix}all_predictions.csv')
+        if os.path.exists(prediction_filepath):
+            os.remove(prediction_filepath)
+
+        # Extract IDs if provided
+        train_ids = train_data.get('ids') if train_data else None
+        val_ids = val_data.get('ids') if val_data else None
+        test_ids = test_data.get('ids') if test_data else None
+
+        # Ensure the predictions file header includes ID if any split has IDs
+        has_any_ids = any(x is not None for x in [train_ids, val_ids, test_ids])
+        if has_any_ids:
+            if train_data and train_ids is None and train_y_unscaled is not None:
+                train_ids = np.array([np.nan] * len(train_y_unscaled))
+            if val_data and val_ids is None and val_y_unscaled is not None:
+                val_ids = np.array([np.nan] * len(val_y_unscaled))
+
+        if train_data:
+            self.save_predictions(train_y_unscaled, train_pred_unscaled, save_prefix, self.target_names, self.predictions_dir, 'train', ids=train_ids)
+        if val_data:
+            self.save_predictions(val_y_unscaled, val_pred_unscaled, save_prefix, self.target_names, self.predictions_dir, 'val', ids=val_ids)
+        if test_data:
+            self.save_predictions(test_y_unscaled, test_pred_unscaled, save_prefix, self.target_names, self.predictions_dir, 'test', ids=test_ids)
+
+        # Save feature data
+        print(f"\n[AlloysEvaluator] Saving feature data with prefix '{save_prefix}'...")
+
+        # The file naming `..._val_features.csv` was confusing as it was inside a loop over test sets.
+        # It's more logical to save the features for the specific test set being evaluated.
+        if 'X' in test_data and feature_names is not None:
+            test_feature_data_path = os.path.join(self.result_dir, f'{save_prefix}test_features.csv')
+            
+            # Use feature_names passed to the function for correct headers.
+            columns: List[str] = feature_names # Explicitly type as List[str]
+            test_df = pd.DataFrame(test_data['X'], columns=pd.Index(columns))
+            # Prepend ID if provided
+            if test_ids is not None:
+                test_df.insert(0, 'ID', test_ids)
+            test_df.to_csv(test_feature_data_path, index=False)
+            print(f"[AlloysEvaluator] Saved test features to: {test_feature_data_path}")
+
+        # Plot results
+        print(f"\n[AlloysEvaluator] Generating and saving plots with prefix '{save_prefix}'...")
+        os.makedirs(self.plots_dir, exist_ok=True) # Ensure plots directory exists
+        
+        # Use plot_all_sets_compare_scatter for better visualization
+        comparison_plot_path = os.path.join(self.plots_dir, f'{save_prefix}all_sets_comparison.png')
+        print(f"[AlloysEvaluator] Plotting combined train/val/test comparison scatter to: {comparison_plot_path}")
+        
+        # Prepare data for plotting - ensuring we have valid data tuples
+        train_data_tuple = (train_y_unscaled, train_pred_unscaled) if train_data else None
+        val_data_tuple = (val_y_unscaled, val_pred_unscaled) if val_data else None
+        test_data_tuple = (test_y_unscaled, test_pred_unscaled) if test_data else None
+        
+        from ..visualization.plot_utils import plot_all_sets_compare_scatter
+        plot_all_sets_compare_scatter(
+            train_data=train_data_tuple,
+            test_data=test_data_tuple,
+            val_data=val_data_tuple,
+            target_names=self.target_names,
+            save_path=comparison_plot_path,
+            metrics=all_metrics
+        )
+
+        print(f"\n[AlloysEvaluator] Evaluation for model '{self.model_name}' completed successfully!")
+        return summary
+    
+
+    def evaluate_cross_validation(self,
+                                  model: Any,
+                                  train_data: Dict[str, np.ndarray],
+                                  test_data: Dict[str, np.ndarray],
+                                  cv_results: Optional[Dict[str, Any]] = None,
+                                  val_data: Optional[Dict[str, np.ndarray]] = None,
+                                  save_prefix: str = '',
+                                  feature_names: Optional[List[str]] = None) -> Dict[str, Any]:
+        """
+        Evaluate the best model from a cross-validation run.
+        This involves evaluating the best model on the full training and test sets,
+        and processing the aggregated metrics from the CV run.
+
+        Args:
+            model (Any): The best model object saved from the CV run.
+            train_data (Dict[str, np.ndarray]): The full training data.
+            test_data (Dict[str, np.ndarray]): The test data.
+            cv_results (Optional[Dict[str, Any]]): Results from trainer's CV run.
+            val_data (Optional[Dict[str, np.ndarray]]): Not used in CV eval, but kept for signature consistency.
+            save_prefix (str): Prefix for saved file names.
+
+        Returns:
+            Dict[str, Any]: A dictionary containing all evaluation metrics.
+        """
+        print(f"\n[AlloysEvaluator] Starting cross-validation evaluation for model: {self.model_name}")
+
+        # --- 1. Evaluate the best model on the full training and test sets ---
+        print("\n[AlloysEvaluator] Evaluating best model on full train and test sets...")
+        best_model_metrics = self.evaluate_model(
+            model=model,
+            train_data=train_data,
+            test_data=test_data,
+            val_data=val_data, # Pass val_data if available
+            save_prefix=save_prefix,
+            feature_names=feature_names
+        )
+
+        # --- 2. Process and save aggregated CV metrics ---
+        avg_metrics = {}
+        if cv_results:
+            print("\n[AlloysEvaluator] Processing aggregated metrics from CV run...")
+            # Extract metrics that have '_mean' or '_std' in their keys
+            for key, value in cv_results.items():
+                if '_mean' in key or '_std' in key:
+                    avg_metrics[key] = value
+            self.print_metrics_summary({'cv_aggregated': avg_metrics})
+        else:
+            print("[AlloysEvaluator] WARNING: `cv_results` not provided. Skipping processing of aggregated CV metrics.")
+
+        
+        # --- 3. Generate and Save CV Plots ---
+        print("\n[AlloysEvaluator] Generating CV-specific plots...")
+        if cv_results and 'predictions' in cv_results and cv_results['predictions']:
+            from ..visualization.plot_utils import plot_cv_error_boxplot
+            plot_cv_error_boxplot(
+                model_name=self.model_name,
+                fold_predictions=cv_results['predictions'],
+                target_names=self.target_names,
+                save_dir=self.plots_dir,
+            )
+        else:
+            print("[AlloysEvaluator] WARNING: 'predictions' not found in cv_results. Skipping CV error box plot.")
+
+        # --- 4. Combine all metrics into a final summary ---
+        final_summary = {
+            'model_name': self.model_name,
+            'evaluation_type': 'cross_validation',
+            'cv_aggregated_metrics': avg_metrics,
+            'final_evaluation_on_best_model': best_model_metrics
+        }
+        
+        # --- 5. Save the comprehensive summary ---
+        summary_path = os.path.join(self.result_dir, f'{save_prefix}{self.model_name}_cv_evaluation_summary.json')
+        self.save_metrics(final_summary, summary_path)
+        
+        print(f"\n[AlloysEvaluator] Cross-validation evaluation for model '{self.model_name}' completed successfully!")
+        
+        return final_summary 
