@@ -1,8 +1,8 @@
 """
-批量运行配置文件
+# 批量运行配置文件
 Batch run configuration file
 
-包含两类配置：
+# 包含两类配置：
 1. ALLOY_CONFIGS: 合金数据配置（数据文件路径、目标列、工艺参数等）
 2. BATCH_CONFIGS: 批量运行任务配置（实验参数、模型选择等）
 
@@ -40,77 +40,77 @@ from typing import Dict, Any, List
 
 ALLOY_CONFIGS = {
     # 钛合金 / Titanium Alloys
-    "Ti": {
-        "raw_data": "datasets/Ti_alloys/titanium.csv",
-        "targets": ["UTS(MPa)", "El(%)"],
-        "processing_cols": [
-            "Solution Temperature(℃)", "Solution Time(h)",
-            "Aging Temperature(℃)", "Aging Time(h)",
-            "Thermo-Mechanical Treatment Temperature(℃)", "Deformation(%)"
-        ],
-        "processing_text_column": "Processing_Description",
-        "description": "钛合金力学性能数据集 / Titanium alloy mechanical properties dataset"
-    },
-
-    # # 铝合金 / Aluminum Alloys
-    "Al": {
-        "raw_data": "datasets/Al_Alloys/aluminum.csv",
-        "targets": ["UTS(MPa)"],
-        "processing_cols": [
-            "ST1", "TIME1", "ST2", "TIME2", "ST3", "TIME3", 
-            "Cold_Deformation_percent", 
-            "First_Aging_Temp_C", "First_Aging_Time_h", 
-            "Second_Aging_Temp_C", "Second_Aging_Time_h", 
-            "Third_Aging_Temp_C", "Third_Aging_Time_h"
-        ],
-        "processing_text_column": "Processing_Description",
-        "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset"
-    },
-
-    "HEA_half": {
-        "raw_data": "datasets/HEA_data/hea.csv",
-        "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
-        "processing_cols": [
-            "Hom_Temp(K)", "CR(%)",
-            "recrystalize temperature/K", "recrystalize time/mins",
-            "Anneal_Temp(K)", "Anneal_Time(h)",
-            "aging temperature/K", "aging time/hours"
-        ],
-        "processing_text_column": "Processing_Description",
-        "description": "高熵合金室温力学性能数据集的一半 / HEA room temperature mechanical properties dataset (half)"
-    },
-
-
-    # 钢铁 / Steel
-    "Steel": {
-        "raw_data": "datasets/Steel/steel.csv",
-        "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
-        "processing_cols": [],  # Steel数据集的工艺参数列需要根据具体数据确定
-        "processing_text_column": "Processing_Description",
-        "description": "钢铁力学性能数据集 / Steel mechanical properties dataset"
-    },
-
-    # 高熵合金腐蚀 / HEA Corrosion
-    # "HEA_corrosion": {
-    #     "raw_data": "datasets/HEA_data/SHU/Pitting potential data_xiongjie_processed.csv",
-    #     "targets": ["Ep(mV)"],
+    # "Ti": {
+    #     "raw_data": "datasets/Ti_alloys/titanium.csv",
+    #     "targets": ["UTS(MPa)", "El(%)"],
     #     "processing_cols": [
-    #         "Temperature", "Cl Concentration", "PH"
+    #         "Solution Temperature(℃)", "Solution Time(h)",
+    #         "Aging Temperature(℃)", "Aging Time(h)",
+    #         "Thermo-Mechanical Treatment Temperature(℃)", "Deformation(%)"
     #     ],
-    #     "processing_text_column": None,  # 该数据集无文本描述列
-    #     "description": "高熵合金点蚀电位数据集 / HEA pitting potential dataset"
-    # }
+    #     "processing_text_column": "Processing_Description",
+    #     "description": "钛合金力学性能数据集 / Titanium alloy mechanical properties dataset"
+    # },
+
+    # # # 铝合金 / Aluminum Alloys
+    # "Al": {
+    #     "raw_data": "datasets/Al_Alloys/aluminum.csv",
+    #     "targets": ["UTS(MPa)"],
+    #     "processing_cols": [
+    #         "ST1", "TIME1", "ST2", "TIME2", "ST3", "TIME3", 
+    #         "Cold_Deformation_percent", 
+    #         "First_Aging_Temp_C", "First_Aging_Time_h", 
+    #         "Second_Aging_Temp_C", "Second_Aging_Time_h", 
+    #         "Third_Aging_Temp_C", "Third_Aging_Time_h"
+    #     ],
+    #     "processing_text_column": "Processing_Description",
+    #     "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset"
+    # },
+
+    # "HEA_half": {
+    #     "raw_data": "datasets/HEA_data/hea.csv",
+    #     "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
+    #     "processing_cols": [
+    #         "Hom_Temp(K)", "CR(%)",
+    #         "recrystalize temperature/K", "recrystalize time/mins",
+    #         "Anneal_Temp(K)", "Anneal_Time(h)",
+    #         "aging temperature/K", "aging time/hours"
+    #     ],
+    #     "processing_text_column": "Processing_Description",
+    #     "description": "高熵合金室温力学性能数据集的一半 / HEA room temperature mechanical properties dataset (half)"
+    # },
+
+
+    # # 钢铁 / Steel
+    # "Steel": {
+    #     "raw_data": "datasets/Steel/steel.csv",
+    #     "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
+    #     "processing_cols": [],  # Steel数据集的工艺参数列需要根据具体数据确定
+    #     "processing_text_column": "Processing_Description",
+    #     "description": "钢铁力学性能数据集 / Steel mechanical properties dataset"
+    # },
+
+# 高熵合金腐蚀 / HEA Corrosion
+    "HEA_corrosion": {
+        "raw_data": "datasets/HEA_data/Pitting_potential_data_xiongjie.csv",
+        "targets": ["Ep(mV)"],
+        "processing_cols": [
+            "Temperature", "Cl Concentration", "PH"
+        ],
+        "processing_text_column": None,  # 该数据集无文本描述列
+        "description": "高熵合金点蚀电位数据集 / HEA pitting potential dataset"
+    }
 }
 
 
 def get_alloy_config(alloy_type: str) -> Dict[str, Any]:
     """
-    获取指定合金类型的配置
+# 获取指定合金类型的配置
     Get configuration for specified alloy type
 
     Args:
         alloy_type: 合金类型简称 / Alloy type abbreviation
-                   支持的类型 / Supported types: "Ti", "Al", "HEA_full", "HEA_half", "Nb", "Steel"
+# 支持的类型 / Supported types: "Ti", "Al", "HEA_full", "HEA_half", "Nb", "Steel"
 
     Returns:
         Dict[str, Any]: 包含数据文件路径、目标列名等配置信息
@@ -138,7 +138,7 @@ def get_alloy_config(alloy_type: str) -> Dict[str, Any]:
 
 def list_available_alloys() -> List[str]:
     """
-    列出所有可用的合金类型
+# 列出所有可用的合金类型
     List all available alloy types
 
     Returns:
@@ -151,14 +151,14 @@ def list_available_alloys() -> List[str]:
 # 批量运行任务配置 / Batch Run Task Configurations
 # ============================================================================
 BATCH_CONFIGS = {
-    # ========================================================================
-    # 完整模型对比实验配置
+# ========================================================================
+# 完整模型对比实验配置
     # Complete Model Comparison Experiment Configurations
-    # ========================================================================
+# ========================================================================
 
-    # 实验1: 所有合金 + 5个传统ML模型对比（tradition嵌入）
+# 实验1: 所有合金 + 5个传统ML模型对比（tradition嵌入）
     "experiment1_all_ml_models": {
-        "description": "【实验1】所有合金 × 5个传统ML模型对比（XGBoost, RF, MLP, LightGBM, CatBoost）",
+        "description": "实验1：所有合金 + 5个传统ML模型对比（XGBoost, RF, MLP, LightGBM, CatBoost）",
         "alloy_types": None,  # None表示所有合金（Ti, Al, HEA_full, HEA_half, Nb, Steel）
         "exclude_alloys": [],
         "embedding_type": "tradition",

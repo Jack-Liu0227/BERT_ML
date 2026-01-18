@@ -203,7 +203,7 @@ class TrainingPipeline:
         if self.args.evaluate_after_train:
             self._evaluate_best_model()
 
-    def _run_cross_validation(self, model_config=None, trial_number=None):
+    def _run_cross_validation(self, model_config=None, trial_number=None, closest_dir_name="closest_to_mean_predictions"):
         """Performs k-fold cross-validation.
         
         Args:
@@ -223,6 +223,7 @@ class TrainingPipeline:
         best_model_config = None
         
         all_fold_metrics = []
+        all_fold_state_dicts = []
 
         # Determine output directories
         if trial_number is not None:
@@ -280,6 +281,8 @@ class TrainingPipeline:
                 best_model_state_dict = state_dict
                 best_model_config = model_config_fold
                 best_fold_history = history
+            
+            all_fold_state_dicts.append(state_dict)
             
             # Load best weights for this fold to perform detailed evaluation
             if best_model_state_dict:
@@ -383,6 +386,7 @@ class TrainingPipeline:
             df_all_fold.to_csv(all_pred_path, index=False)
             # print(f"[{now()}] Saved all predictions for fold {fold+1} to {all_pred_path}")
 
+        avg_metrics = {}
         # Process and save aggregated CV metrics
         if all_fold_metrics:
             df_folds = pd.DataFrame(all_fold_metrics)
@@ -417,10 +421,8 @@ class TrainingPipeline:
             with open(os.path.join(cv_output_dir, 'cv_avg_metrics.json'), 'w') as f:
                 json.dump(final_cv_summary, f, indent=4)
             print(f"[{now()}] Saved cross-validation summary to: cv_avg_metrics.json")
-            
-            return avg_metrics
 
-    
+
         print(f"[{now()}] Best fold found: {best_fold_num} with validation loss: {best_fold_val_loss:.4f}")
 
         # --- Enhanced CV Results aggregation and saving ---
@@ -453,6 +455,104 @@ class TrainingPipeline:
             self._save_best_model(best_model_state_dict, best_model_config, best_fold_num)
         else:
             print(f"[{now()}] No best model found during cross-validation.")
+
+        # Cache best fold info for Optuna CV runs
+        self._last_cv_best_model_state_dict = best_model_state_dict
+        self._last_cv_best_model_config = best_model_config
+        self._last_cv_best_fold_num = best_fold_num
+
+        # --- Closest to Mean Logic ---
+        if all_fold_metrics and all_fold_state_dicts:
+             # Calculate Mean Val R2 first (across all targets)
+             fold_r2s = []
+             for fm in all_fold_metrics:
+                 # Filter keys ending with _r2
+                 r2_vals = [v for k,v in fm.items() if k.endswith('_r2')]
+                 if r2_vals:
+                     fold_r2s.append(np.mean(r2_vals))
+                 else:
+                     fold_r2s.append(0.0) # Fallback
+             
+             mean_r2 = np.mean(fold_r2s)
+             closest_idx = np.argmin(np.abs(np.array(fold_r2s) - mean_r2))
+             closest_fold_num = all_fold_metrics[closest_idx]['fold']
+             
+             print(f"[{now()}] Mean Validation R2: {mean_r2:.4f}")
+             print(f"[{now()}] Closest Fold to Mean: Fold {closest_fold_num} (R2: {fold_r2s[closest_idx]:.4f})")
+             
+             # Create output directory
+             closest_result_dir = os.path.join(cv_output_dir, closest_dir_name)
+             os.makedirs(closest_result_dir, exist_ok=True)
+             
+             # Save Fold Info
+             info = {
+                 "mean_val_r2": mean_r2,
+                 "closest_fold": closest_fold_num,
+                 "fold_val_r2": fold_r2s[closest_idx],
+                 "all_fold_val_r2": fold_r2s
+             }
+             with open(os.path.join(closest_result_dir, "closest_to_mean_fold_info.json"), 'w') as f:
+                 json.dump(info, f, indent=4)
+                 
+             # Save Closest Model
+             closest_state_dict = all_fold_state_dicts[closest_idx]
+             torch.save({
+                 'model_state_dict': closest_state_dict,
+                 'config': model_config if model_config else best_model_config # Use best_model_config if model_config is None
+             }, os.path.join(closest_result_dir, "closest_to_mean_model.pt"))
+
+             # Evaluate this model
+             # Re-create model
+             # If model_config was passed, use it. Otherwise use best_model_config (which was set during loop)
+             # But best_model_config changes every fold? No, model_config_fold changes.
+             # In loop: best_model_config = model_config_fold (if best).
+             # If we use `model_config` arg properly, it is cleaner.
+             # If model_config is None, we need to reconstruct config?
+             # But in Optuna pipeline, model_config is passed.
+             # In standard CV, model_config is None? 
+             # Loop Line 266: `model_fold, model_config_fold = self._create_model(config=model_config)`
+             # So `model_config_fold` is robust.
+             # We didn't save `model_config_fold` for every trial in `all_fold_state_dicts`.
+             # We only saved state_dict.
+             # Assumption: Config is same for all folds in CV (usually true, except random seed?).
+             # So we can use `best_model_config` as a proxy if `model_config` is None.
+             eval_config = model_config if model_config else best_model_config
+             
+             if eval_config:
+                 eval_model_closest, _ = self._create_model(config=eval_config)
+                 eval_model_closest.load_state_dict(closest_state_dict)
+                 eval_model_closest.to(self.args.device)
+                 eval_model_closest.eval()
+                 
+                 # Create evaluators
+                 evaluator_closest = cast(AlloysEvaluator, EvaluatorFactory.create_evaluator(
+                    'alloys', result_dir=closest_result_dir, model_name=f"{closest_dir_name}_evaluation",
+                    target_names=self.args.target_columns, target_scaler=self.scaler_y
+                 ))
+                 
+                 # Evaluate
+                 evaluator_closest.evaluate_model(
+                    model=eval_model_closest, 
+                    train_data=self.train_val_data, 
+                    test_data=self.test_data, 
+                    val_data=None, 
+                    save_prefix=f"{closest_dir_name}_", 
+                    feature_names=self.feature_names
+                 )
+             
+             # Copy Predictions
+             source_fold_dir = os.path.join(fold_pred_base_dir, f"fold_{closest_fold_num}")
+             if os.path.exists(source_fold_dir):
+                 for item in os.listdir(source_fold_dir):
+                     s = os.path.join(source_fold_dir, item)
+                     d = os.path.join(closest_result_dir, item)
+                     if os.path.isfile(s) and not os.path.exists(d):
+                         shutil.copy2(s, d)
+                     elif os.path.isdir(s) and not os.path.exists(d):
+                         shutil.copytree(s, d)
+                 print(f"[{now()}] Copied predictions from fold {closest_fold_num} to {closest_result_dir}")
+
+        return avg_metrics
 
     def _get_training_params(self, trial=None):
         """Constructs training parameters dictionary."""
@@ -669,7 +769,40 @@ class TrainingPipeline:
             # If cross-validation is requested, run it now with the best config to get uncertainty stats
             if self.args.cross_validate:
                 print(f"[{now()}] Running final cross-validation with best Optuna config for statistical reporting...")
-                self._run_cross_validation(model_config=best_model_config, trial_number=best_trial.number)
+                
+                # 1. Best Trial -> (Save to closest_to_mean_predictions in root)
+                # Pass trial_number=None to save to root results (Standard)
+                self._run_cross_validation(
+                    model_config=best_model_config, 
+                    trial_number=None,
+                    closest_dir_name="closest_to_mean_predictions"
+                )
+                
+                # 2. Global Mean Trial -> (Save to closest_to_global_mean_predictions in root)
+                print(f"[{now()}] Finding and running Global Mean Trial...")
+                valid_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+                # Optuna minimizes negative R2, so t.value is -R2 (or Loss).
+                all_values = [t.value for t in valid_trials if t.value is not None]
+                
+                if all_values:
+                    global_mean_val = np.mean(all_values)
+                    
+                    # Find closest trial
+                    closest_trial = min(valid_trials, key=lambda t: abs(t.value - global_mean_val))
+                    print(f"  Global Mean Value: {global_mean_val:.4f}")
+                    print(f"  Closest Trial: {closest_trial.number} (Value: {closest_trial.value:.4f})")
+                    
+                    global_config = closest_trial.user_attrs.get("model_config")
+                    
+                    if global_config:
+                        print(f"[{now()}] Re-running cross-validation for Global Mean Trial...")
+                        self._run_cross_validation(
+                            model_config=global_config,
+                            trial_number=None,
+                            closest_dir_name="closest_to_global_mean_predictions"
+                        )
+                    else:
+                        print(f"[{now()}] Warning: No model_config found for Global Mean Trial {closest_trial.number}")
             
             self._evaluate_best_model()
         else:
@@ -689,6 +822,14 @@ class TrainingPipeline:
             
             # This will save results to predictions/optuna_trials/trial_{number}/
             avg_metrics = self._run_cross_validation(model_config=model_config, trial_number=trial.number)
+            best_state = getattr(self, "_last_cv_best_model_state_dict", None)
+            best_config = getattr(self, "_last_cv_best_model_config", None)
+            best_fold = getattr(self, "_last_cv_best_fold_num", None)
+            if best_state is not None and best_config is not None:
+                trial.set_user_attr("best_model_state_dict", best_state)
+                trial.set_user_attr("model_config", best_config)
+                if best_fold is not None:
+                    trial.set_user_attr("best_fold", best_fold)
             
             # Calculate objective value (Maximize R2 -> Minimize negative R2)
             # avg_metrics contains keys like "{target}_r2"

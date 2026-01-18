@@ -294,6 +294,40 @@ class MLShapAnalyzer(BaseEvaluator):
                 plt.close()
 
             print(f"\n[SHAP Analyzer] Analysis complete. Plots saved in: {self.plots_dir}")
+            
+            # Save SHAP values data to CSV for further analysis
+            try:
+                import pandas as pd
+                for i, target_name in enumerate(self.target_names):
+                    target_shap_values = shap_values
+                    if isinstance(shap_values, list):
+                        target_shap_values = shap_values[i]
+                    elif isinstance(shap_values, np.ndarray) and shap_values.ndim == 3:
+                        target_shap_values = shap_values[:, :, i]
+                    elif len(self.target_names) > 1 and i > 0:
+                        break  # Only save for first target if SHAP values are 2D but multiple targets exist
+                    
+                    sanitized_target_name = self._sanitize_filename(target_name)
+                    
+                    # Save SHAP values as CSV
+                    shap_df = pd.DataFrame(target_shap_values, columns=self.feature_names)
+                    shap_csv_path = os.path.join(self.result_dir, f'shap_values_{sanitized_target_name}.csv')
+                    shap_df.to_csv(shap_csv_path, index=False)
+                    print(f"[SHAP Analyzer] Saved SHAP values for '{target_name}' to {shap_csv_path}")
+                    
+                    # Calculate and save feature importance summary
+                    mean_abs_shap = np.abs(target_shap_values).mean(axis=0)
+                    importance_df = pd.DataFrame({
+                        'feature': self.feature_names,
+                        'mean_abs_shap': mean_abs_shap
+                    }).sort_values('mean_abs_shap', ascending=False)
+                    
+                    importance_csv_path = os.path.join(self.result_dir, f'feature_importance_{sanitized_target_name}.csv')
+                    importance_df.to_csv(importance_csv_path, index=False)
+                    print(f"[SHAP Analyzer] Saved feature importance for '{target_name}' to {importance_csv_path}")
+                    
+            except Exception as save_err:
+                print(f"[SHAP Analyzer] Warning: Failed to save SHAP data to CSV: {save_err}")
 
         except Exception as e:
             print(f"[SHAP Analyzer] FATAL: Failed to calculate or plot SHAP values. Error: {e}")

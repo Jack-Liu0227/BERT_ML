@@ -66,19 +66,10 @@ batch_run_*.log
 catboost_info/
 
 # Datasets (默认忽略所有数据集，但保留配置中使用的特定文件)
-datasets/*
+# datasets/*
+datasets/HEA_data/Pitting_potential_data_xiongjie.csv
 # 白名单：保留项目配置中使用的数据集
-!datasets/HEA_data/
-!datasets/HEA_data/SHU/
-!datasets/HEA_data/SHU/Pitting*potential*data_xiongjie_processed.csv
-!datasets/HEA_data/RoomTemperature_HEA_train_with_ID.csv
-!datasets/Ti_alloys/
-!datasets/Ti_alloys/Titanium_Alloy_Dataset_Processed_cleaned.csv
-!datasets/Al_Alloys/
-!datasets/Al_Alloys/USTB/
-!datasets/Al_Alloys/USTB/USTB_Al_alloys_processed_split_withID.csv
-!datasets/Steel/
-!datasets/Steel/USTB_steel_processed_withID.csv
+
 
 # OS
 Thumbs.db

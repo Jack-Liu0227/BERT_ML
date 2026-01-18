@@ -27,7 +27,8 @@ plt.rcParams['figure.dpi'] = 300
 
 def find_all_predictions_by_model(base_dir: str) -> Dict[str, List[Path]]:
     """
-    查找所有模型的 all_predictions.csv 文件并按模型分组
+    查找所有模型的 fold 预测文件 (all_predictions.csv) 并按模型分组
+    允许 optuna_trials，以便我们能从中选出最佳 trial
     
     Args:
         base_dir: 基础目录路径
@@ -36,7 +37,8 @@ def find_all_predictions_by_model(base_dir: str) -> Dict[str, List[Path]]:
         字典，键为模型名，值为文件路径列表
     """
     base_path = Path(base_dir)
-    all_files = list(base_path.rglob("all_predictions.csv"))
+    # 查找所有包含 all_predictions.csv 的文件
+    all_files = list(base_path.rglob("*all_predictions.csv"))
     
     # 按模型分组
     model_files = {}
@@ -48,8 +50,23 @@ def find_all_predictions_by_model(base_dir: str) -> Dict[str, List[Path]]:
         'mlp_results': 'MLP'
     }
     
+    valid_files = []
+    
     for file_path in all_files:
         path_str = str(file_path)
+        
+        # 排除 顶层的 all_predictions.csv (即不包含 fold_ 也不包含 optuna 的)
+        # 通常有效的交叉验证文件都在 fold_ 下
+        
+        # 必须包含 'fold_'
+        is_fold = 'fold_' in path_str.lower()
+        
+        if not is_fold:
+            # print(f"DEBUG: Skipping non-fold: {path_str}")
+            continue
+        
+        valid_files.append(file_path)
+
         for key, model_name in model_map.items():
             if key in path_str:
                 if model_name not in model_files:
@@ -58,6 +75,8 @@ def find_all_predictions_by_model(base_dir: str) -> Dict[str, List[Path]]:
                 break
     
     print(f"\n找到 {len(all_files)} 个 all_predictions.csv 文件")
+    print(f"保留 {len(valid_files)} 个包含 fold 信息的文件")
+    
     for model, files in model_files.items():
         print(f"  {model}: {len(files)} 个文件")
     
@@ -67,20 +86,22 @@ def find_all_predictions_by_model(base_dir: str) -> Dict[str, List[Path]]:
 def calculate_r2_for_file(file_path: Path, target_property: str = None) -> Dict:
     """
     计算单个文件的 R2 值 (仅计算测试集)
-    
-    Args:
-        file_path: CSV 文件路径
-        target_property: 目标属性名称（如果指定，只计算该属性）
-        
-    Returns:
-        R2 结果字典
     """
     try:
         df = pd.read_csv(file_path)
         
         # 只保留测试集数据
         if 'Dataset' in df.columns:
-            df = df[df['Dataset'] == 'Test'].copy()
+            preferred_splits = ['Test', 'Validation', 'Valid', 'Val', 'test', 'validation', 'val']
+            split_used = None
+            for split in preferred_splits:
+                if (df['Dataset'] == split).any():
+                    split_used = split
+                    break
+            if split_used:
+                df = df[df['Dataset'] == split_used].copy()
+            else:
+                df = df.copy()
         
         if len(df) == 0:
             return {}
@@ -92,7 +113,6 @@ def calculate_r2_for_file(file_path: Path, target_property: str = None) -> Dict:
         for actual_col in actual_cols:
             property_name = actual_col.replace('_Actual', '')
             
-            # 如果指定了目标属性，跳过其他属性
             if target_property and property_name != target_property:
                 continue
             
@@ -100,31 +120,31 @@ def calculate_r2_for_file(file_path: Path, target_property: str = None) -> Dict:
             if pred_col not in df.columns:
                 continue
             
-            # 移除缺失值
             valid_df = df[[actual_col, pred_col]].dropna()
             if len(valid_df) == 0:
                 continue
             
-            # 计算 R2
             r2 = r2_score(valid_df[actual_col], valid_df[pred_col])
             results[property_name] = {
                 'r2': r2,
                 'n_samples': len(valid_df),
-                'file_path': str(file_path),
-                'actual_col': actual_col,
-                'pred_col': pred_col
+                'file_path': str(file_path)
             }
         
         return results
-        
     except Exception as e:
-        print(f"错误: 处理文件 {file_path} 时出错: {e}")
+        # print(f"错误: 处理文件 {file_path} 时出错: {e}") 
         return {}
 
 
 def calculate_model_performance(model_files: Dict[str, List[Path]]) -> pd.DataFrame:
     """
-    计算每个模型的性能统计
+    计算每个模型的性能统计。
+    逻辑：
+    1. 识别 Trial (如果不含 optuna_trials，则视为 default trial)
+    2. 按 Trial 分组计算平均 R2
+    3. 选出最佳 Trial
+    4. 仅返回最佳 Trial 的 Fold 统计信息
     
     Args:
         model_files: 模型文件字典
@@ -132,24 +152,123 @@ def calculate_model_performance(model_files: Dict[str, List[Path]]) -> pd.DataFr
     Returns:
         包含模型性能统计的DataFrame
     """
-    all_results = []
+    import re
+    all_metrics = []
     
     for model_name, file_paths in model_files.items():
+        if not file_paths:
+            continue
+            
+        print(f"正在处理模型 {model_name}... (共 {len(file_paths)} 个文件)")
+        
+        # 1. 解析文件并按 Trial 分组
+        trials_data = {}  # {trial_id: {property: [ (r2, file_path), ... ] }}
+        
         for file_path in file_paths:
+            path_str = str(file_path)
+            
+            # 提取 Trial ID
+            match = re.search(r'trial_(\d+)', path_str)
+            if match:
+                trial_id = f"trial_{match.group(1)}"
+            else:
+                 trial_id = 'default_trial'
+
+            
+            # 计算该文件的 R2
             r2_results = calculate_r2_for_file(file_path)
             
-            for property_name, metrics in r2_results.items():
-                all_results.append({
-                    'model': model_name,
-                    'property': property_name,
+            if not r2_results:
+                continue
+                
+            if trial_id not in trials_data:
+                trials_data[trial_id] = {}
+            
+            for prop, metrics in r2_results.items():
+                if prop not in trials_data[trial_id]:
+                    trials_data[trial_id][prop] = []
+                trials_data[trial_id][prop].append({
                     'r2': metrics['r2'],
                     'n_samples': metrics['n_samples'],
                     'file_path': metrics['file_path']
                 })
+        
+        # 2. 对每个属性，找到最佳 Trial
+        # 我们假设所有 Trial 都处理相同的属性集合
+        
+        # 获取所有属性
+        all_props = set()
+        for t_data in trials_data.values():
+            all_props.update(t_data.keys())
+            
+        for prop in all_props:
+            best_trial_id = None
+            best_trial_mean_r2 = -float('inf')
+            
+            # 遍历该模型所有 Trial，找该属性 R2 最高的
+            for trial_id, prop_map in trials_data.items():
+                if prop not in prop_map:
+                    continue
+                
+                # 计算该 Trial 所有 Fold 的平均 R2
+                folds_r2 = [item['r2'] for item in prop_map[prop]]
+                if not folds_r2: 
+                    continue
+                
+                num_folds = len(folds_r2)
+                mean_r2 = sum(folds_r2) / num_folds
+                
+                # 更新最佳 Trial
+                # 策略：优先选择 Fold 数更多的（完整运行的），其次选 R2 更高的
+                # 如果当前 Trial 的 Fold 数比之前记录的最佳 Trial 更多，直接替换
+                if best_trial_id is None or num_folds > len(trials_data[best_trial_id][prop]):
+                    best_trial_mean_r2 = mean_r2
+                    best_trial_id = trial_id
+                # 如果 Fold 数相同，则比较 R2
+                elif num_folds == len(trials_data[best_trial_id][prop]):
+                    if mean_r2 > best_trial_mean_r2:
+                        best_trial_mean_r2 = mean_r2
+                        best_trial_id = trial_id
+            
+            if best_trial_id:
+                fold_count = len(trials_data[best_trial_id][prop])
+                print(f"  属性 {prop}: 最佳 Trial 是 {best_trial_id} (Mean R2: {best_trial_mean_r2:.4f}, Folds: {fold_count})")
+                
+                # 3. 数据收集
+                # 遍历该属性下所有 Trial
+                for trial_id, prop_map in trials_data.items():
+                    if prop not in prop_map:
+                        continue
+                        
+                    folds_data = prop_map[prop]
+                    for item in folds_data:
+                        # A. 添加到 "All Trials" 统计 (用于对比)
+                        all_metrics.append({
+                            'model': f"{model_name} (All Trials)",
+                            'property': prop,
+                            'r2': item['r2'],
+                            'n_samples': item['n_samples'],
+                            'file_path': item['file_path'],
+                            'trial_id': trial_id
+                        })
+                        
+                        # B. 如果是最佳 Trial，添加到 "Main" 统计 (用于绘图和代表性选择)
+                        if trial_id == best_trial_id:
+                            all_metrics.append({
+                                'model': model_name,
+                                'property': prop,
+                                'r2': item['r2'],
+                                'n_samples': item['n_samples'],
+                                'file_path': item['file_path'],
+                                'trial_id': trial_id
+                            })
     
-    df = pd.DataFrame(all_results)
+    df = pd.DataFrame(all_metrics)
     
-    # 计算每个模型和属性的统计
+    if df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    # 计算统计信息 (基于最佳 Trial 的 Folds)
     stats = df.groupby(['model', 'property'])['r2'].agg([
         ('mean', 'mean'),
         ('std', 'std'),
@@ -161,14 +280,19 @@ def calculate_model_performance(model_files: Dict[str, List[Path]]) -> pd.DataFr
     return df, stats
 
 
+
 def plot_model_comparison(stats_df: pd.DataFrame, output_dir: str):
     """
-    绘制模型对比图（类似您上传的图片）
+    绘制模型对比图（生成两版：最佳Trial和所有Trials）
     
     Args:
         stats_df: 模型统计DataFrame
         output_dir: 输出目录
     """
+    if stats_df.empty or 'property' not in stats_df.columns or 'model' not in stats_df.columns:
+        print("Warning: stats data missing; skip model comparison plots")
+        return
+
     # 定义模型顺序和颜色
     model_order = ['CatBoost', 'LightGBM', 'MLP', 'RF', 'XGB']
     color_map = {
@@ -180,40 +304,82 @@ def plot_model_comparison(stats_df: pd.DataFrame, output_dir: str):
     
     properties = sorted(stats_df['property'].unique())
     
-    for prop in properties:
-        prop_data = stats_df[stats_df['property'] == prop]
-        
-        # 确保模型顺序正确
-        prop_data = prop_data.set_index('model').reindex(model_order).reset_index()
-        prop_data = prop_data.dropna(subset=['mean'])
-        
+    # 分离数据
+    # 1. Best Trials (模型名不包含 "All Trials")
+    df_best = stats_df[~stats_df['model'].str.contains("All Trials")].copy()
+    
+    # 2. All Trials (模型名包含 "All Trials")
+    df_all = stats_df[stats_df['model'].str.contains("All Trials")].copy()
+    # 清理模型名以便绘图 (去掉后缀)
+    df_all['model'] = df_all['model'].str.replace(r" \(All Trials\)", "", regex=True)
+    
+    def _plot_single_comparison(data_df: pd.DataFrame, suffix: str, title_prefix: str = ""):
+        if data_df.empty:
+            return
+
+        # ???????????????????????????????????????????????????
+        data_props = [prop for prop in properties if not data_df[data_df['property'] == prop].empty]
+        if not data_props:
+            return
+
+        x = np.arange(len(model_order))
+        group_width = 0.8
+        bar_width = group_width / max(len(data_props), 1)
+
         plt.figure(figsize=(10, 8))
-        
-        models = prop_data['model'].tolist()
-        means = prop_data['mean'].tolist()
-        stds = prop_data['std'].tolist()
-        
-        # 创建柱状图
-        bars = plt.bar(models, means, yerr=stds, capsize=5,
-                      color=color_map.get(prop, '#aacfef'),
-                      edgecolor='black', linewidth=1.5,
-                      error_kw={'elinewidth': 2, 'ecolor': 'black'})
-        
+
+        for idx, prop in enumerate(data_props):
+            prop_data = data_df[data_df['property'] == prop]
+            if prop_data.empty:
+                continue
+
+            # ???????????????????????????
+            prop_data = prop_data.set_index('model').reindex(model_order).reset_index()
+            prop_data = prop_data.dropna(subset=['mean'])
+            if prop_data.empty:
+                continue
+
+            means = prop_data['mean'].tolist()
+            stds = prop_data['std'].tolist()
+
+            offset = (idx - (len(data_props) - 1) / 2) * bar_width
+            plt.bar(
+                x + offset,
+                means,
+                yerr=stds,
+                width=bar_width,
+                capsize=4,
+                color=color_map.get(prop, '#aacfef'),
+                edgecolor='black',
+                linewidth=1.2,
+                error_kw={'elinewidth': 1.5, 'ecolor': 'black'},
+                label=prop
+            )
+
         plt.xlabel('Predictive models', fontweight='bold', fontsize=18)
-        plt.ylabel('R²', fontweight='bold', fontsize=18)
+        plt.ylabel('R??', fontweight='bold', fontsize=18)
         plt.ylim(0, 1.0)
-        plt.xticks(fontsize=16)
+        plt.xticks(x, model_order, fontsize=16)
         plt.yticks(fontsize=16)
         plt.grid(axis='y', alpha=0.3, linestyle='--')
-        
+        plt.legend(frameon=True, fontsize=12, edgecolor='black')
+
+        # ???????????????????????????
+        # plt.title(f"{title_prefix}Model Comparison", fontsize=20, fontweight='bold', pad=20)
+
         plt.tight_layout()
-        
-        # 保存图表
-        safe_prop_name = prop.replace('(', '').replace(')', '').replace('%', 'pct')
-        output_path = Path(output_dir) / f"model_comparison_{safe_prop_name}.png"
+
+        output_path = Path(output_dir) / f"model_comparison_all_properties_{suffix}.png"
         plt.savefig(output_path, dpi=300, bbox_inches='tight')
-        print(f"保存模型对比图: {output_path}")
+        print(f"?????????????????????({suffix}): {output_path}")
         plt.close()
+
+    # 绘制两版图表
+    print("\n绘制 Best Trials 对比图...")
+    _plot_single_comparison(df_best, "Best")
+    
+    print("\n绘制 All Trials 对比图...")
+    _plot_single_comparison(df_all, "AllTrials")
 
 
 def select_best_model_representative(all_results_df: pd.DataFrame, property_name: str) -> Tuple[str, Path, float]:
@@ -399,8 +565,13 @@ def process_single_directory(base_dir: str, output_dir: str):
     # 4. 对每个属性，选择最佳模型的代表性结果
     print("\n选择最佳模型的代表性结果...")
     
-    properties = all_results_df['property'].unique()
+    if all_results_df.empty or 'property' not in all_results_df.columns:
+        print("  Warning: no performance data available; skipping best model selection\n")
+        return None
+
     
+    properties = all_results_df['property'].unique()
+
     best_results = []
     best_models_info = {}  # 存储每个属性的最佳模型信息
     

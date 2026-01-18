@@ -8,7 +8,7 @@ import optuna
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
-from typing import Dict, List, Any, Union
+from typing import Dict, List, Any, Union, Optional
 from sklearn.model_selection import KFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.multioutput import MultiOutputRegressor
@@ -292,7 +292,6 @@ class MLTrainingPipeline:
             df_test = pd.DataFrame()
             if 'ids' in self.test_data: df_test['ID'] = self.test_data['ids']
             df_test['Dataset'] = 'Test'
-            
             for i, target in enumerate(self.args.target_columns):
                 df_train[f"{target}_Actual"] = y_train_true_orig[:, i]
                 df_train[f"{target}_Predicted"] = y_train_pred_orig[:, i]
@@ -369,13 +368,54 @@ class MLTrainingPipeline:
         print(f"[{now()}] Training final model with best Optuna parameters...")
         self._train_final_model(model_params=trial.params)
 
-    def _run_cross_validation(self, model_params: Dict[str, Any] = None, cv_results_filename: str = 'cross_validation_results.csv'):
+        # 1. Re-run CV with BEST params to generate Best-Mean evaluation
+        print(f"[{now()}] Re-running cross-validation with BEST Optuna parameters to save Best Closest-to-Mean model...")
+        self._run_cross_validation(
+            model_params=trial.params, 
+            cv_results_filename='best_model_cv_results.csv',
+            closest_model_save_dir_name='closest_to_mean_evaluation'
+        )
+        
+        # 2. Find and Re-run CV with GLOBAL MEAN params
+        # This represents "All Trials Mean"
+        print(f"[{now()}] Finding and running Global Mean Trial...")
+        valid_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        all_values = [t.value for t in valid_trials if t.value is not None]
+        
+        if all_values:
+            global_mean_val = np.mean(all_values)
+            print(f"  Global Mean R2 across all trials: {global_mean_val:.4f}")
+            
+            # Find closest trial
+            closest_trial = min(valid_trials, key=lambda t: abs(t.value - global_mean_val))
+            print(f"  Closest Trial to Global Mean: Trial {closest_trial.number} (Trial Mean: {closest_trial.value:.4f})")
+            
+            # Re-run CV for this trial to generate evaluation artifacts
+            print(f"[{now()}] Re-running cross-validation for Global Mean Trial...")
+            self._run_cross_validation(
+                model_params=closest_trial.params, 
+                cv_results_filename='global_mean_cv_results.csv',
+                closest_model_save_dir_name='closest_to_global_mean_evaluation'
+            )
+
+    def _run_cross_validation(
+        self,
+        model_params: Dict[str, Any] = None,
+        cv_results_filename: str = 'cross_validation_results.csv',
+        closest_model_save_dir_name: str = 'closest_to_mean_evaluation',
+        target_fold_mean_r2: Optional[float] = None,
+        forced_fold_num: Optional[int] = None,
+        selection_metric: str = 'test'
+    ):
         """Performs k-fold cross-validation."""
         print(f"[{now()}] Starting cross-validation...")
         kf = KFold(n_splits=self.args.num_folds, shuffle=True, random_state=self.args.random_state)
         
         fold_metrics = []
         best_fold_score = -np.inf 
+        
+        # 保存所有fold的模型，用于后续选择最接近均值的模型
+        all_fold_models = []
         
         # Determine model parameters
         if model_params is None:
@@ -443,6 +483,37 @@ class MLTrainingPipeline:
                 metrics_for_df[f"{target_name}_mae"] = mean_absolute_error(y_true, y_pred)
 
             fold_metrics.append(metrics_for_df)
+
+            avg_val_r2 = np.mean([metrics_for_df[f"{t}_r2"] for t in self.args.target_columns])
+            
+            # 计算该fold模型在测试集上的R²（用于选择最接近均值的模型）
+            # Predict on test set with this fold's model
+            y_test_pred_fold = model.predict(self.test_data['X'])
+            if y_test_pred_fold.ndim == 1: 
+                y_test_pred_fold = y_test_pred_fold.reshape(-1, 1)
+            y_test_pred_fold_orig = self.scaler_y.inverse_transform(y_test_pred_fold)
+            y_test_true_fold_orig = self.scaler_y.inverse_transform(
+                self.test_data['y'].reshape(-1, 1) if self.test_data['y'].ndim==1 else self.test_data['y']
+            )
+            
+            # 计算测试集上的R²
+            test_r2_values = []
+            for i, target_name in enumerate(self.args.target_columns):
+                test_r2 = r2_score(y_test_true_fold_orig[:, i], y_test_pred_fold_orig[:, i])
+                test_r2_values.append(test_r2)
+            
+            avg_test_r2 = np.mean(test_r2_values)
+            
+            # 保存每个fold的模型对象和指标，用于后续选择最接近均值的模型
+            all_fold_models.append({
+                'fold_num': fold + 1,
+                'model': model,  # 训练好的模型对象
+                'val_metrics': metrics_for_df,  # 验证集指标
+                'avg_val_r2': avg_val_r2,
+                'test_r2': avg_test_r2,  # 测试集平均R²（用于选择最接近均值）
+                'test_r2_per_target': {self.args.target_columns[i]: test_r2_values[i] 
+                                      for i in range(len(self.args.target_columns))}
+            })
             
             # --- Save Predictions for this Fold (Train/Val/Test) ---
             # Only save if NOT using Optuna (to avoid clutter, as Optuna trials already save this)
@@ -505,8 +576,8 @@ class MLTrainingPipeline:
             current_r2 = np.mean([metrics_for_df[f"{t}_r2"] for t in self.args.target_columns])
             if current_r2 > best_fold_score:
                 best_fold_score = current_r2
-                # No longer save the best model from a single fold.
                 # The final model will be trained on all data after CV.
+                # But we will save the best fold model for reference
 
         # Calculate Mean and Std
         df_results = pd.DataFrame(fold_metrics)
@@ -563,10 +634,188 @@ class MLTrainingPipeline:
         with open(cv_results_path, 'w', encoding='utf-8') as f:
             json.dump(structured_cv_results, f, indent=4)
         print(f"[{now()}] Saved detailed cross-validation results to: {cv_results_path}")
+        
+        # --- Find and save model closest to mean R² (based on TEST set performance) ---
+        if all_fold_models:
+            selection_label = "VAL" if selection_metric == "val" else "TEST"
+            print(f"[{now()}] Finding fold closest to mean {selection_label} R² performance...")
+            
+            fold_test_r2s = [fm['test_r2'] for fm in all_fold_models]
+            mean_test_r2 = np.mean(fold_test_r2s)
 
+            if selection_metric == 'val' and target_fold_mean_r2 is None and forced_fold_num is None:
+                target_fold_mean_r2 = float(np.mean([fm['avg_val_r2'] for fm in all_fold_models]))
+
+            closest_fold_data = None
+            if forced_fold_num is not None:
+                closest_fold_data = next(
+                    (fm for fm in all_fold_models if fm['fold_num'] == forced_fold_num),
+                    None
+                )
+                if closest_fold_data is None:
+                    print(f"[{now()}] Warning: forced fold {forced_fold_num} not found, falling back to mean-based selection.")
+
+            if closest_fold_data is None and target_fold_mean_r2 is not None:
+                metric_key = 'avg_val_r2' if selection_metric == 'val' else 'test_r2'
+                closest_fold_data = min(
+                    all_fold_models,
+                    key=lambda fm: abs(fm[metric_key] - target_fold_mean_r2)
+                )
+
+            if closest_fold_data is None:
+                closest_fold_idx = np.argmin([abs(r2 - mean_test_r2) for r2 in fold_test_r2s])
+                closest_fold_data = all_fold_models[closest_fold_idx]
+
+            closest_fold_num = closest_fold_data['fold_num']
+            
+            print(f"[{now()}] Mean TEST R²: {mean_test_r2:.4f}")
+            if selection_metric == 'val' and target_fold_mean_r2 is not None:
+                print(f"[{now()}] Target VAL R² Mean: {target_fold_mean_r2:.4f}")
+                print(f"[{now()}] Closest Fold: {closest_fold_num} (VAL R2: {closest_fold_data['avg_val_r2']:.4f})")
+            else:
+                print(f"[{now()}] Closest Fold: {closest_fold_num} (TEST R2: {closest_fold_data['test_r2']:.4f})")
+            
+            # Directory
+            closest_result_dir = os.path.join(self.args.result_dir, closest_model_save_dir_name)
+            os.makedirs(closest_result_dir, exist_ok=True)
+            
+            # JSON Info
+            info_filename = (
+                'closest_to_mean_fold_info.json'
+                if closest_model_save_dir_name == 'closest_to_mean_evaluation'
+                else 'closest_to_global_mean_fold_info.json'
+            )
+            closest_fold_info = {
+                'closest_fold_num': int(closest_fold_num),
+                'fold_test_r2': float(closest_fold_data['test_r2']),
+                'mean_test_r2': float(mean_test_r2),
+                'all_fold_test_r2': [float(r2) for r2 in fold_test_r2s],
+                'test_r2_per_target': {k: float(v) if isinstance(v, (np.floating, np.integer)) else v 
+                                      for k, v in closest_fold_data['test_r2_per_target'].items()},
+                'selection_metric': selection_metric,
+                'target_mean_r2': None if target_fold_mean_r2 is None else float(target_fold_mean_r2),
+                'selected_val_r2': float(closest_fold_data.get('avg_val_r2', 0.0))
+            }
+            with open(os.path.join(closest_result_dir, info_filename), 'w', encoding='utf-8') as f:
+                json.dump(closest_fold_info, f, indent=4)
+                
+            # Save Model
+            closest_model = closest_fold_data['model']
+            model_ext = ".json" if self.trainer_model_type == 'xgb' else ".pkl"
+            closest_model_path = os.path.join(closest_result_dir, f"closest_to_mean_model{model_ext}")
+            
+            if self.trainer_model_type == 'xgb':
+                 closest_model.save_model(closest_model_path)
+            else:
+                 joblib.dump(closest_model, closest_model_path)
+            print(f"[{now()}] Saved model to: {closest_model_path}")
+            
+            # Evaluator
+            closest_evaluator = MLEvaluator(
+                result_dir=closest_result_dir,
+                model_name=closest_model_save_dir_name, # Use dir name as model name for plots
+                target_names=self.args.target_columns
+            )
+            
+            # Use a fixed train/val split for consistent plots
+            X_train_eval, X_val_eval, y_train_eval, y_val_eval = train_test_split(
+                self.train_val_data['X'],
+                self.train_val_data['y'],
+                test_size=0.2,
+                random_state=self.args.random_state
+            )
+            train_data_eval = {'X': X_train_eval, 'y': y_train_eval}
+            val_data_eval = {'X': X_val_eval, 'y': y_val_eval}
+
+            closest_metrics = closest_evaluator.evaluate(
+                model=closest_model,
+                train_data=train_data_eval,
+                val_data=val_data_eval,
+                test_data=self.test_data,
+                scaler_y=self.scaler_y,
+                save_predictions=True
+            )
+            
+            # SHAP
+            if self.args.run_shap_analysis:
+                shap_result_dir = os.path.join(closest_result_dir, "SHAP_Analysis")
+                os.makedirs(shap_result_dir, exist_ok=True)
+                analyzer = MLShapAnalyzer(
+                    model=closest_model,
+                    feature_names=self.feature_names,
+                    target_names=self.args.target_columns,
+                    result_dir=shap_result_dir
+                )
+                analyzer.analyze(self.test_data['X'])
+            
+            # Copy Predictions from Fold
+            source_fold_dir = os.path.join(self.args.result_dir, "predictions", f"fold_{closest_fold_num}")
+            if os.path.exists(source_fold_dir):
+                 # Copy to closest_result_dir
+                 for item in os.listdir(source_fold_dir):
+                     s = os.path.join(source_fold_dir, item)
+                     d = os.path.join(closest_result_dir, item)
+                     # Only copy if not exists/overwrite?
+                     # predictions.csv from Fold might be better than Evaluator's? 
+                     # Evaluator generates `_all_predictions.csv` (merged).
+                     # Fold has `all_predictions.csv` (merged train/val/test).
+                     # We prefer Fold's version. So rewrite.
+                     if os.path.isfile(s):
+                         shutil.copy2(s, d)
+                     elif os.path.isdir(s) and not os.path.exists(d):
+                         shutil.copytree(s, d)
+                 print(f"[{now()}] Copied raw fold predictions to {closest_result_dir}")
+            
+            if closest_model_save_dir_name == "closest_to_global_mean_evaluation":
+                print(f"[{now()}] Evaluating closest-to-global-mean model from fold {closest_fold_num}...")
+
+                closest_evaluator_name = "closest_to_global_mean_model_evaluation"
+                closest_result_dir = os.path.join(self.args.result_dir, "closest_to_global_mean_evaluation")
+                os.makedirs(closest_result_dir, exist_ok=True)
+
+                X_train_eval, X_val_eval, y_train_eval, y_val_eval = train_test_split(
+                    self.train_val_data['X'],
+                    self.train_val_data['y'],
+                    test_size=0.2,
+                    random_state=self.args.random_state
+                )
+
+                train_data_eval = {'X': X_train_eval, 'y': y_train_eval}
+                val_data_eval = {'X': X_val_eval, 'y': y_val_eval}
+
+                closest_evaluator = MLEvaluator(
+                    result_dir=closest_result_dir,
+                    model_name=closest_evaluator_name,
+                    target_names=self.args.target_columns
+                )
+
+                closest_metrics = closest_evaluator.evaluate(
+                    model=closest_model,
+                    train_data=train_data_eval,
+                    val_data=val_data_eval,
+                    test_data=self.test_data,
+                    scaler_y=self.scaler_y,
+                    save_predictions=True
+                )
+                print(f"[{now()}] Closest-to-global-mean model evaluation metrics: {closest_metrics}")
+
+                if self.args.run_shap_analysis:
+                    print(f"[{now()}] Running SHAP analysis for closest-to-global-mean model...")
+                    shap_result_dir = os.path.join(closest_result_dir, "SHAP_Analysis")
+                    os.makedirs(shap_result_dir, exist_ok=True)
+
+                    analyzer = MLShapAnalyzer(
+                        model=closest_model,
+                        feature_names=self.feature_names,
+                        target_names=self.args.target_columns,
+                        result_dir=shap_result_dir
+                    )
+                    analyzer.analyze(self.test_data['X'])
+                    print(f"[{now()}] SHAP analysis complete for closest-to-global-mean model. Results saved in: {shap_result_dir}")
         # After CV, always train the final model on all data for test set evaluation
         print(f"[{now()}] Cross-validation finished. Training final model on all data...")
         self._train_final_model(model_params)
+        return avg_metrics
 
     def _train_final_model(self, model_params: Dict[str, Any] = None):
         """Trains a single model on the full train_val dataset."""
@@ -698,13 +947,18 @@ class MLTrainingPipeline:
 
         # SHAP Analysis
         if self.args.run_shap_analysis:
+            # Save SHAP results in plots/SHAP_Analysis directory for consistency
+            shap_result_dir = os.path.join(self.args.result_dir, "plots", "SHAP_Analysis")
+            os.makedirs(shap_result_dir, exist_ok=True)
+            
             analyzer = MLShapAnalyzer(
                 model=self.best_model,
                 feature_names=self.feature_names,
                 target_names=self.args.target_columns,
-                result_dir=self.args.result_dir
+                result_dir=shap_result_dir
             )
             analyzer.analyze(self.test_data['X'])
+            print(f"[{now()}] SHAP analysis complete. Results saved in: {shap_result_dir}")
 
     def _save_predictions(self):
         """Save predictions for train, validation and test sets in a single file."""
@@ -790,6 +1044,77 @@ class MLTrainingPipeline:
         test_df.to_csv(test_path, index=False)    # Save test set predictions
         print(f"[{now()}] Saved train/val/test predictions to: {train_path}, {val_path}, {test_path}")
 
+    def _compute_test_r2_from_predictions(self, predictions_csv: str) -> Optional[float]:
+        """Compute average test R2 across targets from a saved predictions CSV."""
+        try:
+            df = pd.read_csv(predictions_csv)
+        except Exception as e:
+            print(f"[{now()}] Warning: failed to read predictions file {predictions_csv}: {e}")
+            return None
+
+        if 'Dataset' in df.columns:
+            dataset_col = df['Dataset']
+            df = df[dataset_col.astype(str).str.lower() == 'test'].copy()
+            if df.empty:
+                # Fallback for Optuna trial predictions where test rows have blank Dataset.
+                blank_mask = dataset_col.isna() | (dataset_col.astype(str).str.strip() == '')
+                df = df[blank_mask].copy()
+        if df.empty:
+            return None
+
+        r2_values = []
+        for target in self.args.target_columns:
+            actual_col = f"{target}_Actual"
+            pred_col = f"{target}_Predicted"
+            if actual_col not in df.columns or pred_col not in df.columns:
+                continue
+            valid_df = df[[actual_col, pred_col]].dropna()
+            if valid_df.empty:
+                continue
+            r2_values.append(r2_score(valid_df[actual_col], valid_df[pred_col]))
+
+        if not r2_values:
+            return None
+        return float(np.mean(r2_values))
+
+    def _collect_optuna_trial_fold_test_r2(self) -> List[Dict[str, Any]]:
+        """Collect average test R2 for each Optuna trial/fold from saved predictions."""
+        records = []
+        trials_dir = os.path.join(self.args.result_dir, "predictions", "optuna_trials")
+        if not os.path.exists(trials_dir):
+            return records
+
+        for trial_folder in os.listdir(trials_dir):
+            if not trial_folder.startswith("trial_"):
+                continue
+            try:
+                trial_num = int(trial_folder.split("_")[1])
+            except (IndexError, ValueError):
+                continue
+            trial_path = os.path.join(trials_dir, trial_folder)
+
+            for fold_folder in os.listdir(trial_path):
+                if not fold_folder.startswith("fold_"):
+                    continue
+                try:
+                    fold_num = int(fold_folder.split("_")[1])
+                except (IndexError, ValueError):
+                    continue
+                pred_csv = os.path.join(trial_path, fold_folder, "all_predictions.csv")
+                if not os.path.exists(pred_csv):
+                    continue
+
+                avg_test_r2 = self._compute_test_r2_from_predictions(pred_csv)
+                if avg_test_r2 is None:
+                    continue
+                records.append({
+                    "trial_num": trial_num,
+                    "fold_num": fold_num,
+                    "avg_test_r2": avg_test_r2
+                })
+
+        return records
+
     def _run_optuna(self):
         """
         Runs hyperparameter optimization using Optuna with cross-validation and pruning.
@@ -813,6 +1138,20 @@ class MLTrainingPipeline:
         print(f"[{now()}] Best trial finished with avg R2 score: {study.best_value} and params: {study.best_params}")
         
         best_params = study.best_params.copy()
+
+        def normalize_mlp_params(params: Dict[str, Any]) -> Dict[str, Any]:
+            """Normalize MLP params from Optuna into sklearn format."""
+            if self.args.model_type != 'mlp':
+                return params
+            if 'n_layers' in params:
+                n_layers = params.pop('n_layers')
+                layers = []
+                for i in range(n_layers):
+                    layers.append(params.pop(f"n_units_l{i}"))
+                params['hidden_layer_sizes'] = tuple(layers)
+            if 'max_iter' not in params:
+                params['max_iter'] = self.args.mlp_max_iter
+            return params
         
         # Save all best params to a JSON file for record-keeping
         best_params_path = os.path.join(self.args.result_dir, "optuna_best_params.json")
@@ -866,27 +1205,84 @@ class MLTrainingPipeline:
             print(f"[{now()}] Warning: Failed to aggregate Optuna CV results. Error: {e}")
         
         # Reconstruct and clean parameters for MLP final model training
-        if self.args.model_type == 'mlp':
-            # Optuna's best_params dictionary contains the raw suggested values
-            # (e.g., 'n_layers', 'n_units_l0'). We need to convert this into
-            # the 'hidden_layer_sizes' tuple that MLPRegressor expects.
-            if 'n_layers' in best_params:
-                n_layers = best_params.pop('n_layers')
-                layers = []
-                for i in range(n_layers):
-                    # Use .pop() to remove the key, cleaning the dict for the next step
-                    layers.append(best_params.pop(f"n_units_l{i}"))
-                best_params['hidden_layer_sizes'] = tuple(layers)
+        best_params = normalize_mlp_params(best_params)
 
-            # Ensure max_iter is preserved in the final parameters
-            if 'max_iter' not in best_params:
-                best_params['max_iter'] = self.args.mlp_max_iter
+        trial_fold_records = self._collect_optuna_trial_fold_test_r2()
+        best_test_trial_num = None
+        best_test_trial_mean = None
+        best_test_trial_params = None
+
+        if trial_fold_records:
+            trial_scores = {}
+            for rec in trial_fold_records:
+                trial_scores.setdefault(rec["trial_num"], []).append(rec["avg_test_r2"])
+            trial_mean_scores = {t: float(np.mean(vals)) for t, vals in trial_scores.items()}
+            best_test_trial_num = max(trial_mean_scores, key=trial_mean_scores.get)
+            best_test_trial_mean = trial_mean_scores[best_test_trial_num]
+            print(f"[{now()}] Best Trial by TEST mean R2: Trial {best_test_trial_num} (mean R2: {best_test_trial_mean:.4f})")
+
+            trial_for_best_test = next(
+                (t for t in study.trials if t.number == best_test_trial_num),
+                None
+            )
+            if trial_for_best_test:
+                best_test_trial_params = normalize_mlp_params(trial_for_best_test.params.copy())
 
         if self.args.cross_validate:
-            # If cross-validation is enabled, run CV with best params to get uncertainty stats
+            # If cross-validation is enabled, run CV with best params for statistical reporting
             print(f"[{now()}] Running final cross-validation with best Optuna params for statistical reporting...")
-            # Use a distinctive name so we don't overwrite the all-trials summary
-            self._run_cross_validation(model_params=best_params, cv_results_filename='best_model_cross_validation_results.csv')
+            # Use a distinctive name to avoid overwriting the closest-to-mean outputs
+            self._run_cross_validation(
+                model_params=best_params,
+                cv_results_filename='best_model_cross_validation_results.csv',
+                closest_model_save_dir_name='best_params_cv_evaluation',
+                selection_metric='val'
+            )
+
+        if best_test_trial_params is None:
+            print(f"[{now()}] Warning: falling back to Optuna best params for closest-to-mean selection.")
+            best_test_trial_params = best_params
+
+        print(f"[{now()}] Re-running cross-validation for Best Trial (TEST mean) selection...")
+        self._run_cross_validation(
+            model_params=best_test_trial_params,
+            cv_results_filename='best_trial_test_mean_cv_results.csv',
+            closest_model_save_dir_name='closest_to_mean_evaluation',
+            selection_metric='test'
+        )
+
+        if trial_fold_records:
+            global_mean_target = float(np.mean([r["avg_test_r2"] for r in trial_fold_records]))
+            closest_rec = min(
+                trial_fold_records,
+                key=lambda r: abs(r["avg_test_r2"] - global_mean_target)
+            )
+            global_mean_trial = closest_rec["trial_num"]
+            global_mean_fold = closest_rec["fold_num"]
+            closest_val = closest_rec["avg_test_r2"]
+
+            print(f"[{now()}] Global Mean (trial×fold TEST R2): {global_mean_target:.4f}")
+            print(f"[{now()}] Closest Trial/Fold: Trial {global_mean_trial} Fold {global_mean_fold} (test R2: {closest_val:.4f})")
+
+            trial_for_global_mean = next(
+                (t for t in study.trials if t.number == global_mean_trial),
+                None
+            )
+            if trial_for_global_mean:
+                global_mean_params = normalize_mlp_params(trial_for_global_mean.params.copy())
+                print(f"[{now()}] Re-running cross-validation for Global Mean Trial/Fold selection...")
+                self._run_cross_validation(
+                    model_params=global_mean_params,
+                    cv_results_filename='global_mean_test_cv_results.csv',
+                    closest_model_save_dir_name='closest_to_global_mean_trial_fold',
+                    target_fold_mean_r2=global_mean_target,
+                    forced_fold_num=global_mean_fold,
+                    selection_metric='test'
+                )
+            else:
+                print(f"[{now()}] Warning: global mean trial {global_mean_trial} not found or incomplete.")
+        else:
+            print(f"[{now()}] No trial-fold test R2 data found for global-mean selection.")
             
         # ALWAYS Train final model with best Optuna params to produce the standard best model predictions (train/val/test)
         print(f"[{now()}] Training final model with best Optuna params...")

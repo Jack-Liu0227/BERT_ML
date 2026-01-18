@@ -89,18 +89,33 @@ class MLEvaluator(BaseEvaluator):
         # --- Inverse transform predictions and true values if scaler_y is provided ---
         if scaler_y:
             print("[MLEvaluator] scaler_y provided, performing inverse transform on predictions and true values.")
+            # Ensure data is 2D before inverse transform
+            train_true_2d = train_data['y'].reshape(-1, 1) if train_data['y'].ndim == 1 else train_data['y']
+            test_true_2d = test_data['y'].reshape(-1, 1) if test_data['y'].ndim == 1 else test_data['y']
+            
             train_pred = scaler_y.inverse_transform(train_pred)
-            train_true = scaler_y.inverse_transform(train_data['y'])
+            train_true = scaler_y.inverse_transform(train_true_2d)
             test_pred = scaler_y.inverse_transform(test_pred)
-            test_true = scaler_y.inverse_transform(test_data['y'])
+            test_true = scaler_y.inverse_transform(test_true_2d)
+            
             if val_data:
+                val_true_2d = val_data['y'].reshape(-1, 1) if val_data['y'].ndim == 1 else val_data['y']
                 val_pred = scaler_y.inverse_transform(val_pred)
-                val_true = scaler_y.inverse_transform(val_data['y'])
+                val_true = scaler_y.inverse_transform(val_true_2d)
         else:
             train_true = train_data['y']
             test_true = test_data['y']
             if val_data:
                 val_true = val_data['y']
+        
+        # Ensure all arrays are 2D for consistent DataFrame creation
+        if train_true.ndim == 1: train_true = train_true.reshape(-1, 1)
+        if train_pred.ndim == 1: train_pred = train_pred.reshape(-1, 1)
+        if test_true.ndim == 1: test_true = test_true.reshape(-1, 1)
+        if test_pred.ndim == 1: test_pred = test_pred.reshape(-1, 1)
+        if val_data:
+            if val_true.ndim == 1: val_true = val_true.reshape(-1, 1)
+            if val_pred.ndim == 1: val_pred = val_pred.reshape(-1, 1)
 
 
         # --- Compute, Print, and Save Metrics ---
@@ -132,10 +147,40 @@ class MLEvaluator(BaseEvaluator):
 
         # --- Save Predictions ---
         if save_predictions:
-            self.save_predictions(train_true, train_pred, f'{prefix}_train', self.target_names, self.predictions_dir, dataset_name='Train')
-            self.save_predictions(test_true, test_pred, f'{prefix}_test', self.target_names, self.predictions_dir, dataset_name='Test')
+            # Only save combined all_predictions.csv (no separate files)
+            print("[MLEvaluator] Saving combined all_predictions.csv...")
+            combined_dfs = []
+            
+            # Train set
+            train_df = pd.DataFrame()
+            train_df['Dataset'] = ['Train'] * len(train_true)  # Set Dataset column first
+            for i, target_name in enumerate(self.target_names):
+                train_df[f'{target_name}_Actual'] = train_true[:, i]
+                train_df[f'{target_name}_Predicted'] = train_pred[:, i]
+            combined_dfs.append(train_df)
+            
+            # Validation set
             if val_data:
-                self.save_predictions(val_true, val_pred, f'{prefix}_val', self.target_names, self.predictions_dir, dataset_name='Validation')
+                val_df = pd.DataFrame()
+                val_df['Dataset'] = ['Validation'] * len(val_true)  # Set Dataset column first
+                for i, target_name in enumerate(self.target_names):
+                    val_df[f'{target_name}_Actual'] = val_true[:, i]
+                    val_df[f'{target_name}_Predicted'] = val_pred[:, i]
+                combined_dfs.append(val_df)
+            
+            # Test set
+            test_df = pd.DataFrame()
+            test_df['Dataset'] = ['Test'] * len(test_true)  # Set Dataset column first
+            for i, target_name in enumerate(self.target_names):
+                test_df[f'{target_name}_Actual'] = test_true[:, i]
+                test_df[f'{target_name}_Predicted'] = test_pred[:, i]
+            combined_dfs.append(test_df)
+            
+            # Combine and save
+            all_predictions_df = pd.concat(combined_dfs, ignore_index=True)
+            all_pred_path = os.path.join(self.predictions_dir, f'{prefix}_all_predictions.csv')
+            all_predictions_df.to_csv(all_pred_path, index=False)
+            print(f"[MLEvaluator] Saved combined predictions to {all_pred_path}")
         
         # --- Generate and Save Plots ---
         print("\n[MLEvaluator] Generating and saving plots...")
