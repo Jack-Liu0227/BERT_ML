@@ -6,6 +6,7 @@ import os
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 from pathlib import Path
 from sklearn.metrics import r2_score
 import seaborn as sns
@@ -322,7 +323,14 @@ def plot_model_comparison(stats_df: pd.DataFrame, output_dir: str):
         if not data_props:
             return
 
-        x = np.arange(len(model_order))
+        # Keep only models that exist in current data to avoid shape mismatches
+        model_order_present = [
+            m for m in model_order if m in data_df['model'].unique()
+        ]
+        if not model_order_present:
+            return
+
+        x = np.arange(len(model_order_present))
         group_width = 0.8
         bar_width = group_width / max(len(data_props), 1)
 
@@ -334,7 +342,7 @@ def plot_model_comparison(stats_df: pd.DataFrame, output_dir: str):
                 continue
 
             # ???????????????????????????
-            prop_data = prop_data.set_index('model').reindex(model_order).reset_index()
+            prop_data = prop_data.set_index('model').reindex(model_order_present).reset_index()
             prop_data = prop_data.dropna(subset=['mean'])
             if prop_data.empty:
                 continue
@@ -357,10 +365,18 @@ def plot_model_comparison(stats_df: pd.DataFrame, output_dir: str):
             )
 
         plt.xlabel('Predictive models', fontweight='bold', fontsize=18)
-        plt.ylabel('R??', fontweight='bold', fontsize=18)
+        plt.ylabel('R\u00b2', fontweight='bold', fontsize=18)
         plt.ylim(0, 1.0)
-        plt.xticks(x, model_order, fontsize=16)
+        plt.xticks(x, model_order_present, fontsize=16)
         plt.yticks(fontsize=16)
+        ax = plt.gca()
+        ax.yaxis.set_major_locator(MultipleLocator(0.2))
+        ax.yaxis.set_minor_locator(MultipleLocator(0.1))
+        ax.tick_params(axis='both', which='both', direction='in')
+        ax.tick_params(axis='y', which='major', length=6, width=1.5)
+        ax.tick_params(axis='y', which='minor', length=3, width=1.5)
+        for spine in ax.spines.values():
+            spine.set_linewidth(1.5)
         plt.grid(axis='y', alpha=0.3, linestyle='--')
         plt.legend(frameon=True, fontsize=12, edgecolor='black')
 
@@ -382,90 +398,124 @@ def plot_model_comparison(stats_df: pd.DataFrame, output_dir: str):
     _plot_single_comparison(df_all, "AllTrials")
 
 
-def select_best_model_representative(all_results_df: pd.DataFrame, property_name: str) -> Tuple[str, Path, float]:
+def select_best_model_representative(all_results_df: pd.DataFrame, property_name: str) -> Tuple[str, Path, float, Path, float, Path, float]:
     """
-    选择性能最好的模型，并从中选择最接近平均值的结果
+    ????????????????????????
     
     Args:
-        all_results_df: 所有结果的DataFrame
-        property_name: 目标属性名称
+        all_results_df: ?????DataFrame
+        property_name: ??????
         
     Returns:
-        (最佳模型名, 代表性文件路径, R2值)
+        (?????, ??Trial??????, R2?, ??Trial*Fold??????, R2?, ??????????, R2?)
     """
-    # 筛选指定属性的数据
+    # ?????????
     prop_data = all_results_df[all_results_df['property'] == property_name]
-    
-    # 计算每个模型的平均R2
-    model_means = prop_data.groupby('model')['r2'].mean().sort_values(ascending=False)
+
+    # ?????Trial?????????
+    prop_data_best_trials = prop_data[~prop_data['model'].str.contains("All Trials")]
+
+    # ?????????R2
+    model_means = prop_data_best_trials.groupby('model')['r2'].mean().sort_values(ascending=False)
     
     if len(model_means) == 0:
-        raise ValueError(f"未找到属性 {property_name} 的数据")
+        raise ValueError(f"????? {property_name} ???")
     
-    # 选择最佳模型
+    # ??????
     best_model = model_means.index[0]
     best_mean_r2 = model_means.iloc[0]
     
-    print(f"\n属性 {property_name}:")
-    print(f"  性能最好的模型: {best_model} (平均 R² = {best_mean_r2:.4f})")
+    print(f"\n?? {property_name}:")
+    print(f"  ???????: {best_model} (?? R? = {best_mean_r2:.4f})")
     
-    # 从最佳模型中选择最接近平均值的文件
-    best_model_data = prop_data[prop_data['model'] == best_model]
+    # ????????????????????Trial?
+    best_model_data = prop_data_best_trials[prop_data_best_trials['model'] == best_model]
     mean_r2 = best_model_data['r2'].mean()
     
-    # 找到最接近平均值的结果
+    # ???????????
     closest_idx = (best_model_data['r2'] - mean_r2).abs().idxmin()
     representative_file = best_model_data.loc[closest_idx, 'file_path']
     representative_r2 = best_model_data.loc[closest_idx, 'r2']
     
-    print(f"  选择的代表性结果: R² = {representative_r2:.4f} (接近平均值 {mean_r2:.4f})")
-    print(f"  文件路径: {representative_file}")
-    
-    return best_model, Path(representative_file), representative_r2
+    print(f"  ???????? R? = {representative_r2:.4f} (????? {mean_r2:.4f})")
+    print(f"  ????: {representative_file}")
+
+    # ??Trial*Fold??????
+    mean_model_tag = f"{best_model} (All Trials)"
+    mean_model_data = prop_data[prop_data['model'] == mean_model_tag]
+    if mean_model_data.empty:
+        mean_model_data = best_model_data.copy()
+    mean_model_r2 = mean_model_data['r2'].mean()
+    mean_model_idx = (mean_model_data['r2'] - mean_model_r2).abs().idxmin()
+    mean_model_file = mean_model_data.loc[mean_model_idx, 'file_path']
+    mean_model_repr_r2 = mean_model_data.loc[mean_model_idx, 'r2']
+
+    # ???????????????Trial*Fold?
+    best_single_idx = mean_model_data['r2'].idxmax()
+    best_single_file = mean_model_data.loc[best_single_idx, 'file_path']
+    best_single_r2 = mean_model_data.loc[best_single_idx, 'r2']
+
+    return (
+        best_model,
+        Path(representative_file),
+        representative_r2,
+        Path(mean_model_file),
+        mean_model_repr_r2,
+        Path(best_single_file),
+        best_single_r2,
+    )
 
 
 def plot_diagonal_chart(file_path: Path, property_name: str, model_name: str, 
-                       r2_value: float, output_dir: str):
+                       r2_value: float, output_dir: str,
+                       output_prefix: str = "best_model_diagonal"):
     """
-    绘制对角线图 (预测值 vs 实际值)
+    ?????? (??? vs ???)
     
     Args:
-        file_path: CSV文件路径
-        property_name: 属性名称
-        model_name: 模型名称
-        r2_value: R2值
-        output_dir: 输出目录
+        file_path: CSV????
+        property_name: ????
+        model_name: ????
+        r2_value: R2?
+        output_dir: ????
     """
     df = pd.read_csv(file_path)
     
-    # 只保留测试集数据
+    # Prefer Test split, fall back to other common split names if needed
     if 'Dataset' in df.columns:
-        df = df[df['Dataset'] == 'Test'].copy()
+        preferred_splits = ['Test', 'Validation', 'Valid', 'Val', 'test', 'validation', 'val']
+        split_used = None
+        for split in preferred_splits:
+            if (df['Dataset'] == split).any():
+                split_used = split
+                break
+        if split_used:
+            df = df[df['Dataset'] == split_used].copy()
     
-    # 查找实际值和预测值列
+    # ??????????
     actual_col = f"{property_name}_Actual"
     pred_col = f"{property_name}_Predicted"
     
     if actual_col not in df.columns or pred_col not in df.columns:
-        print(f"警告: 未找到 {property_name} 的列")
+        print(f"??: ??? {property_name} ??")
         return
     
-    # 移除缺失值
+    # ?????
     valid_df = df[[actual_col, pred_col]].dropna()
     
     if len(valid_df) == 0:
-        print(f"警告: 没有有效数据")
+        print(f"??: ??????")
         return
     
-    # 绘制对角线图
+    # ??????
     plt.figure(figsize=(8, 8))
     
-    # 散点图
+    # ???
     plt.scatter(valid_df[actual_col], valid_df[pred_col], 
                alpha=0.6, s=80, edgecolors='black', linewidth=0.8,
                c='#4CAF50', label='Test Set Predictions')
     
-    # 绘制对角线 (y=x)
+    # ????? (y=x)
     min_val = min(valid_df[actual_col].min(), valid_df[pred_col].min())
     max_val = max(valid_df[actual_col].max(), valid_df[pred_col].max())
     margin = (max_val - min_val) * 0.05
@@ -473,29 +523,32 @@ def plot_diagonal_chart(file_path: Path, property_name: str, model_name: str,
             [min_val - margin, max_val + margin], 
             'r--', linewidth=2.5, label='Perfect Prediction (y=x)')
     
-    # 设置标签和标题
+    # ???????
     property_label = property_name.replace('_', ' ')
     plt.xlabel(f'Experimental {property_label}', fontsize=16, fontweight='bold')
     plt.ylabel(f'Predicted {property_label}', fontsize=16, fontweight='bold')
-    plt.title(f'{model_name} - {property_label}\nR² = {r2_value:.4f}', 
-             fontsize=18, fontweight='bold')
+    plt.title(
+        f"{model_name} - {property_label}\nR\u00b2 = {r2_value:.4f}",
+        fontsize=18,
+        fontweight='bold',
+    )
     
     plt.legend(loc='upper left', fontsize=14, frameon=True, 
               edgecolor='black', fancybox=False)
     plt.grid(True, alpha=0.3, linestyle='--')
     
-    # 设置相等的坐标轴比例
+    # ??????????
     plt.axis('equal')
     plt.xlim(min_val - margin, max_val + margin)
     plt.ylim(min_val - margin, max_val + margin)
     
     plt.tight_layout()
     
-    # 保存图表
+    # ????
     safe_prop_name = property_name.replace('(', '').replace(')', '').replace('%', 'pct')
-    output_path = Path(output_dir) / f"best_model_diagonal_{safe_prop_name}.png"
+    output_path = Path(output_dir) / f"{output_prefix}_{safe_prop_name}.png"
     plt.savefig(output_path, dpi=300, bbox_inches='tight')
-    print(f"保存对角线图: {output_path}")
+    print(f"??????: {output_path}")
     plt.close()
 
 
@@ -577,7 +630,15 @@ def process_single_directory(base_dir: str, output_dir: str):
     
     for prop in properties:
         try:
-            best_model, repr_file, repr_r2 = select_best_model_representative(
+            (
+                best_model,
+                repr_file,
+                repr_r2,
+                mean_file,
+                mean_r2,
+                best_single_file,
+                best_single_r2,
+            ) = select_best_model_representative(
                 all_results_df, prop
             )
             
@@ -588,13 +649,39 @@ def process_single_directory(base_dir: str, output_dir: str):
                 'file_path': str(repr_file)
             })
             
-            # 记录最佳模型信息
+
+            # record best model
             best_models_info[prop] = best_model
-            
-            # 绘制对角线图
-            plot_diagonal_chart(repr_file, prop, best_model, repr_r2, output_dir)
-            
-            # 复制代表性文件
+
+            plot_diagonal_chart(
+                repr_file,
+                prop,
+                best_model,
+                repr_r2,
+                output_dir,
+                output_prefix="best_model_diagonal",
+            )
+
+            plot_diagonal_chart(
+                mean_file,
+                prop,
+                best_model,
+                mean_r2,
+                output_dir,
+                output_prefix="mean_model_diagonal",
+            )
+
+            plot_diagonal_chart(
+                best_single_file,
+                prop,
+                best_model,
+                best_single_r2,
+                output_dir,
+                output_prefix="best_single_diagonal",
+            )
+
+
+
             safe_prop_name = prop.replace('(', '').replace(')', '').replace('%', 'pct')
             dst_path = Path(output_dir) / f"best_model_{best_model}_{safe_prop_name}.csv"
             shutil.copy2(repr_file, dst_path)

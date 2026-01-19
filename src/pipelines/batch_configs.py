@@ -40,55 +40,55 @@ from typing import Dict, Any, List
 
 ALLOY_CONFIGS = {
     # 钛合金 / Titanium Alloys
-    # "Ti": {
-    #     "raw_data": "datasets/Ti_alloys/titanium.csv",
-    #     "targets": ["UTS(MPa)", "El(%)"],
-    #     "processing_cols": [
-    #         "Solution Temperature(℃)", "Solution Time(h)",
-    #         "Aging Temperature(℃)", "Aging Time(h)",
-    #         "Thermo-Mechanical Treatment Temperature(℃)", "Deformation(%)"
-    #     ],
-    #     "processing_text_column": "Processing_Description",
-    #     "description": "钛合金力学性能数据集 / Titanium alloy mechanical properties dataset"
-    # },
+    "Ti": {
+        "raw_data": "datasets/Ti_alloys/titanium.csv",
+        "targets": ["UTS(MPa)", "El(%)"],
+        "processing_cols": [
+            "Solution Temperature(℃)", "Solution Time(h)",
+            "Aging Temperature(℃)", "Aging Time(h)",
+            "Thermo-Mechanical Treatment Temperature(℃)", "Deformation(%)"
+        ],
+        "processing_text_column": "Processing_Description",
+        "description": "钛合金力学性能数据集 / Titanium alloy mechanical properties dataset"
+    },
 
-    # # # 铝合金 / Aluminum Alloys
-    # "Al": {
-    #     "raw_data": "datasets/Al_Alloys/aluminum.csv",
-    #     "targets": ["UTS(MPa)"],
-    #     "processing_cols": [
-    #         "ST1", "TIME1", "ST2", "TIME2", "ST3", "TIME3", 
-    #         "Cold_Deformation_percent", 
-    #         "First_Aging_Temp_C", "First_Aging_Time_h", 
-    #         "Second_Aging_Temp_C", "Second_Aging_Time_h", 
-    #         "Third_Aging_Temp_C", "Third_Aging_Time_h"
-    #     ],
-    #     "processing_text_column": "Processing_Description",
-    #     "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset"
-    # },
+    # # 铝合金 / Aluminum Alloys
+    "Al": {
+        "raw_data": "datasets/Al_Alloys/aluminum.csv",
+        "targets": ["UTS(MPa)"],
+        "processing_cols": [
+            "ST1", "TIME1", "ST2", "TIME2", "ST3", "TIME3", 
+            "Cold_Deformation_percent", 
+            "First_Aging_Temp_C", "First_Aging_Time_h", 
+            "Second_Aging_Temp_C", "Second_Aging_Time_h", 
+            "Third_Aging_Temp_C", "Third_Aging_Time_h"
+        ],
+        "processing_text_column": "Processing_Description",
+        "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset"
+    },
 
-    # "HEA_half": {
-    #     "raw_data": "datasets/HEA_data/hea.csv",
-    #     "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
-    #     "processing_cols": [
-    #         "Hom_Temp(K)", "CR(%)",
-    #         "recrystalize temperature/K", "recrystalize time/mins",
-    #         "Anneal_Temp(K)", "Anneal_Time(h)",
-    #         "aging temperature/K", "aging time/hours"
-    #     ],
-    #     "processing_text_column": "Processing_Description",
-    #     "description": "高熵合金室温力学性能数据集的一半 / HEA room temperature mechanical properties dataset (half)"
-    # },
+    "HEA_half": {
+        "raw_data": "datasets/HEA_data/hea.csv",
+        "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
+        "processing_cols": [
+            "Hom_Temp(K)", "CR(%)",
+            "recrystalize temperature/K", "recrystalize time/mins",
+            "Anneal_Temp(K)", "Anneal_Time(h)",
+            "aging temperature/K", "aging time/hours"
+        ],
+        "processing_text_column": "Processing_Description",
+        "description": "高熵合金室温力学性能数据集的一半 / HEA room temperature mechanical properties dataset (half)"
+    },
 
 
-    # # 钢铁 / Steel
-    # "Steel": {
-    #     "raw_data": "datasets/Steel/steel.csv",
-    #     "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
-    #     "processing_cols": [],  # Steel数据集的工艺参数列需要根据具体数据确定
-    #     "processing_text_column": "Processing_Description",
-    #     "description": "钢铁力学性能数据集 / Steel mechanical properties dataset"
-    # },
+    # 钢铁 / Steel
+    "Steel": {
+        "raw_data": "datasets/Steel/steel.csv",
+        "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
+        "processing_cols": [],  # Steel数据集的工艺参数列需要根据具体数据确定
+        "processing_text_column": "Processing_Description",
+        "description": "钢铁力学性能数据集 / Steel mechanical properties dataset"
+    },
 
 # 高熵合金腐蚀 / HEA Corrosion
     "HEA_corrosion": {
@@ -166,7 +166,7 @@ BATCH_CONFIGS = {
         "use_element_embedding": False,
         "use_process_embedding": False,
         "use_temperature": False,
-        "models":  ["xgboost", "sklearn_rf","lightgbm", "mlp","catboost"],# ["catboost"],  # 5个模型 ,
+        "models": ["xgboost", "sklearn_rf","lightgbm", "mlp","catboost"], # 5个模型 ,["catboost"],  
         "use_nn": False,
         "cross_validate": True,
         "num_folds": 9,

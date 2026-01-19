@@ -210,6 +210,9 @@ class MLShapAnalyzer(BaseEvaluator):
             # Check if the model is CatBoost and handle it specially to avoid crashes
             model_class_name = self.model.__class__.__name__
             is_catboost = 'CatBoost' in model_class_name or 'catboost' in model_class_name.lower()
+            if is_catboost and len(self.target_names) > 1:
+                print("[SHAP Analyzer] Skipping SHAP for CatBoost multi-output models to avoid crashes.")
+                return
             
             # For tree-based models like XGBoost and RandomForest, use the faster TreeExplainer.
             # For other models like SVR, KernelExplainer is used.

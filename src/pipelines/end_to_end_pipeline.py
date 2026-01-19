@@ -142,7 +142,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     # ========== 评估配置 / Evaluation Configuration ==========
     parser.add_argument('--evaluate_after_train', action='store_true', default=True,
                         help='训练后评估 / Evaluate after training')
-    parser.add_argument('--run_shap_analysis', action='store_true', default=True,
+    parser.add_argument('--run_shap_analysis', action='store_true', default=False,
                         help='运行SHAP分析 / Run SHAP analysis')
     
     return parser

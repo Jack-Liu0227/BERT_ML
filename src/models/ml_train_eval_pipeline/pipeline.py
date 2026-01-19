@@ -13,6 +13,7 @@ from sklearn.model_selection import KFold, train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.multioutput import MultiOutputRegressor
 from sklearn.metrics import mean_squared_error, r2_score, mean_absolute_error
+import shutil
 
 try:
     # 尝试相对导入（当作为模块运行时）
@@ -168,7 +169,7 @@ class MLTrainingPipeline:
                 'l2_leaf_reg': trial.suggest_float('l2_leaf_reg', 1e-3, 10.0, log=True),
                 'random_seed': self.args.random_state,
                 'verbose': 0,
-                'thread_count': -1
+                'thread_count': 4
             }
         elif self.trainer_model_type == 'rf':
             model_params = {
@@ -738,15 +739,18 @@ class MLTrainingPipeline:
             
             # SHAP
             if self.args.run_shap_analysis:
-                shap_result_dir = os.path.join(closest_result_dir, "SHAP_Analysis")
-                os.makedirs(shap_result_dir, exist_ok=True)
-                analyzer = MLShapAnalyzer(
-                    model=closest_model,
-                    feature_names=self.feature_names,
-                    target_names=self.args.target_columns,
-                    result_dir=shap_result_dir
-                )
-                analyzer.analyze(self.test_data['X'])
+                try:
+                    shap_result_dir = os.path.join(closest_result_dir, "SHAP_Analysis")
+                    os.makedirs(shap_result_dir, exist_ok=True)
+                    analyzer = MLShapAnalyzer(
+                        model=closest_model,
+                        feature_names=self.feature_names,
+                        target_names=self.args.target_columns,
+                        result_dir=shap_result_dir
+                    )
+                    analyzer.analyze(self.test_data['X'])
+                except Exception as e:
+                    print(f"[{now()}] Warning: SHAP analysis failed. This is common on Windows with some models. Continuing pipeline... Error: {e}")
             
             # Copy Predictions from Fold
             source_fold_dir = os.path.join(self.args.result_dir, "predictions", f"fold_{closest_fold_num}")
