@@ -246,6 +246,17 @@ class MLTrainer(BaseTrainer):
                 'n_jobs': -1,
                 'verbose': -1,
             }
+        elif self.model_type.lower() == 'catboost':
+            # CatBoost 默认参数
+            return {
+                'iterations': 1000,
+                'learning_rate': 0.1,
+                'depth': 6,
+                'l2_leaf_reg': 3,
+                'random_seed': 42,
+                'verbose': 0,
+                'thread_count': -1
+            }
         else:
             return {}
     

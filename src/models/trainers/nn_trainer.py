@@ -120,11 +120,26 @@ class NNTrainer(BaseTrainer):
         X_tensor = torch.tensor(X, dtype=torch.float32)
         y_tensor = torch.tensor(y, dtype=torch.float32)
         dataset = TensorDataset(X_tensor, y_tensor)
+        
+        # 使用固定的生成器种子以保证 Shuffle 结果可复现
+        # Use fixed generator seed for reproducible shuffling
+        seed = self.training_params.get('random_state', 42)
+        g = torch.Generator()
+        g.manual_seed(seed)
+        
+        def seed_worker(worker_id):
+            worker_seed = seed + worker_id
+            np.random.seed(worker_seed)
+            import random
+            random.seed(worker_seed)
+
         return DataLoader(
             dataset,
             batch_size=batch_size,
             shuffle=shuffle,
-            num_workers=0
+            num_workers=0,
+            generator=g,
+            worker_init_fn=seed_worker
         )
     
     def _save_config(self):

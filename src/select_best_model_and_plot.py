@@ -627,6 +627,7 @@ def process_single_directory(base_dir: str, output_dir: str):
 
     best_results = []
     best_models_info = {}  # 存储每个属性的最佳模型信息
+    repr_folds_info = {}   # 存储每个属性代表性 Fold (接近均值) 的文件路径
     
     for prop in properties:
         try:
@@ -650,8 +651,9 @@ def process_single_directory(base_dir: str, output_dir: str):
             })
             
 
-            # record best model
+            # record best model and representative fold (closest to "All Trials" mean)
             best_models_info[prop] = best_model
+            repr_folds_info[prop] = mean_file
 
             plot_diagonal_chart(
                 repr_file,
@@ -690,6 +692,60 @@ def process_single_directory(base_dir: str, output_dir: str):
         except Exception as e:
             print(f"  警告: 处理属性 {prop} 时出错: {e}")
     
+    # 5. 合并性质均值结果
+    if repr_folds_info:
+        print("\n合并性质代表性预测结果...")
+        merged_df = None
+        
+        for prop, file_path in repr_folds_info.items():
+            temp_df = pd.read_csv(file_path)
+            
+            # 我们只需要 ID, Dataset 和当前性质的列
+            cols_to_keep = ['ID', 'Dataset']
+            p_actual = f"{prop}_Actual"
+            p_pred = f"{prop}_Predicted"
+            
+            if p_actual in temp_df.columns: cols_to_keep.append(p_actual)
+            if p_pred in temp_df.columns: cols_to_keep.append(p_pred)
+            
+            # 过滤存在的列
+            existing_cols = [c for c in cols_to_keep if c in temp_df.columns]
+            temp_df = temp_df[existing_cols]
+            
+            if merged_df is None:
+                merged_df = temp_df
+                # 记录原始文件中的行顺序，以便后续在维持 Dataset 分组时能保持 ID 相对顺序不变
+                merged_df['_original_index'] = range(len(merged_df))
+            else:
+                # 按 ID 合并
+                merged_df = pd.merge(merged_df, temp_df, on='ID', how='outer', suffixes=('', '_extra'))
+                
+                # 清理重复的 Dataset 列
+                if 'Dataset_extra' in merged_df.columns:
+                    # 如果结果中的 Dataset 为空，则填补
+                    merged_df['Dataset'] = merged_df['Dataset'].fillna(merged_df['Dataset_extra'])
+                    merged_df.drop(columns=['Dataset_extra'], inplace=True)
+        
+        if merged_df is not None:
+            # 按照 Dataset 列排序: train, validation, test
+            if 'Dataset' in merged_df.columns:
+                # 定义排序映射（不区分大小写，涵盖常见缩写）
+                dataset_order_map = {
+                    'train': 0, 'training': 0,
+                    'validation': 1, 'val': 1, 'valid': 1,
+                    'test': 2
+                }
+                
+                # 创建临时排序键
+                merged_df['_sort_key'] = merged_df['Dataset'].str.lower().map(dataset_order_map).fillna(3)
+                # 排序并删除临时键。使用 _original_index 而不是 ID 排序，以保持原文件中的顺序。
+                sort_cols = ['_sort_key', '_original_index'] if '_original_index' in merged_df.columns else ['_sort_key']
+                merged_df = merged_df.sort_values(by=sort_cols).drop(columns=['_sort_key', '_original_index'], errors='ignore')
+
+            combined_path = Path(output_dir) / "combined_representative_predictions.csv"
+            merged_df.to_csv(combined_path, index=False, encoding='utf-8-sig')
+            print(f"  成功创建合并预测文件: {combined_path}")
+
     # 保存最佳结果汇总
     if best_results:
         best_summary_df = pd.DataFrame(best_results)
@@ -699,10 +755,11 @@ def process_single_directory(base_dir: str, output_dir: str):
     
     print(f"\n完成! 结果已保存到: {output_dir}\n")
     
-    # 返回最佳模型信息
+    # 返回最佳模型及代表性 Fold 信息
     return {
         'success': True,
-        'best_models': best_models_info,  # {property: model_name}
+        'best_models': best_models_info,    # {property: model_name}
+        'repr_folds': repr_folds_info,      # {property: mean_representative_file_path}
         'properties': list(properties)
     }
 
@@ -776,8 +833,9 @@ def main():
                     alloy_name = f"alloy_{i}"
                     prefix = "default"
                 
-                # 获取最佳模型信息
+# 获取最佳模型和代表性 Fold 信息
                 best_models = result.get('best_models', {})
+                repr_fold_paths = result.get('repr_folds', {})
                 
                 # 为该合金创建子文件夹
                 alloy_summary_dir = summary_dir / alloy_name
@@ -843,6 +901,14 @@ def main():
                     dst = alloy_summary_dir / dst_name
                     shutil.copy2(pred_file, dst)
                     print(f"  数据: {alloy_name}/{dst_name}")
+
+                # 复制合并后的预测文件
+                combined_pred = output_dir / "combined_representative_predictions.csv"
+                if combined_pred.exists():
+                    dst_name = f"{prefix}_combined_predictions.csv" if prefix != "default" else "combined_predictions.csv"
+                    dst = alloy_summary_dir / dst_name
+                    shutil.copy2(combined_pred, dst)
+                    print(f"  合并数据: {alloy_name}/{dst_name}")
                 
             else:
                 failed += 1

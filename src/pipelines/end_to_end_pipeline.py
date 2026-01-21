@@ -58,6 +58,7 @@ from src.pipelines.batch_configs import (
     get_alloy_config,
     list_available_alloys
 )
+from src.feature_engineering.utils import set_seed
 
 
 def str2bool(v):
@@ -447,6 +448,9 @@ def main():
     # 解析命令行参数
     parser = create_argument_parser()
     args = parser.parse_args()
+
+    # 设置随机种子以保证实验可复现
+    set_seed(args.random_state)
 
     try:
         # 验证参数

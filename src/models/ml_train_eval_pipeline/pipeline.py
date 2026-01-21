@@ -38,6 +38,8 @@ except ImportError:
         from src.models.evaluators.ml_evaluator import MLEvaluator
         from src.models.evaluators.shap_analyzer import MLShapAnalyzer
 
+from src.feature_engineering.utils import set_seed
+
 # Map pipeline-facing model names to internal trainer model names
 MODEL_TYPE_MAP = {
     'xgboost': 'xgb',
@@ -85,6 +87,9 @@ class MLTrainingPipeline:
 
     def run(self):
         """Main entry point to run the pipeline."""
+        # 设置全局随机种子
+        set_seed(self.args.random_state)
+        
         self._prepare_data()
         
         if self.args.use_optuna:
@@ -344,7 +349,8 @@ class MLTrainingPipeline:
             direction="maximize", # We want to maximize R2
             study_name=study_name,
             storage=storage_name,
-            load_if_exists=True
+            load_if_exists=True,
+            sampler=optuna.samplers.TPESampler(seed=self.args.random_state)
         )
         
         study.optimize(self._objective, n_trials=self.args.optuna_n_trials, timeout=self.args.optuna_timeout)
@@ -423,7 +429,15 @@ class MLTrainingPipeline:
             model_params = {}
             if self.args.model_type == 'mlp':
                 model_params = {'max_iter': self.args.mlp_max_iter}
-
+        
+        # 确保随机种子被传递给模型参数
+        # Ensure random seed is passed to model parameters
+        if self.trainer_model_type == 'catboost':
+            if 'random_seed' not in model_params:
+                model_params['random_seed'] = self.args.random_state
+        else:
+            if 'random_state' not in model_params:
+                model_params['random_state'] = self.args.random_state
 
         for fold, (train_idx, val_idx) in enumerate(kf.split(self.train_val_data['X'])):
             print(f"[{now()}] --- Starting Fold {fold+1}/{self.args.num_folds} ---")
@@ -833,6 +847,15 @@ class MLTrainingPipeline:
             model_params = {}
             if self.args.model_type == 'mlp':
                 model_params = {'max_iter': self.args.mlp_max_iter}
+
+        # 确保随机种子被传递给模型参数
+        # Ensure random seed is passed to model parameters
+        if self.trainer_model_type == 'catboost':
+            if 'random_seed' not in model_params:
+                model_params['random_seed'] = self.args.random_state
+        else:
+            if 'random_state' not in model_params:
+                model_params['random_state'] = self.args.random_state
 
         trainer = MLTrainer(
             model_type=self.trainer_model_type,

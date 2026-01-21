@@ -1,9 +1,32 @@
 import os
 import logging
+import random
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import torch
 from sklearn.preprocessing import StandardScaler
+
+def set_seed(seed=42):
+    """
+    设置全局随机种子以保证结果可复现
+    Set global random seed for reproducibility
+    """
+    random.seed(seed)
+    np.random.seed(seed)
+    os.environ['PYTHONHASHSEED'] = str(seed)
+    
+    # PyTorch 种子设置
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    
+    # 确定性计算设置（会稍微降低性能，但保证结果一致）
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+    
+    # 记录日志
+    logging.info(f"已设置全局随机种子: {seed}")
 
 def setup_logging(log_name=None, log_dir=None):
     """

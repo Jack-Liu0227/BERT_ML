@@ -82,6 +82,7 @@ from src.pipelines.batch_configs import (
     get_alloy_config,
     list_available_alloys
 )
+from src.feature_engineering.utils import set_seed
 
 # 配置日志
 # 创建日志格式化器
@@ -948,6 +949,9 @@ def main():
     """主函数"""
     parser = create_argument_parser()
     args = parser.parse_args()
+    
+    # 设置随机种子
+    set_seed(args.random_state)
     
     # 初始化进度管理器
     progress_manager = ProgressManager()

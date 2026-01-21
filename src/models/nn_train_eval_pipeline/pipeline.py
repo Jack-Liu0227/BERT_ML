@@ -23,6 +23,7 @@ from ..base.alloys_nn import AlloyNN
 from ..trainers import TrainerFactory
 from ..evaluators import EvaluatorFactory, AlloysEvaluator
 from ..evaluators.base_evaluator import BaseEvaluator
+from src.feature_engineering.utils import set_seed
 
 
 class TrainingPipeline:
@@ -80,6 +81,9 @@ class TrainingPipeline:
 
     def run(self):
         """Main entry point to run the pipeline."""
+        # 设置随机种子以保证结果可复现
+        set_seed(self.args.random_state)
+        
         self._prepare_data()
         
         if self.args.use_optuna:
@@ -722,7 +726,12 @@ class TrainingPipeline:
         """Runs hyperparameter optimization using Optuna."""
         print(f"[{now()}] Starting Optuna hyperparameter optimization...")
         # 使用最小化负R²，等效于最大化R²
-        study = optuna.create_study(direction='minimize', study_name=self.args.study_name, load_if_exists=True)
+        study = optuna.create_study(
+            direction='minimize', 
+            study_name=self.args.study_name, 
+            load_if_exists=True,
+            sampler=optuna.samplers.TPESampler(seed=self.args.random_state)
+        )
         study.optimize(self._objective, n_trials=self.args.n_trials)
 
         print(f"[{now()}] Best trial finished with value: {study.best_value} and params: {study.best_params}")
