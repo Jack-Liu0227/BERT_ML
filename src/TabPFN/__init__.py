@@ -23,6 +23,12 @@ from .train_tabpfn import (
     run_all_experiments
 )
 
+from .finetune_tabpfn import (
+    TabPFNFinetuneTrainer,
+    run_single_finetune_experiment,
+    run_all_finetune_experiments,
+)
+
 __all__ = [
     'TABPFN_CONFIGS',
     'TABPFN_MODEL_CONFIG',
@@ -33,4 +39,7 @@ __all__ = [
     'TabPFNTrainer',
     'run_single_experiment',
     'run_all_experiments',
+    'TabPFNFinetuneTrainer',
+    'run_single_finetune_experiment',
+    'run_all_finetune_experiments',
 ]

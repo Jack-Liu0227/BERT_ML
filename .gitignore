@@ -46,6 +46,20 @@ models/matscibert/
 models/scibert/
 models/steelbert/
 
+datasets/matbench
+
+datasets/matbench_convert/matbench_phonons.csv
+datasets/matbench_convert/matbench_perovskites.csv
+datasets/matbench_convert/matbench_mp_is_metal.csv
+datasets/matbench_convert/matbench_mp_gap.csv
+datasets/matbench_convert/matbench_mp_e_form.csv
+datasets/matbench_convert/matbench_log_kvrh.csv
+datasets/matbench_convert/matbench_log_gvrh.csv
+datasets/matbench_convert/matbench_glass.csv
+datasets/matbench_convert/matbench_expt_is_metal.csv
+datasets/matbench_convert/matbench_expt_gap.csv
+datasets/matbench_convert/matbench_dielectric.csv
+datasets/matbench_convert/convert_progress.json
 # Features (生成的特征文件)
 Features/
 
