@@ -1,277 +1,235 @@
-# TabPFN Model for Alloy Property Prediction
+# TabPFN for Alloy Property Prediction
 
-This module provides [TabPFN](https://github.com/PriorLabs/TabPFN) (Tabular Prior-data Fitted Networks) based models for predicting mechanical properties of various alloy types.
+This directory contains the TabPFN-based workflow used in this project for alloy mechanical property prediction.
 
-## Overview
+## 中文速览
 
-TabPFN is a transformer-based model pre-trained on synthetic data that can perform in-context learning for tabular prediction tasks. This implementation adapts TabPFN for alloy property prediction tasks.
+`src/TabPFN` 提供了面向合金性能预测的 TabPFN 工作流，覆盖基础回归与微调两类用法。
 
-## Supported Datasets
+- 基础回归脚本：`python src/TabPFN/train_tabpfn.py`
+- 微调脚本：`python src/TabPFN/finetune_tabpfn.py`
+- 支持数据集：`Ti`、`Al`、`HEA`、`Steel`
+- 常见预测目标：`YS(MPa)`、`UTS(MPa)`、`El(%)`
+- 基础结果目录：`output/TabPFN_results/`
+- 微调结果目录：`output/TabPFN_finetune_results/`
 
-- **Ti (Titanium Alloys)**: Predicts UTS(MPa), El(%)
-- **Al (Aluminum Alloys)**: Predicts UTS(MPa)
-- **HEA (High Entropy Alloys)**: Predicts YS(MPa), UTS(MPa), El(%)
-- **Steel**: Predicts YS(MPa), UTS(MPa), El(%)
+脚本当前采用交互式运行方式：
 
-## File Structure
+- 输入 `1` 运行全部实验
+- 输入 `2` 选择单个合金和目标列
 
-```
+如果需要本地 checkpoint 微调，仓库根目录已包含 `tabpfn-v2-regressor.ckpt`，也可以通过环境变量 `TABPFN_REGRESSOR_MODEL_PATH` 指定自定义路径。
+
+## 1. What is TabPFN
+
+TabPFN (Tabular Prior-data Fitted Network) is a pretrained transformer for tabular learning. In this project it is used for small and medium-sized alloy datasets to predict targets such as `YS(MPa)`, `UTS(MPa)`, and `El(%)`.
+
+Compared with conventional machine learning pipelines, TabPFN is suitable for:
+
+- fast baseline experiments
+- smaller tabular datasets
+- quick comparison against XGBoost, CatBoost, random forest, and neural networks
+
+This implementation uses `TabPFNRegressor` for direct regression. The default open model version is `v2`.
+
+## 2. Supported datasets
+
+- `Ti`: `UTS(MPa)`, `El(%)`
+- `Al`: `UTS(MPa)`
+- `HEA`: `YS(MPa)`, `UTS(MPa)`, `El(%)`
+- `Steel`: `YS(MPa)`, `UTS(MPa)`, `El(%)`
+
+Dataset paths, feature columns, target columns, and reference prediction CSV paths are defined in [`tabpfn_configs.py`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/tabpfn_configs.py).
+
+## 3. File layout
+
+```text
 src/TabPFN/
-├── __init__.py              # Module initialization
-├── tabpfn_configs.py        # Configuration for all datasets
-├── data_processor.py        # Data loading and preprocessing
-├── train_tabpfn.py          # Model training and evaluation
-└── README.md                # This file
+|- __init__.py
+|- data_processor.py                # Data loading, cleaning, split, scaling
+|- tabpfn_configs.py               # Dataset and model configuration
+|- train_tabpfn.py                 # Direct TabPFN regression experiments
+|- finetune_tabpfn.py              # TabPFN fine-tuning experiments
+|- prediction_alignment.py         # Align exported predictions by ID
+|- align_predictions.py            # Alignment helpers
+|- compare_finetune_results.py     # Fine-tune result comparison
+`- README.md
 ```
 
-## Installation
+## 4. Installation
 
-First, install the required dependencies:
+Install project dependencies first:
 
 ```bash
-pip install tabpfn
-pip install pandas numpy scikit-learn matplotlib
+pip install -r requirements.txt
 ```
 
-## Usage
+If `tabpfn` is not available in your environment, install or upgrade it explicitly:
 
-### Quick Start
+```bash
+pip install -U tabpfn
+```
 
-Run all experiments on all datasets:
+Fine-tuning additionally requires PyTorch with a working CPU or CUDA runtime.
+
+## 5. Quick start
+
+Run from the project root:
 
 ```bash
 cd src/TabPFN
 python train_tabpfn.py
 ```
 
-When prompted, choose:
-- `1` to run all experiments
-- `2` to run a single experiment
+The script is interactive. It will ask you to choose:
 
-### Run Specific Experiment
+- `1`: run all TabPFN experiments for all supported alloys and targets
+- `2`: run one specific alloy-target experiment
+
+Example interactive flow:
+
+```text
+Available options:
+1. Run all experiments
+2. Run single experiment
+
+Enter your choice (1 or 2, default=1): 2
+Enter alloy type (e.g., Ti): Ti
+Enter target column: UTS(MPa)
+```
+
+## 6. Fine-tuning workflow
+
+For fine-tuning, use:
+
+```bash
+cd src/TabPFN
+python finetune_tabpfn.py
+```
+
+This script is also interactive:
+
+- `1`: run all fine-tune experiments
+- `2`: run one alloy-target fine-tune experiment
+
+Default fine-tune parameters are defined in [`finetune_tabpfn.py`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/finetune_tabpfn.py):
+
+- `device="cuda"`
+- `epochs=300`
+- `learning_rate=1e-5`
+- `validation_split_ratio=0.1`
+- `early_stopping=True`
+- `early_stopping_patience=5`
+
+If CUDA is unavailable, the script automatically falls back to CPU.
+
+## 7. Local checkpoint usage
+
+This repository already includes a local checkpoint file at:
+
+- [`tabpfn-v2-regressor.ckpt`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/tabpfn-v2-regressor.ckpt)
+
+`finetune_tabpfn.py` prefers a local open `v2` regressor checkpoint to avoid gated model downloads. It resolves the checkpoint in this order:
+
+1. `TABPFN_REGRESSOR_MODEL_PATH` environment variable
+2. `%APPDATA%\\tabpfn\\tabpfn-v2-regressor.ckpt`
+3. `~/.cache/tabpfn/tabpfn-v2-regressor.ckpt`
+4. `tabpfn-v2-regressor.ckpt` in the current project
+
+If you want to force a custom checkpoint path:
+
+```powershell
+$env:TABPFN_REGRESSOR_MODEL_PATH="D:\path\to\tabpfn-v2-regressor.ckpt"
+python src\TabPFN\finetune_tabpfn.py
+```
+
+## 8. Output files
+
+Direct regression results are saved to:
+
+- `output/TabPFN_results/<Alloy>/`
+- `output/TabPFN_results/summary_results.csv`
+
+Fine-tune results are saved to:
+
+- `output/TabPFN_finetune_results/<Alloy>/`
+- `output/TabPFN_finetune_results/summary_results.csv`
+- `output/TabPFN_finetune_results/<Alloy>/checkpoints/`
+
+Typical generated files include:
+
+- `*_predictions.png`
+- `*_all_predictions.csv`
+- `*_epoch_metrics.csv` for fine-tuning
+- `*_loss_curve.png` and `*_r2_curve.png` for fine-tuning
+
+Prediction CSV files are aligned by `ID` when a reference CSV is configured, which makes cross-model comparison easier.
+
+## 9. Programmatic usage
+
+### Direct regression
 
 ```python
 from pathlib import Path
-from train_tabpfn import run_single_experiment
+from src.TabPFN.train_tabpfn import run_single_experiment
 
-# Set project root path
-base_path = Path(__file__).parent.parent.parent
+base_path = Path(".").resolve()
 
-# Run experiment
 results = run_single_experiment(
-    alloy_type="Ti",          # Choose: "Ti", "Al", "HEA", "Steel"
-    target_col="UTS(MPa)",    # Target property
-    base_path=base_path
-)
-```
-
-### Custom Training
-
-```python
-from tabpfn_configs import get_tabpfn_config
-from train_tabpfn import TabPFNTrainer
-
-# Initialize trainer
-trainer = TabPFNTrainer(
     alloy_type="Ti",
     target_col="UTS(MPa)",
-    base_path="../../.."
-)
-
-# Prepare data
-trainer.prepare_data(scale=True, drop_na=True)
-
-# Train model
-results = trainer.train_classification_for_regression(n_bins=10)
-
-# Plot results
-trainer.plot_predictions(save_path="output/predictions.png")
-```
-
-### Using Data Processor
-
-```python
-from tabpfn_configs import TABPFN_CONFIGS
-from data_processor import TabPFNDataProcessor
-
-# Initialize data processor
-config = TABPFN_CONFIGS["Ti"]
-processor = TabPFNDataProcessor(config)
-
-# Load and process data
-X_train, X_test, y_train, y_test = processor.get_full_pipeline(
-    target_col="UTS(MPa)",
-    base_path="../../..",
-    scale=True,
-    drop_na=True
+    base_path=str(base_path),
 )
 ```
 
-## Configuration
-
-### Dataset Configuration
-
-Edit `tabpfn_configs.py` to modify dataset configurations:
+### Fine-tuning
 
 ```python
-TABPFN_CONFIGS = {
-    "Ti": {
-        "raw_data": "datasets/Ti_alloys/titanium.csv",
-        "targets": ["UTS(MPa)", "El(%)"],
-        "feature_cols": [
-            "Al(wt%)", "Cr(wt%)", ...,  # Element features
-            "Solution Temperature(℃)", ...  # Processing features
-        ],
-        "test_size": 0.3,
-        "random_state": 42
+from pathlib import Path
+from src.TabPFN.finetune_tabpfn import run_single_finetune_experiment
+
+base_path = Path(".").resolve()
+
+results = run_single_finetune_experiment(
+    alloy_type="Steel",
+    target_col="YS(MPa)",
+    base_path=str(base_path),
+    finetune_params={
+        "device": "cuda",
+        "epochs": 100,
+        "learning_rate": 1e-5,
     },
-    ...
-}
+)
 ```
 
-### Model Configuration
+## 10. Notes
 
-```python
-TABPFN_MODEL_CONFIG = {
-    "model_version": "2.5",      # TabPFN version
-    "task_type": "regression",   # Task type
-    "n_bins": 10,                # Number of bins for regression
-}
-```
+- TabPFN is most suitable for relatively small tabular datasets.
+- This module currently uses fixed dataset definitions from `tabpfn_configs.py`.
+- The training scripts apply `scale=True` and `drop_na=True` by default.
+- Exported predictions keep both train and test rows and include the `Dataset` column for separation.
 
-## Output
+## 11. Troubleshooting
 
-Results are saved to `output/TabPFN_results/`:
+### `ImportError: No module named 'tabpfn'`
 
-```
-output/TabPFN_results/
-├── summary_results.csv              # Summary of all experiments
-├── Ti/
-│   ├── UTSMPa_predictions.png      # Prediction plots
-│   └── Elpercent_predictions.png
-├── Al/
-│   └── UTSMPa_predictions.png
-├── HEA/
-│   ├── YSMPa_predictions.png
-│   ├── UTSMPa_predictions.png
-│   └── Elpercent_predictions.png
-└── Steel/
-    ├── YSMPa_predictions.png
-    ├── UTSMPa_predictions.png
-    └── Elpercent_predictions.png
-```
-
-### Summary Results CSV
-
-The `summary_results.csv` contains:
-- Alloy type and target property
-- Training metrics: MAE, RMSE, R², MAPE
-- Test metrics: MAE, RMSE, R², MAPE
-
-## Important Notes
-
-### Regression with TabPFN
-
-TabPFN supports both **classification and regression** tasks. This implementation uses **TabPFNRegressor (v2)** for direct regression prediction, which provides:
-
-1. **Native regression support** - No need for classification workarounds
-2. **Accurate continuous predictions** - Direct prediction of continuous values
-3. **Fast in-context learning** - Pre-trained transformer for quick predictions
-4. **Open access** - v2 model is freely available without authentication
-
-**Note:** We use TabPFN v2 instead of v2.5 because v2.5 requires HuggingFace authentication. v2 is fully open and works out of the box.
-
-The model leverages TabPFN's powerful in-context learning capabilities for accurate property prediction.
-
-### Data Requirements
-
-- **Sample size**: TabPFN works best with small to medium datasets (hundreds to thousands of samples)
-- **Features**: Handles both compositional (element percentages) and processing parameters
-- **Missing values**: Automatically handled by dropping or filling with zeros
-- **Scaling**: Features are standardized using StandardScaler
-
-### Performance Considerations
-
-- TabPFN is fast for small datasets (no traditional training required)
-- May not outperform traditional ML models on all datasets
-- Best suited for:
-  - Quick baseline predictions
-  - Small dataset scenarios
-  - Exploratory analysis
-
-## Example Output
-
-```
-==============================================================
-Processing 钛合金力学性能数据集 / Titanium alloy mechanical properties dataset
-Target: UTS(MPa)
-==============================================================
-Loading data from: datasets/Ti_alloys/titanium.csv
-Data loaded: 235 rows, 20 columns
-Using 15 features
-Final dataset: 235 samples, 15 features
-Target range: [519.00, 1725.00]
-
-Train set: 164 samples
-Test set: 71 samples
-Train/Test split: 70% / 30%
-Features scaled using StandardScaler
-
-==============================================================
-Converting Regression to 10-class Classification
-==============================================================
-Binned into 10 classes
-Fitting classifier...
-Making predictions...
-
-==============================================================
-Evaluation Results
-==============================================================
-
-Training Set:
-  MAE:  45.2341
-  RMSE: 62.8973
-  R²:   0.8234
-  MAPE: 5.67%
-
-Test Set:
-  MAE:  52.1234
-  RMSE: 71.4521
-  R²:   0.7891
-  MAPE: 6.23%
-```
-
-## Troubleshooting
-
-### Import Error
-
-If you get `ImportError: No module named 'tabpfn'`:
 ```bash
-pip install tabpfn
+pip install -U tabpfn
 ```
 
-### CUDA/GPU Issues
+### Fine-tuning is unavailable
 
-TabPFN can use GPU acceleration. If you encounter GPU-related errors:
-```python
-# Force CPU usage
-import os
-os.environ['CUDA_VISIBLE_DEVICES'] = '-1'
+The installed `tabpfn` version may not include `tabpfn.finetuning`. Upgrade the package and confirm that PyTorch is installed correctly.
+
+### CUDA errors
+
+Use CPU instead:
+
+```powershell
+$env:CUDA_VISIBLE_DEVICES="-1"
+python src\TabPFN\finetune_tabpfn.py
 ```
 
-### Memory Issues
+### Checkpoint not found
 
-For large datasets, reduce bin count or sample size:
-```python
-trainer.train_classification_for_regression(n_bins=5)
-```
-
-## References
-
-1. [TabPFN Paper](https://arxiv.org/abs/2207.01848): Hollmann et al., "TabPFN: A Transformer That Solves Small Tabular Classification Problems in a Second"
-2. [TabPFN GitHub](https://github.com/PriorLabs/TabPFN)
-3. [TabPFN Documentation](https://priorlabs.ai/docs/)
-
-## License
-
-This implementation follows the same license as the main project.
+Make sure [`tabpfn-v2-regressor.ckpt`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/tabpfn-v2-regressor.ckpt) exists in the project root, or set `TABPFN_REGRESSOR_MODEL_PATH` to the correct file.
