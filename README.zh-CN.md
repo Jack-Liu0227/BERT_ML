@@ -119,3 +119,6 @@ python -m src.pipelines.run_batch --clear_progress
 - 模型说明：[`src/models/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/models/README.md)
 - 流水线说明：[`src/pipelines/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/pipelines/README.md)
 - TabPFN 说明：[`src/TabPFN/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/README.md)
+## 联系方式
+
+- Email: `liu_yujie@stu.xjtu.edu.cn`
