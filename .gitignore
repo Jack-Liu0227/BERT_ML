@@ -93,4 +93,4 @@ Thumbs.db
 # Specific exclusions requested
 batch_run_20260115_123810.log
 catboost_info
-.batch_progress_extrapolation.json/
+.batch_progress_extrapolation.json/.batch_progress_extrapolation.json
