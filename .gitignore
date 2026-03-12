@@ -62,7 +62,7 @@ datasets/matbench_convert/matbench_dielectric.csv
 datasets/matbench_convert/convert_progress.json
 # Features (生成的特征文件)
 Features/
-
+Features_extrapolation/
 # Output (输出结果)
 output/
 PPT/
@@ -93,3 +93,4 @@ Thumbs.db
 # Specific exclusions requested
 batch_run_20260115_123810.log
 catboost_info
+.batch_progress_extrapolation.json/

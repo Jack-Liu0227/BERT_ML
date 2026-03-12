@@ -3,7 +3,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import pandas as pd
 import seaborn as sns
-from sklearn.metrics import r2_score, mean_squared_error
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from typing import List, Dict, Optional, Tuple
 
 def plot_training_curves(history, save_path, title="Training Curves"):
@@ -224,12 +224,14 @@ def plot_compare_scatter(
         if train_true is not None:
             train_r2 = r2_score(train_true[:, i], train_pred[:, i])
             train_rmse = np.sqrt(mean_squared_error(train_true[:, i], train_pred[:, i]))
-            metric_text += f"Train: R²={train_r2:.3f}, RMSE={train_rmse:.3f}\n"
+            train_mae = mean_absolute_error(train_true[:, i], train_pred[:, i])
+            metric_text += f"Train: R²={train_r2:.3f}, RMSE={train_rmse:.3f}, MAE={train_mae:.3f}\n"
         
         if test_true is not None:
             test_r2 = r2_score(test_true[:, i], test_pred[:, i])
             test_rmse = np.sqrt(mean_squared_error(test_true[:, i], test_pred[:, i]))
-            metric_text += f"Test:  R²={test_r2:.3f}, RMSE={test_rmse:.3f}"
+            test_mae = mean_absolute_error(test_true[:, i], test_pred[:, i])
+            metric_text += f"Test:  R²={test_r2:.3f}, RMSE={test_rmse:.3f}, MAE={test_mae:.3f}"
             
         # Position text at the bottom of the plot
         if metric_text:
@@ -351,18 +353,21 @@ def plot_all_sets_compare_scatter(
         if has_train_data:
             train_r2 = r2_score(train_true[:, i], train_pred[:, i])
             train_rmse = np.sqrt(mean_squared_error(train_true[:, i], train_pred[:, i]))
-            metric_lines.append(f"Train: R²={train_r2:.3f}, RMSE={train_rmse:.3f}")
+            train_mae = mean_absolute_error(train_true[:, i], train_pred[:, i])
+            metric_lines.append(f"Train: R²={train_r2:.3f}, RMSE={train_rmse:.3f}, MAE={train_mae:.3f}")
         
         # Validation metrics if available
         if has_val_data:
             val_r2 = r2_score(val_true[:, i], val_pred[:, i])
             val_rmse = np.sqrt(mean_squared_error(val_true[:, i], val_pred[:, i]))
-            metric_lines.append(f"Val: R²={val_r2:.3f}, RMSE={val_rmse:.3f}")
+            val_mae = mean_absolute_error(val_true[:, i], val_pred[:, i])
+            metric_lines.append(f"Val: R²={val_r2:.3f}, RMSE={val_rmse:.3f}, MAE={val_mae:.3f}")
         
         # Test metrics
         test_r2 = r2_score(test_true[:, i], test_pred[:, i])
         test_rmse = np.sqrt(mean_squared_error(test_true[:, i], test_pred[:, i]))
-        metric_lines.append(f"Test: R²={test_r2:.3f}, RMSE={test_rmse:.3f}")
+        test_mae = mean_absolute_error(test_true[:, i], test_pred[:, i])
+        metric_lines.append(f"Test: R²={test_r2:.3f}, RMSE={test_rmse:.3f}, MAE={test_mae:.3f}")
         
         metric_text = "\n".join(metric_lines)
         # Position text box below the plot area
