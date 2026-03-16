@@ -51,3 +51,20 @@ output\extrapolation_results\<alloy_family>\<dataset>\<target>\<feature_mode>\mo
 
 - 这些脚本原先在 `src` 下，现已迁移到 `Scripts`。
 - `optuna_plotting_scripts_usage.md` 仍然可作为历史脚本说明参考，但命令路径请改为 `python Scripts/...`。
+## Additional Script
+
+- `batch_summarize_tabpfn_extrapolation_results.py`
+  Summarize `output\extrapolation_results_tabpfn`, export train/test CSV summaries,
+  group results by target, and generate interactive overview HTML plots.
+
+Example:
+```bash
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dir "output\extrapolation_results_tabpfn"
+```
+
+Main outputs:
+- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\TABPFN_EXTRAPOLATION_TRAIN_SUMMARY.csv`
+- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\TABPFN_EXTRAPOLATION_TEST_SUMMARY.csv`
+- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\by_target\*.csv`
+- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\plots\overview\*.html`
+- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\plots\overview\overview_dashboard.html`

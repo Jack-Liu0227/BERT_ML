@@ -349,3 +349,5 @@ if __name__ == "__main__":
     main()
 # python -m src.pipelines.run_batch_extrapolation --config experiment1_all_ml_models_extrapolation --dry_run --resume
 # python -m src.pipelines.run_batch_extrapolation --config experiment1_all_ml_models_extrapolation
+# conda activate llm
+# python -m src.pipelines.run_batch_extrapolation --config experiment2a_all_nn_scibert_extrapolation experiment2b_all_nn_steelbert_extrapolation experiment2c_all_nn_matscibert_extrapolation
