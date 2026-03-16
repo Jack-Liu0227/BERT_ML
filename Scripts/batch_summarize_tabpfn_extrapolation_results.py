@@ -2,25 +2,41 @@
 Batch summary script for TabPFN extrapolation experiment results.
 
 The script scans output/extrapolation_results_tabpfn, reads per-case metrics,
-writes compact summary CSV files, and generates comparison plots.
+writes summary CSV files, keeps the overview HTML plots, and exports a unified
+case layout with train/test comparisons plus copied model folders.
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-from pathlib import Path
 import shutil
+from pathlib import Path
 from typing import Dict, List
 
-import numpy as np
+import matplotlib.pyplot as plt
+from matplotlib.ticker import MultipleLocator
 import pandas as pd
 import plotly.express as px
 import plotly.io as pio
 
+
 pio.templates.default = "plotly_white"
+plt.style.use("seaborn-v0_8-white")
+plt.rcParams["font.family"] = "Times New Roman"
+plt.rcParams["font.size"] = 14
+plt.rcParams["axes.labelsize"] = 16
+plt.rcParams["axes.titlesize"] = 18
+plt.rcParams["xtick.labelsize"] = 13
+plt.rcParams["ytick.labelsize"] = 13
+plt.rcParams["legend.fontsize"] = 12
+plt.rcParams["axes.linewidth"] = 1.5
+plt.rcParams["figure.dpi"] = 300
+
 
 METRICS = ["mae", "rmse", "r2"]
+SUMMARY_TABLES_DIRNAME = "00_summary_tables"
+CASES_DIRNAME = "01_alloy_cases"
 
 
 def safe_name(text: str) -> str:
@@ -39,6 +55,26 @@ def load_json(path: Path) -> Dict:
         raise FileNotFoundError(f"Missing JSON file: {path}")
     with path.open("r", encoding="utf-8") as handle:
         return json.load(handle)
+
+
+def save_csv(df: pd.DataFrame, output_path: Path) -> None:
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    df.to_csv(output_path, index=False, encoding="utf-8-sig")
+
+
+def copy_if_exists(src: Path, dst: Path) -> None:
+    if src.exists():
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(src, dst)
+
+
+def copy_tree_if_exists(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst)
 
 
 def find_metric_files(base_dir: Path) -> List[Path]:
@@ -64,6 +100,7 @@ def extract_case_row(metrics_path: Path, base_dir: Path) -> Dict | None:
     train_metrics = payload.get("train", {})
     test_metrics = payload.get("extrapolation_test", {})
     split_summary = payload.get("split_summary", {})
+    model_dir = metrics_path.parent.parent
 
     required = [
         train_metrics.get("mae"),
@@ -81,6 +118,7 @@ def extract_case_row(metrics_path: Path, base_dir: Path) -> Dict | None:
         "alloy_type": payload.get("alloy_type", alloy_type),
         "dataset_name": dataset_name,
         "target_col": payload.get("target_col", target_col),
+        "model": "TabPFN",
         "raw_row_count": payload.get("raw_row_count"),
         "train_n_samples": train_metrics.get("n_samples"),
         "train_mae": train_metrics.get("mae"),
@@ -94,16 +132,19 @@ def extract_case_row(metrics_path: Path, base_dir: Path) -> Dict | None:
         "train_target_max": split_summary.get("train_target_max"),
         "test_target_min": split_summary.get("test_target_min"),
         "test_target_max": split_summary.get("test_target_max"),
-        "case_path": str(metrics_path.parent.parent),
+        "model_dir": str(model_dir),
+        "case_path": str(model_dir),
         "metrics_path": str(metrics_path),
+        "predictions_file": str(model_dir / "predictions" / "all_predictions.csv"),
+        "plot_file": str(model_dir / "plots" / f"{safe_name(target_col)}_predictions.png"),
+        "split_summary_file": str(model_dir / "split_data" / "split_summary.json"),
     }
 
 
 def rows_to_dataframe(rows: List[Dict]) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
-    df = pd.DataFrame(rows)
-    return df.sort_values(["target_col", "alloy_type", "dataset_name"]).reset_index(drop=True)
+    return pd.DataFrame(rows).sort_values(["target_col", "alloy_type", "dataset_name"]).reset_index(drop=True)
 
 
 def build_split_df(summary_df: pd.DataFrame, split: str) -> pd.DataFrame:
@@ -113,6 +154,7 @@ def build_split_df(summary_df: pd.DataFrame, split: str) -> pd.DataFrame:
             "alloy_type": summary_df["alloy_type"],
             "dataset_name": summary_df["dataset_name"],
             "target_col": summary_df["target_col"],
+            "model": summary_df["model"],
             "n_samples": summary_df[f"{prefix}_n_samples"],
             "mae": summary_df[f"{prefix}_mae"],
             "rmse": summary_df[f"{prefix}_rmse"],
@@ -124,14 +166,13 @@ def build_split_df(summary_df: pd.DataFrame, split: str) -> pd.DataFrame:
             "test_target_max": summary_df["test_target_max"],
             "case_path": summary_df["case_path"],
             "metrics_path": summary_df["metrics_path"],
+            "model_dir": summary_df["model_dir"],
+            "predictions_file": summary_df["predictions_file"],
+            "plot_file": summary_df["plot_file"],
+            "split_summary_file": summary_df["split_summary_file"],
         }
     )
     return split_df.sort_values(["target_col", "alloy_type", "dataset_name"]).reset_index(drop=True)
-
-
-def save_csv(df: pd.DataFrame, output_path: Path) -> None:
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_csv(output_path, index=False, encoding="utf-8-sig")
 
 
 def prepare_plot_df(df: pd.DataFrame, metric: str) -> pd.DataFrame:
@@ -146,14 +187,8 @@ def build_overview_figure(df: pd.DataFrame, split: str, metric: str):
         return None
 
     overview_df = prepare_plot_df(df, metric)
-    overview_df["label"] = overview_df["target_col"] + " | " + overview_df["alloy_type"] + " - " + overview_df["dataset_name"]
-    overview_df["hover_text"] = (
-        "Target: " + overview_df["target_col"]
-        + "<br>Alloy: " + overview_df["alloy_type"]
-        + "<br>Dataset: " + overview_df["dataset_name"]
-        + "<br>Samples: " + overview_df["n_samples"].astype(str)
-        + "<br>Raw rows: " + overview_df["raw_row_count"].astype(str)
-        + "<br>Case: " + overview_df["case_path"]
+    overview_df["label"] = (
+        overview_df["target_col"] + " | " + overview_df["alloy_type"] + " - " + overview_df["dataset_name"]
     )
 
     fig = px.bar(
@@ -172,7 +207,6 @@ def build_overview_figure(df: pd.DataFrame, split: str, metric: str):
             "raw_row_count": True,
             "case_path": True,
             "label": False,
-            "hover_text": False,
         },
         category_orders={"label": overview_df["label"].tolist()},
         title=f"TabPFN Extrapolation | All Targets | {split.capitalize()} | {metric.upper()}",
@@ -198,39 +232,6 @@ def plot_overview(df: pd.DataFrame, split: str, metric: str, output_path: Path):
     output_path.parent.mkdir(parents=True, exist_ok=True)
     fig.write_html(output_path, include_plotlyjs="cdn")
     return fig
-
-
-def generate_by_target_outputs(
-    split_df: pd.DataFrame,
-    split: str,
-    output_dir: Path,
-) -> Dict[str, int]:
-    by_target_dir = output_dir / "by_target"
-    counts: Dict[str, int] = {}
-
-    for target_col, group_df in split_df.groupby("target_col", sort=True):
-        safe_target = safe_name(target_col)
-        counts[target_col] = len(group_df)
-        save_csv(group_df, by_target_dir / f"{safe_target}_{split}_summary.csv")
-
-    return counts
-
-
-def generate_overview_plots(train_df: pd.DataFrame, test_df: pd.DataFrame, output_dir: Path) -> None:
-    overview_dir = output_dir / "plots" / "overview"
-    figures: List[tuple[str, str, object]] = []
-    for split_name, split_df in [("train", train_df), ("test", test_df)]:
-        for metric in METRICS:
-            fig = plot_overview(
-                df=split_df,
-                split=split_name,
-                metric=metric,
-                output_path=overview_dir / f"all_targets_{split_name}_{metric}.html",
-            )
-            if fig is not None:
-                figures.append((split_name, metric, fig))
-    if figures:
-        write_overview_dashboard(figures, overview_dir / "overview_dashboard.html")
 
 
 def write_overview_dashboard(figures: List[tuple[str, str, object]], output_path: Path) -> None:
@@ -328,17 +329,141 @@ def write_overview_dashboard(figures: List[tuple[str, str, object]], output_path
     output_path.write_text(html, encoding="utf-8")
 
 
+def generate_overview_plots(train_df: pd.DataFrame, test_df: pd.DataFrame, output_dir: Path) -> None:
+    overview_dir = output_dir / "plots" / "overview"
+    figures: List[tuple[str, str, object]] = []
+    for split_name, split_df in [("train", train_df), ("test", test_df)]:
+        for metric in METRICS:
+            fig = plot_overview(
+                df=split_df,
+                split=split_name,
+                metric=metric,
+                output_path=overview_dir / f"all_targets_{split_name}_{metric}.html",
+            )
+            if fig is not None:
+                figures.append((split_name, metric, fig))
+    if figures:
+        write_overview_dashboard(figures, overview_dir / "overview_dashboard.html")
+
+
 def clean_plot_outputs(output_dir: Path) -> None:
     plots_dir = output_dir / "plots"
-    by_target_plot_dir = plots_dir / "by_target"
-    if by_target_plot_dir.exists():
-        shutil.rmtree(by_target_plot_dir)
-
-    overview_dir = plots_dir / "overview"
-    if overview_dir.exists():
-        for path in overview_dir.iterdir():
+    if plots_dir.exists():
+        for path in plots_dir.rglob("*"):
             if path.is_file() and path.suffix.lower() in {".png", ".html"}:
                 path.unlink()
+
+
+def plot_two_mode_comparison(
+    row: pd.Series,
+    output_path: Path,
+    metric_key: str,
+    ylabel: str,
+) -> None:
+    values = [row[f"train_{metric_key}"], row[f"test_{metric_key}"]]
+    labels = ["Train", "Test"]
+    colors = ["#8ecae6", "#ffb703"]
+
+    fig, ax = plt.subplots(figsize=(7.2, 6.0))
+    ax.bar(labels, values, color=colors, edgecolor="black", linewidth=1.2, width=0.55)
+    ax.set_ylabel(ylabel, fontweight="bold")
+    ax.set_title(f"{row['alloy_type']} / {row['dataset_name']} / {row['target_col']}", fontweight="bold", pad=14)
+    if ylabel == "R2":
+        ax.yaxis.set_major_locator(MultipleLocator(0.5))
+        ax.yaxis.set_minor_locator(MultipleLocator(0.25))
+    ax.tick_params(axis="both", which="both", direction="in")
+    ax.grid(axis="y", alpha=0.3, linestyle="--")
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def build_combined_predictions(summary_df: pd.DataFrame) -> pd.DataFrame | None:
+    combined_df = None
+
+    for _, row in summary_df.iterrows():
+        predictions_path = Path(row["predictions_file"])
+        if not predictions_path.exists():
+            continue
+
+        temp_df = pd.read_csv(predictions_path)
+        if "ID" not in temp_df.columns:
+            temp_df = temp_df.copy()
+            temp_df["ID"] = range(len(temp_df))
+
+        cols_to_keep = ["ID"]
+        if "Dataset" in temp_df.columns:
+            cols_to_keep.append("Dataset")
+        actual_col = f"{row['target_col']}_Actual"
+        pred_col = f"{row['target_col']}_Predicted"
+        if actual_col in temp_df.columns:
+            cols_to_keep.append(actual_col)
+        if pred_col in temp_df.columns:
+            cols_to_keep.append(pred_col)
+        temp_df = temp_df[cols_to_keep].copy()
+
+        if combined_df is None:
+            combined_df = temp_df.copy()
+            combined_df["_original_index"] = range(len(combined_df))
+            continue
+
+        combined_df = pd.merge(combined_df, temp_df, on="ID", how="outer", suffixes=("", "_extra"))
+        if "Dataset_extra" in combined_df.columns:
+            combined_df["Dataset"] = combined_df["Dataset"].fillna(combined_df["Dataset_extra"])
+            combined_df.drop(columns=["Dataset_extra"], inplace=True)
+
+    if combined_df is not None and "Dataset" in combined_df.columns:
+        dataset_order_map = {
+            "train": 0,
+            "training": 0,
+            "validation": 1,
+            "val": 1,
+            "valid": 1,
+            "test": 2,
+        }
+        combined_df["_sort_key"] = combined_df["Dataset"].astype(str).str.lower().map(dataset_order_map).fillna(3)
+        combined_df = combined_df.sort_values(by=["_sort_key", "_original_index"]).drop(
+            columns=["_sort_key", "_original_index"],
+            errors="ignore",
+        )
+
+    return combined_df
+
+
+def export_case_views(summary_df: pd.DataFrame, output_dir: Path) -> None:
+    cases_root = output_dir / CASES_DIRNAME
+
+    for alloy_name, alloy_df in summary_df.groupby("alloy_type"):
+        for dataset_name, dataset_df in alloy_df.groupby("dataset_name"):
+            dataset_dir = cases_root / alloy_name / dataset_name
+            save_csv(
+                dataset_df.sort_values(["target_col"]).reset_index(drop=True),
+                dataset_dir / "dataset_tabpfn_summary.csv",
+            )
+
+            for _, row in dataset_df.sort_values("target_col").iterrows():
+                safe_target = safe_name(str(row["target_col"]))
+                case_dir = dataset_dir / safe_target
+                comparisons_dir = case_dir / "comparisons"
+                artifacts_dir = case_dir / "selected_model_artifacts"
+                model_copy_dir = case_dir / "selected_model_source" / "TabPFN"
+
+                save_csv(pd.DataFrame([row]), case_dir / "case_model_summary.csv")
+                plot_two_mode_comparison(row, comparisons_dir / "two_modes_r2_comparison.png", "r2", "R2")
+                plot_two_mode_comparison(row, comparisons_dir / "two_modes_mae_comparison.png", "mae", "MAE")
+
+                copy_if_exists(Path(row["predictions_file"]), artifacts_dir / "all_predictions.csv")
+                copy_if_exists(Path(row["plot_file"]), artifacts_dir / "prediction_plot.png")
+                copy_if_exists(Path(row["split_summary_file"]), artifacts_dir / "split_summary.json")
+                copy_tree_if_exists(Path(row["model_dir"]), model_copy_dir)
+
+            combined_df = build_combined_predictions(dataset_df)
+            if combined_df is not None:
+                save_csv(combined_df, dataset_dir / "combined_predictions.csv")
 
 
 def summarize(base_dir: Path, output_dir: Path, skip_plots: bool) -> None:
@@ -359,25 +484,27 @@ def summarize(base_dir: Path, output_dir: Path, skip_plots: bool) -> None:
     train_df = build_split_df(summary_df, "train")
     test_df = build_split_df(summary_df, "test")
 
-    save_csv(train_df, output_dir / "TABPFN_EXTRAPOLATION_TRAIN_SUMMARY.csv")
-    save_csv(test_df, output_dir / "TABPFN_EXTRAPOLATION_TEST_SUMMARY.csv")
+    summary_tables_dir = output_dir / SUMMARY_TABLES_DIRNAME
+    save_csv(train_df, summary_tables_dir / "tabpfn_extrapolation_train_summary.csv")
+    save_csv(test_df, summary_tables_dir / "tabpfn_extrapolation_test_summary.csv")
 
-    train_counts = generate_by_target_outputs(train_df, "train", output_dir)
-    test_counts = generate_by_target_outputs(test_df, "test", output_dir)
+    by_target_dir = summary_tables_dir / "by_target"
+    for target_col, group_df in train_df.groupby("target_col", sort=True):
+        safe_target = safe_name(target_col)
+        save_csv(group_df, by_target_dir / f"{safe_target}_train_summary.csv")
+    for target_col, group_df in test_df.groupby("target_col", sort=True):
+        safe_target = safe_name(target_col)
+        save_csv(group_df, by_target_dir / f"{safe_target}_test_summary.csv")
+
+    export_case_views(summary_df, output_dir)
 
     if not skip_plots:
         clean_plot_outputs(output_dir)
         generate_overview_plots(train_df, test_df, output_dir)
 
     print(f"[INFO] Parsed {len(summary_df)} valid cases")
-    for target_col in sorted(set(train_counts) | set(test_counts)):
-        print(
-            f"[INFO] Target {target_col}: "
-            f"train_cases={train_counts.get(target_col, 0)}, "
-            f"test_cases={test_counts.get(target_col, 0)}"
-        )
-    print(f"[INFO] Train summary saved to {output_dir / 'TABPFN_EXTRAPOLATION_TRAIN_SUMMARY.csv'}")
-    print(f"[INFO] Test summary saved to {output_dir / 'TABPFN_EXTRAPOLATION_TEST_SUMMARY.csv'}")
+    print(f"[INFO] Train summary saved to {summary_tables_dir / 'tabpfn_extrapolation_train_summary.csv'}")
+    print(f"[INFO] Test summary saved to {summary_tables_dir / 'tabpfn_extrapolation_test_summary.csv'}")
     if not skip_plots:
         print(f"[INFO] Interactive overview directory: {output_dir / 'plots' / 'overview'}")
 
@@ -399,7 +526,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--skip-plots",
         action="store_true",
-        help="Only generate summary CSV files without plot PNGs.",
+        help="Only generate summary CSV files without overview HTML plots.",
     )
     return parser
 
@@ -410,9 +537,12 @@ def main() -> None:
 
     base_dir = args.base_dir
     output_dir = args.output_dir or (base_dir / "all_tabpfn_extrapolation_summary")
+    if output_dir.exists():
+        shutil.rmtree(output_dir)
+    output_dir.mkdir(parents=True, exist_ok=True)
+
     summarize(base_dir=base_dir, output_dir=output_dir, skip_plots=args.skip_plots)
 
 
 if __name__ == "__main__":
     main()
-# python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dir "output/extrapolation_results_tabpfn"
