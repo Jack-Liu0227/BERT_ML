@@ -16,6 +16,7 @@ from typing import Dict, List
 
 import matplotlib.pyplot as plt
 from matplotlib.ticker import MultipleLocator
+import numpy as np
 import pandas as pd
 import plotly.express as px
 import plotly.io as pio
@@ -37,6 +38,7 @@ plt.rcParams["figure.dpi"] = 300
 METRICS = ["mae", "rmse", "r2"]
 SUMMARY_TABLES_DIRNAME = "00_summary_tables"
 CASES_DIRNAME = "01_alloy_cases"
+R2_LABEL = "R\u00b2"
 
 
 def safe_name(text: str) -> str:
@@ -354,6 +356,17 @@ def clean_plot_outputs(output_dir: Path) -> None:
                 path.unlink()
 
 
+def style_comparison_axes(ax, metric_label: str, grid_alpha: float = 0.3, r2_major: float = 0.5, r2_minor: float = 0.25) -> None:
+    if metric_label == "R2":
+        ax.yaxis.set_major_locator(MultipleLocator(r2_major))
+        ax.yaxis.set_minor_locator(MultipleLocator(r2_minor))
+    ax.tick_params(axis="both", which="major", direction="in", length=6, width=1.2, top=True, right=True)
+    ax.tick_params(axis="both", which="minor", direction="in", length=3, width=1.0, top=True, right=True)
+    ax.grid(axis="y", alpha=grid_alpha, linestyle="--")
+    for spine in ax.spines.values():
+        spine.set_linewidth(1.5)
+
+
 def plot_two_mode_comparison(
     row: pd.Series,
     output_path: Path,
@@ -366,12 +379,40 @@ def plot_two_mode_comparison(
 
     fig, ax = plt.subplots(figsize=(7.2, 6.0))
     ax.bar(labels, values, color=colors, edgecolor="black", linewidth=1.2, width=0.55)
-    ax.set_ylabel(ylabel, fontweight="bold")
+    ax.set_ylabel(R2_LABEL if ylabel == "R2" else ylabel, fontweight="bold")
     ax.set_title(f"{row['alloy_type']} / {row['dataset_name']} / {row['target_col']}", fontweight="bold", pad=14)
-    if ylabel == "R2":
-        ax.yaxis.set_major_locator(MultipleLocator(0.5))
-        ax.yaxis.set_minor_locator(MultipleLocator(0.25))
-    ax.tick_params(axis="both", which="both", direction="in")
+    style_comparison_axes(ax, ylabel)
+
+    plt.tight_layout()
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    plt.savefig(output_path, dpi=300, bbox_inches="tight")
+    plt.close(fig)
+
+
+def plot_dataset_metric_summary(dataset_df: pd.DataFrame, output_path: Path, value_col: str, ylabel: str) -> None:
+    plot_df = dataset_df[["target_col", value_col]].dropna().copy()
+    if plot_df.empty:
+        return
+
+    fig, ax = plt.subplots(figsize=(9.0, 6.8))
+    ax.bar(
+        np.arange(len(plot_df)),
+        plot_df[value_col].tolist(),
+        color=["#f4a698", "#9bbfe0", "#c8d5b9", "#d4a5d6", "#f6d186"][: len(plot_df)],
+        edgecolor="black",
+        linewidth=1.2,
+        width=0.6,
+    )
+    ax.set_xlabel("Properties", fontweight="bold")
+    ax.set_ylabel(R2_LABEL if ylabel == "R2" else ylabel, fontweight="bold")
+    ax.set_xticks(np.arange(len(plot_df)))
+    ax.set_xticklabels(plot_df["target_col"], rotation=0)
+    if ylabel == "R2" and (plot_df[value_col] >= 0).all():
+        ax.set_ylim(0.0, 1.0)
+        ax.yaxis.set_major_locator(MultipleLocator(0.2))
+        ax.yaxis.set_minor_locator(MultipleLocator(0.1))
+    ax.tick_params(axis="both", which="major", direction="in", length=6, width=1.2, top=True, right=True)
+    ax.tick_params(axis="both", which="minor", direction="in", length=3, width=1.0, top=True, right=True)
     ax.grid(axis="y", alpha=0.3, linestyle="--")
     for spine in ax.spines.values():
         spine.set_linewidth(1.5)
@@ -444,17 +485,30 @@ def export_case_views(summary_df: pd.DataFrame, output_dir: Path) -> None:
                 dataset_df.sort_values(["target_col"]).reset_index(drop=True),
                 dataset_dir / "dataset_tabpfn_summary.csv",
             )
+            comparisons_dir = dataset_dir / "comparisons"
+            save_csv(
+                dataset_df[
+                    ["target_col", "train_mae", "train_rmse", "train_r2", "test_mae", "test_rmse", "test_r2"]
+                ].sort_values(["target_col"]).reset_index(drop=True),
+                comparisons_dir / "dataset_metric_summary.csv",
+            )
+            plot_dataset_metric_summary(dataset_df, comparisons_dir / "train_r2_summary.png", "train_r2", "R2")
+            plot_dataset_metric_summary(dataset_df, comparisons_dir / "train_mae_summary.png", "train_mae", "MAE")
+            plot_dataset_metric_summary(dataset_df, comparisons_dir / "train_rmse_summary.png", "train_rmse", "RMSE")
+            plot_dataset_metric_summary(dataset_df, comparisons_dir / "test_r2_summary.png", "test_r2", "R2")
+            plot_dataset_metric_summary(dataset_df, comparisons_dir / "test_mae_summary.png", "test_mae", "MAE")
+            plot_dataset_metric_summary(dataset_df, comparisons_dir / "test_rmse_summary.png", "test_rmse", "RMSE")
 
             for _, row in dataset_df.sort_values("target_col").iterrows():
                 safe_target = safe_name(str(row["target_col"]))
                 case_dir = dataset_dir / safe_target
-                comparisons_dir = case_dir / "comparisons"
+                case_comparisons_dir = case_dir / "comparisons"
                 artifacts_dir = case_dir / "selected_model_artifacts"
                 model_copy_dir = case_dir / "selected_model_source" / "TabPFN"
 
                 save_csv(pd.DataFrame([row]), case_dir / "case_model_summary.csv")
-                plot_two_mode_comparison(row, comparisons_dir / "two_modes_r2_comparison.png", "r2", "R2")
-                plot_two_mode_comparison(row, comparisons_dir / "two_modes_mae_comparison.png", "mae", "MAE")
+                plot_two_mode_comparison(row, case_comparisons_dir / "two_modes_r2_comparison.png", "r2", "R2")
+                plot_two_mode_comparison(row, case_comparisons_dir / "two_modes_mae_comparison.png", "mae", "MAE")
 
                 copy_if_exists(Path(row["predictions_file"]), artifacts_dir / "all_predictions.csv")
                 copy_if_exists(Path(row["plot_file"]), artifacts_dir / "prediction_plot.png")
