@@ -98,6 +98,15 @@ Enter alloy type (e.g., Ti): Ti
 Enter target column: UTS(MPa)
 ```
 
+Example non-interactive runs:
+
+```bash
+python src/TabPFN/train_tabpfn.py --all --backend api --feature_mode numeric
+python src/TabPFN/train_tabpfn.py --alloy_type Steel --target_col "YS(MPa)" --backend api --feature_mode text
+```
+
+`--run_all` is still supported for compatibility, but `--all` is the recommended batch flag.
+
 ## 6. Fine-tuning workflow
 
 For fine-tuning, use:

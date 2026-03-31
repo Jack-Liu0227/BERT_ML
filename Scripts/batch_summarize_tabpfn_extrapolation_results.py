@@ -568,7 +568,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--base-dir",
         type=Path,
-        default=Path("output/extrapolation_results_tabpfn"),
+        default=Path("output/extrapolation_results_TabPFN-2.5-Plus-Numeric"),
         help="Base directory containing per-case TabPFN extrapolation outputs.",
     )
     parser.add_argument(

@@ -1,144 +1,96 @@
 """
-TabPFN Model Configuration
-基于 batch_configs.py 的配置文件，用于 TabPFN 模型测试
+TabPFN configuration dispatcher.
 
-Configuration file for TabPFN model testing based on batch_configs.py
+This module keeps the public config API stable while routing callers to the
+explicit API or local config files.
 """
 
-from typing import Dict, Any, List
+from __future__ import annotations
 
-# ============================================================================
-# TabPFN 数据集配置 / TabPFN Dataset Configuration
-# ============================================================================
+from typing import Any, Dict, List
 
-TABPFN_CONFIGS = {
-    # 钛合金 / Titanium Alloys
-    "Ti": {
-        "raw_data": "datasets/Ti_alloys/titanium.csv",
-        "targets": ["UTS(MPa)", "El(%)"],
-        # Optional: align exported TabPFN prediction CSV row order to an existing reference CSV by ID
-        # so that different models' `all_predictions.csv` can be compared row-by-row.
-        "align_reference_predictions_csv": "output/new_results_withuncertainty/Ti/titanium/tradition/model_comparison/catboost_results/predictions/all_predictions.csv",
-        "feature_cols": [
-            # 元素列 / Element columns
-            "Al(wt%)", "Cr(wt%)", "Fe(wt%)", "Mo(wt%)", "Nb(wt%)", 
-            "Sn(wt%)", "Ti(wt%)", "V(wt%)", "Zr(wt%)",
-            # 工艺参数 / Processing parameters
-            "Solution Temperature(℃)", "Solution Time(h)",
-            "Aging Temperature(℃)", "Aging Time(h)",
-            "Thermo-Mechanical Treatment Temperature(℃)", "Deformation(%)"
-        ],
-        "description": "钛合金力学性能数据集 / Titanium alloy mechanical properties dataset",
-        "test_size": 0.2,
-        "random_state": 42
-    },
+try:
+    from .model_factory import resolve_tabpfn_backend, resolve_tabpfn_feature_mode
+    from .tabpfn_configs_api import (
+        TABPFN_CONFIGS as TABPFN_CONFIGS_API,
+        TABPFN_CONFIGS_API_NUMERIC,
+        TABPFN_CONFIGS_API_TEXT,
+    )
+    from .tabpfn_configs_local import TABPFN_CONFIGS as TABPFN_CONFIGS_LOCAL
+except ImportError:  # pragma: no cover
+    from model_factory import resolve_tabpfn_backend, resolve_tabpfn_feature_mode
+    from tabpfn_configs_api import (
+        TABPFN_CONFIGS as TABPFN_CONFIGS_API,
+        TABPFN_CONFIGS_API_NUMERIC,
+        TABPFN_CONFIGS_API_TEXT,
+    )
+    from tabpfn_configs_local import TABPFN_CONFIGS as TABPFN_CONFIGS_LOCAL
 
-    # 铝合金 / Aluminum Alloys
-    "Al": {
-        "raw_data": "datasets/Al_Alloys/aluminum.csv",
-        "targets": ["UTS(MPa)"],
-        "align_reference_predictions_csv": "output/new_results_withuncertainty/Al/aluminum/tradition/model_comparison/catboost_results/predictions/all_predictions.csv",
-        "feature_cols": [
-            # 元素列 / Element columns
-            "Ag(wt%)", "Al(wt%)", "Be(wt%)", "Ce(wt%)", "Cr(wt%)", "Cu(wt%)", 
-            "Fe(wt%)", "Li(wt%)", "Mg(wt%)", "Mn(wt%)", "Ni(wt%)", "Re(wt%)", 
-            "Si(wt%)", "Sn(wt%)", "Ti(wt%)", "V(wt%)", "Zn(wt%)", "Zr(wt%)",
-            # 工艺参数 / Processing parameters
-            "ST1", "TIME1", "ST2", "TIME2", "ST3", "TIME3", 
-            "Cold_Deformation_percent", 
-            "First_Aging_Temp_C", "First_Aging_Time_h", 
-            "Second_Aging_Temp_C", "Second_Aging_Time_h", 
-            "Third_Aging_Temp_C", "Third_Aging_Time_h"
-        ],
-        "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset",
-        "test_size": 0.2,
-        "random_state": 42
-    },
 
-    # 高熵合金 / High Entropy Alloys
-    "HEA": {
-        "raw_data": "datasets/HEA_data/hea.csv",
-        "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
-        "align_reference_predictions_csv": "output/new_results_withuncertainty/HEA_half/hea/tradition/model_comparison/catboost_results/predictions/all_predictions.csv",
-        "feature_cols": [
-            # 元素列 / Element columns (at%)
-            "Al(at%)", "C(at%)", "Co(at%)", "Cr(at%)", "Cu(at%)", 
-            "Fe(at%)", "Mn(at%)", "Mo(at%)", "Nb(at%)", "Ni(at%)", 
-            "Ta(at%)", "Ti(at%)", "V(at%)", "W(at%)",
-            # 工艺参数 / Processing parameters
-            "Hom_Temp(K)", "CR(%)",
-            "recrystalize temperature/K", "recrystalize time/mins",
-            "Anneal_Temp(K)", "Anneal_Time(h)",
-            "aging temperature/K", "aging time/hours"
-        ],
-        "description": "高熵合金室温力学性能数据集 / HEA room temperature mechanical properties dataset",
-        "test_size": 0.2,
-        "random_state": 42
-    },
-
-    # 钢铁 / Steel
-    "Steel": {
-        "raw_data": "datasets/Steel/steel.csv",
-        "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
-        "align_reference_predictions_csv": "output/new_results_withuncertainty/Steel/steel/tradition/model_comparison/catboost_results/predictions/all_predictions.csv",
-        "feature_cols": [
-            # 元素列 / Element columns
-            "Al(wt%)", "As(wt%)", "B(wt%)", "Bi(wt%)", "C(wt%)", "Ca(wt%)", 
-            "Ce(wt%)", "Cl(wt%)", "Co(wt%)", "Cr(wt%)", "Cu(wt%)", "F(wt%)", 
-            "Fe(wt%)", "H(wt%)", "La(wt%)", "Mg(wt%)", "Mn(wt%)", "Mo(wt%)", 
-            "N(wt%)", "Na(wt%)", "Nb(wt%)", "Ni(wt%)", "O(wt%)", "P(wt%)", 
-            "Pb(wt%)", "S(wt%)", "Sb(wt%)", "Si(wt%)", "Sn(wt%)", "Ta(wt%)", 
-            "Ti(wt%)", "V(wt%)", "W(wt%)", "Y(wt%)", "Zn(wt%)", "Zr(wt%)"
-            # 注意：Steel数据集的工艺参数在 Processing_Description 中，可能需要单独提取
-        ],
-        "description": "钢铁力学性能数据集 / Steel mechanical properties dataset",
-        "test_size": 0.2,
-        "random_state": 42
-    },
+TABPFN_CONFIGS_BY_RUNTIME: Dict[tuple[str, str], Dict[str, Dict[str, Any]]] = {
+    ("local", "numeric"): TABPFN_CONFIGS_LOCAL,
+    ("api", "numeric"): TABPFN_CONFIGS_API_NUMERIC,
+    ("api", "text"): TABPFN_CONFIGS_API_TEXT,
 }
 
+# Backward-compatible default for legacy imports that do not pass a backend.
+TABPFN_CONFIGS = TABPFN_CONFIGS_LOCAL
 
-# ============================================================================
-# TabPFN 模型配置 / TabPFN Model Configuration
-# ============================================================================
 
 TABPFN_MODEL_CONFIG = {
-    # 模型版本 / Model version
-    # 使用 v2 版本（开放模型，无需认证）
-    # Using v2 (open model, no authentication required)
-    # v2.5 requires HuggingFace authentication
     "model_version": "v2",
-    
-    # 任务类型 / Task type
-    # TabPFN 支持分类和回归任务
-    # TabPFN supports both classification and regression tasks
-    "task_type": "regression",  # "classification" or "regression"
-    
-    # 评估指标 / Evaluation metrics
+    "feature_mode": None,
+    "task_type": "regression",
     "metrics": {
         "regression": ["mae", "rmse", "r2", "mape"],
-        "classification": ["accuracy", "roc_auc", "f1"]
-    }
+        "classification": ["accuracy", "roc_auc", "f1"],
+    },
 }
 
 
-def get_tabpfn_config(alloy_type: str) -> Dict[str, Any]:
-    """
-    获取指定合金类型的配置
-    Get configuration for specified alloy type
-    
-    Args:
-        alloy_type: 合金类型 ("Ti", "Al", "HEA", "Steel")
-        
-    Returns:
-        配置字典 / Configuration dictionary
-    """
-    if alloy_type not in TABPFN_CONFIGS:
-        raise ValueError(f"Unknown alloy type: {alloy_type}. Available types: {list(TABPFN_CONFIGS.keys())}")
-    
-    return TABPFN_CONFIGS[alloy_type]
+def get_tabpfn_configs(
+    backend: str = "local",
+    feature_mode: str | None = None,
+    base_path: str = ".",
+) -> Dict[str, Dict[str, Any]]:
+    resolved_backend = resolve_tabpfn_backend(base_path=base_path, backend=backend)
+    resolved_feature_mode = resolve_tabpfn_feature_mode(
+        base_path=base_path,
+        backend=resolved_backend,
+        feature_mode=feature_mode,
+    )
+    return TABPFN_CONFIGS_BY_RUNTIME[(resolved_backend, resolved_feature_mode)]
 
 
-def get_all_alloy_types() -> List[str]:
-    """获取所有可用的合金类型 / Get all available alloy types"""
-    return list(TABPFN_CONFIGS.keys())
+def get_tabpfn_config(
+    alloy_type: str,
+    backend: str = "local",
+    feature_mode: str | None = None,
+    base_path: str = ".",
+) -> Dict[str, Any]:
+    resolved_backend = resolve_tabpfn_backend(base_path=base_path, backend=backend)
+    resolved_feature_mode = resolve_tabpfn_feature_mode(
+        base_path=base_path,
+        backend=resolved_backend,
+        feature_mode=feature_mode,
+    )
+    backend_configs = TABPFN_CONFIGS_BY_RUNTIME[(resolved_backend, resolved_feature_mode)]
+    if alloy_type not in backend_configs:
+        raise ValueError(
+            f"Unknown alloy type: {alloy_type}. "
+            f"Available types: {list(backend_configs.keys())}"
+        )
+
+    config = backend_configs[alloy_type].copy()
+    config["requested_backend"] = backend
+    config["config_backend"] = resolved_backend
+    config["requested_feature_mode"] = feature_mode
+    config["feature_mode"] = resolved_feature_mode
+    return config
+
+
+def get_all_alloy_types(
+    backend: str = "local",
+    base_path: str = ".",
+) -> List[str]:
+    return list(get_tabpfn_configs(backend=backend, base_path=base_path).keys())

@@ -14,12 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 try:
+    from .model_factory import get_tabpfn_runtime_config
     from .tabpfn_extrapolation_configs import (
         TABPFN_EXTRAPOLATION_BATCH_CONFIGS,
         get_all_tabpfn_extrapolation_alloys,
         get_tabpfn_extrapolation_config,
     )
 except ImportError:  # pragma: no cover
+    from model_factory import get_tabpfn_runtime_config
     from tabpfn_extrapolation_configs import (
         TABPFN_EXTRAPOLATION_BATCH_CONFIGS,
         get_all_tabpfn_extrapolation_alloys,
@@ -117,10 +119,19 @@ def format_command(cmd: List[str]) -> str:
     return " ".join(formatted)
 
 
-def resolve_alloy_types(config: Dict[str, Any]) -> List[str]:
+def resolve_alloy_types(
+    config: Dict[str, Any],
+    backend: str,
+    feature_mode: str | None,
+    base_path: str,
+) -> List[str]:
     alloy_types = config.get("alloy_types")
     if alloy_types is None:
-        alloy_types = get_all_tabpfn_extrapolation_alloys()
+        alloy_types = get_all_tabpfn_extrapolation_alloys(
+            backend=backend,
+            feature_mode=feature_mode,
+            base_path=base_path,
+        )
     excluded = set(config.get("exclude_alloys", []))
     return [alloy for alloy in alloy_types if alloy not in excluded]
 
@@ -130,8 +141,11 @@ def build_command(
     target_col: str,
     batch_config: Dict[str, Any],
     base_path: str,
+    backend: str,
+    model_version: Optional[str],
+    feature_mode: str | None,
 ) -> List[str]:
-    return [
+    command = [
         sys.executable,
         "-m",
         "src.TabPFN.train_tabpfn_extrapolation",
@@ -139,10 +153,10 @@ def build_command(
         alloy_type,
         "--target_col",
         target_col,
+        "--backend",
+        backend,
         "--base_path",
         base_path,
-        "--output_root",
-        batch_config["output_root"],
         "--test_size",
         str(batch_config["test_size"]),
         "--random_state",
@@ -150,6 +164,13 @@ def build_command(
         "--extrapolation_side",
         batch_config["extrapolation_side"],
     ]
+    if model_version:
+        command.extend(["--model_version", model_version])
+    if feature_mode:
+        command.extend(["--feature_mode", feature_mode])
+    if batch_config.get("output_root"):
+        command.extend(["--output_root", batch_config["output_root"]])
+    return command
 
 
 def run_single_task(
@@ -160,9 +181,20 @@ def run_single_task(
     progress_manager: ProgressManager,
     dry_run: bool,
     base_path: str,
+    backend: str,
+    model_version: Optional[str],
+    feature_mode: str | None,
 ) -> str:
     task_key = make_task_key(alloy_type, target_col)
-    cmd = build_command(alloy_type, target_col, batch_config, base_path)
+    cmd = build_command(
+        alloy_type,
+        target_col,
+        batch_config,
+        base_path,
+        backend,
+        model_version,
+        feature_mode,
+    )
     logger.info("[RUN] %s", task_key)
     logger.info("Command: %s", format_command(cmd))
 
@@ -184,16 +216,36 @@ def run_batch_config(
     dry_run: bool,
     resume: bool,
     base_path: str,
+    backend: str,
+    model_version: Optional[str],
+    feature_mode: str | None,
 ) -> Dict[str, str]:
     results: Dict[str, str] = {}
-    alloy_types = resolve_alloy_types(batch_config)
+    alloy_types = resolve_alloy_types(
+        batch_config,
+        backend=backend,
+        feature_mode=feature_mode,
+        base_path=base_path,
+    )
     total_targets = 0
     for alloy_type in alloy_types:
-        total_targets += len(get_tabpfn_extrapolation_config(alloy_type)["targets"])
+        total_targets += len(
+            get_tabpfn_extrapolation_config(
+                alloy_type,
+                backend=backend,
+                feature_mode=feature_mode,
+                base_path=base_path,
+            )["targets"]
+        )
     logger.info("Resolved %d alloys and %d single-target runs", len(alloy_types), total_targets)
 
     for alloy_type in alloy_types:
-        alloy_config = get_tabpfn_extrapolation_config(alloy_type)
+        alloy_config = get_tabpfn_extrapolation_config(
+            alloy_type,
+            backend=backend,
+            feature_mode=feature_mode,
+            base_path=base_path,
+        )
         logger.info("Processing alloy %s with targets %s", alloy_type, alloy_config["targets"])
         for target_col in alloy_config["targets"]:
             task_key = make_task_key(alloy_type, target_col)
@@ -209,14 +261,26 @@ def run_batch_config(
                 progress_manager=progress_manager,
                 dry_run=dry_run,
                 base_path=base_path,
+                backend=backend,
+                model_version=model_version,
+                feature_mode=feature_mode,
             )
     return results
 
 
-def list_configs() -> None:
+def list_configs(backend: str, feature_mode: str | None, base_path: str) -> None:
     logger.info("Available TabPFN extrapolation alloy configs:")
-    for alloy_type in get_all_tabpfn_extrapolation_alloys():
-        alloy_config = get_tabpfn_extrapolation_config(alloy_type)
+    for alloy_type in get_all_tabpfn_extrapolation_alloys(
+        backend=backend,
+        feature_mode=feature_mode,
+        base_path=base_path,
+    ):
+        alloy_config = get_tabpfn_extrapolation_config(
+            alloy_type,
+            backend=backend,
+            feature_mode=feature_mode,
+            base_path=base_path,
+        )
         logger.info("  - %s: targets=%s, data=%s", alloy_type, alloy_config["targets"], alloy_config["raw_data"])
     logger.info("Available TabPFN extrapolation batch configs:")
     for config_name, config in TABPFN_EXTRAPOLATION_BATCH_CONFIGS.items():
@@ -224,7 +288,10 @@ def list_configs() -> None:
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Batch runner for TabPFN low-to-high extrapolation")
+    parser = argparse.ArgumentParser(
+        description="Batch runner for TabPFN low-to-high extrapolation",
+        allow_abbrev=False,
+    )
     mode_group = parser.add_mutually_exclusive_group(required=False)
     mode_group.add_argument("--list", action="store_true")
     mode_group.add_argument("--config", nargs="+")
@@ -234,6 +301,9 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--show_progress", action="store_true")
     parser.add_argument("--clear_progress", type=str, nargs="?", const="__all__", metavar="CONFIG")
+    parser.add_argument("--backend", choices=["auto", "api", "local"], default="auto")
+    parser.add_argument("--model_version", choices=["latest", "v2", "v2.5", "v2.6"], default=None)
+    parser.add_argument("--feature_mode", choices=["numeric", "text"], default=None)
     parser.add_argument("--base_path", default=str(Path(__file__).resolve().parents[2]), type=str)
     return parser
 
@@ -241,7 +311,19 @@ def build_argument_parser() -> argparse.ArgumentParser:
 def main() -> None:
     parser = build_argument_parser()
     args = parser.parse_args()
-    batch_log_file = Path(args.base_path) / "output" / "extrapolation_results_tabpfn" / "batch_logs" / f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    runtime_info = get_tabpfn_runtime_config(
+        base_path=args.base_path,
+        backend=args.backend,
+        preferred_model_version=args.model_version,
+        feature_mode=args.feature_mode,
+    )
+    batch_log_file = (
+        Path(args.base_path)
+        / "output"
+        / f"extrapolation_results_{runtime_info['model_run_dirname']}"
+        / "batch_logs"
+        / f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
+    )
     configure_logging(batch_log_file)
 
     progress_manager = ProgressManager()
@@ -255,7 +337,7 @@ def main() -> None:
         parser.error("one of --list, --config, --all, --show_progress, or --clear_progress is required")
 
     if args.list:
-        list_configs()
+        list_configs(args.backend, args.feature_mode, args.base_path)
         return
 
     run_configs = args.config if args.config else list(TABPFN_EXTRAPOLATION_BATCH_CONFIGS.keys())
@@ -276,6 +358,9 @@ def main() -> None:
             dry_run=args.dry_run,
             resume=args.resume,
             base_path=args.base_path,
+            backend=args.backend,
+            model_version=args.model_version,
+            feature_mode=args.feature_mode,
         )
 
     logger.info("=" * 100)

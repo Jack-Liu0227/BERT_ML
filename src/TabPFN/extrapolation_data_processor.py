@@ -40,6 +40,8 @@ class TabPFNExtrapolationDataProcessor:
         self.scaler = StandardScaler()
         self.data: pd.DataFrame | None = None
         self.available_feature_cols: list[str] = []
+        self.numeric_feature_cols: list[str] = []
+        self.non_numeric_feature_cols: list[str] = []
 
     def load_data(self) -> pd.DataFrame:
         data_path = self.base_path / self.config["raw_data"]
@@ -47,6 +49,31 @@ class TabPFNExtrapolationDataProcessor:
             raise FileNotFoundError(f"Data file not found: {data_path}")
         self.data = pd.read_csv(data_path)
         return self.data
+
+    def _set_feature_type_metadata(self, X: pd.DataFrame) -> None:
+        self.numeric_feature_cols = X.select_dtypes(include=[np.number, "bool"]).columns.tolist()
+        self.non_numeric_feature_cols = [
+            col for col in X.columns if col not in self.numeric_feature_cols
+        ]
+
+    def _sanitize_non_numeric_columns(self, X: pd.DataFrame) -> pd.DataFrame:
+        X_clean = X.copy()
+        if self.non_numeric_feature_cols:
+            X_clean.loc[:, self.non_numeric_feature_cols] = (
+                X_clean[self.non_numeric_feature_cols].fillna("").astype(str)
+            )
+        return X_clean
+
+    def _fill_missing_feature_values(self, X: pd.DataFrame) -> pd.DataFrame:
+        X_filled = X.copy()
+        self._set_feature_type_metadata(X_filled)
+        if self.numeric_feature_cols:
+            X_filled.loc[:, self.numeric_feature_cols] = X_filled[self.numeric_feature_cols].fillna(0)
+        if self.non_numeric_feature_cols:
+            X_filled.loc[:, self.non_numeric_feature_cols] = (
+                X_filled[self.non_numeric_feature_cols].fillna("").astype(str)
+            )
+        return X_filled
 
     def prepare_feature_frame(
         self,
@@ -74,13 +101,17 @@ class TabPFNExtrapolationDataProcessor:
         if drop_na:
             frame = frame.dropna(subset=available_features + [target_col]).copy()
         else:
-            frame[available_features] = frame[available_features].fillna(0)
+            frame[available_features] = self._fill_missing_feature_values(frame[available_features])
             frame[target_col] = frame[target_col].fillna(frame[target_col].mean())
 
         if frame.empty:
             raise ValueError("No rows remain after preparing extrapolation data")
 
         frame = frame.sort_values("ID").reset_index(drop=True)
+        self._set_feature_type_metadata(frame[self.available_feature_cols])
+        frame.loc[:, self.available_feature_cols] = self._sanitize_non_numeric_columns(
+            frame[self.available_feature_cols]
+        )
         return frame
 
     def split_low_high(
@@ -124,7 +155,7 @@ class TabPFNExtrapolationDataProcessor:
         test_df: pd.DataFrame,
         target_col: str,
         scale: bool = True,
-    ) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         if not self.available_feature_cols:
             raise ValueError("Feature columns are not prepared")
 
@@ -135,14 +166,25 @@ class TabPFNExtrapolationDataProcessor:
         ids_train = train_df["ID"].to_numpy()
         ids_test = test_df["ID"].to_numpy()
 
-        if scale:
-            X_train_np = self.scaler.fit_transform(X_train)
-            X_test_np = self.scaler.transform(X_test)
-        else:
-            X_train_np = X_train.to_numpy(dtype=float)
-            X_test_np = X_test.to_numpy(dtype=float)
+        self._set_feature_type_metadata(X_train)
+        X_train = self._sanitize_non_numeric_columns(X_train)
+        X_test = self._sanitize_non_numeric_columns(X_test)
 
-        return X_train_np, X_test_np, y_train, y_test, ids_train, ids_test
+        if scale and self.numeric_feature_cols:
+            X_train_numeric = pd.DataFrame(
+                self.scaler.fit_transform(X_train[self.numeric_feature_cols]),
+                columns=self.numeric_feature_cols,
+                index=X_train.index,
+            )
+            X_test_numeric = pd.DataFrame(
+                self.scaler.transform(X_test[self.numeric_feature_cols]),
+                columns=self.numeric_feature_cols,
+                index=X_test.index,
+            )
+            X_train.loc[:, self.numeric_feature_cols] = X_train_numeric
+            X_test.loc[:, self.numeric_feature_cols] = X_test_numeric
+
+        return X_train, X_test, y_train, y_test, ids_train, ids_test
 
     def save_split_artifacts(
         self,
@@ -170,4 +212,3 @@ class TabPFNExtrapolationDataProcessor:
             "test_file": str(test_path),
             "summary_file": str(summary_path),
         }
-

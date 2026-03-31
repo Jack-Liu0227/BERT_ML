@@ -17,6 +17,7 @@ import pandas as pd
 
 
 CASES_DIRNAME = "01_alloy_cases"
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 @dataclass(frozen=True)
@@ -55,7 +56,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--tabpfn-summary",
         type=Path,
-        default=Path("output/extrapolation_results_tabpfn/all_tabpfn_extrapolation_summary"),
+        default=Path("output/extrapolation_results_TabPFN-2.5-Plus-Numeric/all_tabpfn_extrapolation_summary"),
         help="TabPFN extrapolation summary directory.",
     )
     parser.add_argument(
@@ -101,6 +102,88 @@ def iter_artifact_dirs(summary_dir: Path) -> Iterable[Path]:
     return sorted(cases_root.rglob("selected_model_artifacts"))
 
 
+def clean_optional_string(value: object) -> str | None:
+    if value is None or pd.isna(value):
+        return None
+    text = str(value).strip()
+    return text or None
+
+
+def resolve_repo_path(path_value: object) -> str | None:
+    text = clean_optional_string(path_value)
+    if text is None:
+        return None
+
+    path = Path(text)
+    if not path.is_absolute():
+        path = PROJECT_ROOT / path
+    return str(path.resolve())
+
+
+def infer_source_model_from_dir(
+    config: SourceConfig,
+    source_root: Path,
+) -> tuple[str | None, str | None]:
+    if config.family == "TabPFN":
+        model_dir = source_root / "TabPFN"
+        if model_dir.exists():
+            return "TabPFN", str(model_dir.resolve())
+        return "TabPFN", None
+
+    mode_dir = source_root / config.export_mode
+    if not mode_dir.exists():
+        return None, None
+
+    model_dirs = sorted(path for path in mode_dir.iterdir() if path.is_dir())
+    if len(model_dirs) != 1:
+        return None, None
+
+    return model_dirs[0].name, str(model_dirs[0].resolve())
+
+
+def resolve_source_metadata(
+    config: SourceConfig,
+    artifacts_dir: Path,
+) -> dict[str, str | None]:
+    case_dir = artifacts_dir.parent
+    source_root = case_dir / "selected_model_source"
+    summary_file = case_dir / "best_model_summary.csv"
+
+    source_model: str | None = None
+    source_model_dir: str | None = None
+
+    if summary_file.exists():
+        try:
+            summary_df = pd.read_csv(summary_file)
+            if "mode" in summary_df.columns and not summary_df.empty:
+                mode_rows = summary_df[
+                    summary_df["mode"].astype(str).str.strip().str.lower()
+                    == config.export_mode.lower()
+                ]
+                if not mode_rows.empty:
+                    selected_row = mode_rows.iloc[0]
+                    source_model = clean_optional_string(selected_row.get("model"))
+                    source_model_dir = resolve_repo_path(selected_row.get("model_dir"))
+        except Exception as exc:
+            print(
+                f"[WARN] Failed to read best model summary, fallback to source directory: "
+                f"{summary_file} ({exc})"
+            )
+
+    if source_model is None or source_model_dir is None:
+        inferred_model, inferred_dir = infer_source_model_from_dir(config, source_root)
+        if source_model is None:
+            source_model = inferred_model
+        if source_model_dir is None:
+            source_model_dir = inferred_dir
+
+    return {
+        "source_model": source_model,
+        "source_model_dir": source_model_dir,
+        "source_summary_file": str(summary_file.resolve()) if summary_file.exists() else None,
+    }
+
+
 def extract_case_parts(summary_dir: Path, artifacts_dir: Path) -> tuple[str, str, str]:
     relative_parts = artifacts_dir.relative_to(summary_dir / CASES_DIRNAME).parts
     if len(relative_parts) < 4:
@@ -131,12 +214,16 @@ def export_case_csv(
         print(f"[WARN] Failed to read CSV, skipped: {source_file} ({exc})")
         return None
 
+    source_metadata = resolve_source_metadata(config, artifacts_dir)
     export_df = df.copy()
     export_df["source_family"] = config.family
+    export_df["source_model"] = source_metadata["source_model"] or ""
+    export_df["source_model_dir"] = source_metadata["source_model_dir"] or ""
     export_df["alloy_type"] = alloy_type
     export_df["dataset_name"] = dataset_name
     export_df["target"] = target
     export_df["export_mode"] = config.export_mode
+    export_df["source_summary_file"] = source_metadata["source_summary_file"] or ""
     export_df["source_file"] = str(source_file.resolve())
 
     export_file = output_dir / config.family / alloy_type / dataset_name / target / config.expected_filename
@@ -145,10 +232,13 @@ def export_case_csv(
 
     return {
         "source_family": config.family,
+        "source_model": source_metadata["source_model"] or "",
+        "source_model_dir": source_metadata["source_model_dir"] or "",
         "alloy_type": alloy_type,
         "dataset_name": dataset_name,
         "target": target,
         "export_mode": config.export_mode,
+        "source_summary_file": source_metadata["source_summary_file"] or "",
         "source_file": str(source_file.resolve()),
         "export_file": str(export_file.resolve()),
     }
@@ -215,7 +305,7 @@ def main() -> None:
     manifest_df = pd.DataFrame(all_manifest_rows)
     if not manifest_df.empty:
         manifest_df = manifest_df.sort_values(
-            ["source_family", "alloy_type", "dataset_name", "target", "export_mode"]
+            ["source_family", "source_model", "alloy_type", "dataset_name", "target", "export_mode"]
         ).reset_index(drop=True)
     manifest_df.to_csv(manifest_path, index=False, encoding="utf-8-sig")
 
