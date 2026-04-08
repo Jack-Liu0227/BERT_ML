@@ -1,5 +1,5 @@
 """
-Independent batch runner for TabPFN low-to-high extrapolation experiments.
+Independent batch runner for TabPFN OOD experiments.
 """
 
 from __future__ import annotations
@@ -15,17 +15,19 @@ from typing import Any, Dict, List, Optional
 
 try:
     from .model_factory import get_tabpfn_runtime_config
-    from .tabpfn_extrapolation_configs import (
-        TABPFN_EXTRAPOLATION_BATCH_CONFIGS,
-        get_all_tabpfn_extrapolation_alloys,
-        get_tabpfn_extrapolation_config,
+    from .train_tabpfn_ood import get_ood_output_root
+    from .tabpfn_ood_configs import (
+        TABPFN_OOD_BATCH_CONFIGS,
+        get_all_tabpfn_ood_alloys,
+        get_tabpfn_ood_config,
     )
 except ImportError:  # pragma: no cover
     from model_factory import get_tabpfn_runtime_config
-    from tabpfn_extrapolation_configs import (
-        TABPFN_EXTRAPOLATION_BATCH_CONFIGS,
-        get_all_tabpfn_extrapolation_alloys,
-        get_tabpfn_extrapolation_config,
+    from train_tabpfn_ood import get_ood_output_root
+    from tabpfn_ood_configs import (
+        TABPFN_OOD_BATCH_CONFIGS,
+        get_all_tabpfn_ood_alloys,
+        get_tabpfn_ood_config,
     )
 
 
@@ -54,7 +56,7 @@ def configure_logging(log_file: Optional[Path] = None) -> None:
 
 
 class ProgressManager:
-    def __init__(self, progress_file: str = ".batch_progress_tabpfn_extrapolation.json") -> None:
+    def __init__(self, progress_file: str = ".batch_progress_tabpfn_ood.json") -> None:
         self.progress_file = Path(progress_file)
         self.progress_data = self._load_progress()
 
@@ -82,10 +84,10 @@ class ProgressManager:
     def show_progress(self, config_name: Optional[str] = None) -> None:
         items = self.progress_data if config_name is None else {config_name: self.progress_data.get(config_name, {})}
         if not items or all(not value for value in items.values()):
-            logger.info("No TabPFN extrapolation progress records")
+            logger.info("No TabPFN OOD progress records")
             return
         logger.info("=" * 100)
-        logger.info("TabPFN Extrapolation Task Progress")
+        logger.info("TabPFN OOD Task Progress")
         logger.info("=" * 100)
         for cfg_name, tasks in items.items():
             if not tasks:
@@ -127,7 +129,7 @@ def resolve_alloy_types(
 ) -> List[str]:
     alloy_types = config.get("alloy_types")
     if alloy_types is None:
-        alloy_types = get_all_tabpfn_extrapolation_alloys(
+        alloy_types = get_all_tabpfn_ood_alloys(
             backend=backend,
             feature_mode=feature_mode,
             base_path=base_path,
@@ -148,7 +150,7 @@ def build_command(
     command = [
         sys.executable,
         "-m",
-        "src.TabPFN.train_tabpfn_extrapolation",
+        "src.TabPFN.train_tabpfn_ood",
         "--alloy_type",
         alloy_type,
         "--target_col",
@@ -161,9 +163,23 @@ def build_command(
         str(batch_config["test_size"]),
         "--random_state",
         str(batch_config["random_state"]),
-        "--extrapolation_side",
-        batch_config["extrapolation_side"],
+        "--split_strategy",
+        batch_config["split_strategy"],
     ]
+    if batch_config.get("extrapolation_side"):
+        command.extend(["--extrapolation_side", batch_config["extrapolation_side"]])
+    if batch_config.get("sparse_candidate_pool_size") is not None:
+        command.extend(["--sparse_candidate_pool_size", str(batch_config["sparse_candidate_pool_size"])])
+    if batch_config.get("sparse_cluster_count") is not None:
+        command.extend(["--sparse_cluster_count", str(batch_config["sparse_cluster_count"])])
+    if batch_config.get("sparse_samples_per_cluster") is not None:
+        command.extend(["--sparse_samples_per_cluster", str(batch_config["sparse_samples_per_cluster"])])
+    if batch_config.get("sparse_kde_bandwidth") is not None:
+        command.extend(["--sparse_kde_bandwidth", str(batch_config["sparse_kde_bandwidth"])])
+    if batch_config.get("sparse_neighbors_per_seed") is not None:
+        command.extend(["--sparse_neighbors_per_seed", str(batch_config["sparse_neighbors_per_seed"])])
+    if batch_config.get("loco_cluster_count") is not None:
+        command.extend(["--loco_cluster_count", str(batch_config["loco_cluster_count"])])
     if model_version:
         command.extend(["--model_version", model_version])
     if feature_mode:
@@ -230,7 +246,7 @@ def run_batch_config(
     total_targets = 0
     for alloy_type in alloy_types:
         total_targets += len(
-            get_tabpfn_extrapolation_config(
+            get_tabpfn_ood_config(
                 alloy_type,
                 backend=backend,
                 feature_mode=feature_mode,
@@ -240,7 +256,7 @@ def run_batch_config(
     logger.info("Resolved %d alloys and %d single-target runs", len(alloy_types), total_targets)
 
     for alloy_type in alloy_types:
-        alloy_config = get_tabpfn_extrapolation_config(
+        alloy_config = get_tabpfn_ood_config(
             alloy_type,
             backend=backend,
             feature_mode=feature_mode,
@@ -269,27 +285,27 @@ def run_batch_config(
 
 
 def list_configs(backend: str, feature_mode: str | None, base_path: str) -> None:
-    logger.info("Available TabPFN extrapolation alloy configs:")
-    for alloy_type in get_all_tabpfn_extrapolation_alloys(
+    logger.info("Available TabPFN OOD alloy configs:")
+    for alloy_type in get_all_tabpfn_ood_alloys(
         backend=backend,
         feature_mode=feature_mode,
         base_path=base_path,
     ):
-        alloy_config = get_tabpfn_extrapolation_config(
+        alloy_config = get_tabpfn_ood_config(
             alloy_type,
             backend=backend,
             feature_mode=feature_mode,
             base_path=base_path,
         )
         logger.info("  - %s: targets=%s, data=%s", alloy_type, alloy_config["targets"], alloy_config["raw_data"])
-    logger.info("Available TabPFN extrapolation batch configs:")
-    for config_name, config in TABPFN_EXTRAPOLATION_BATCH_CONFIGS.items():
+    logger.info("Available TabPFN OOD batch configs:")
+    for config_name, config in TABPFN_OOD_BATCH_CONFIGS.items():
         logger.info("  - %s: %s", config_name, config["description"])
 
 
 def build_argument_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Batch runner for TabPFN low-to-high extrapolation",
+        description="Batch runner for TabPFN OOD experiments",
         allow_abbrev=False,
     )
     mode_group = parser.add_mutually_exclusive_group(required=False)
@@ -318,9 +334,10 @@ def main() -> None:
         feature_mode=args.feature_mode,
     )
     batch_log_file = (
-        Path(args.base_path)
-        / "output"
-        / f"extrapolation_results_{runtime_info['model_run_dirname']}"
+        get_ood_output_root(
+            args.base_path,
+            runtime_info,
+        )
         / "batch_logs"
         / f"batch_{datetime.now().strftime('%Y%m%d_%H%M%S')}.log"
     )
@@ -340,20 +357,22 @@ def main() -> None:
         list_configs(args.backend, args.feature_mode, args.base_path)
         return
 
-    run_configs = args.config if args.config else list(TABPFN_EXTRAPOLATION_BATCH_CONFIGS.keys())
-    invalid = [name for name in run_configs if name not in TABPFN_EXTRAPOLATION_BATCH_CONFIGS]
+    run_configs = args.config if args.config else [
+        name for name in TABPFN_OOD_BATCH_CONFIGS.keys() if name != "tabpfn_all_ood"
+    ]
+    invalid = [name for name in run_configs if name not in TABPFN_OOD_BATCH_CONFIGS]
     if invalid:
-        raise ValueError(f"Invalid TabPFN extrapolation batch configs: {', '.join(invalid)}")
+        raise ValueError(f"Invalid TabPFN OOD batch configs: {', '.join(invalid)}")
 
     started_at = datetime.now()
     all_results: Dict[str, Dict[str, str]] = {}
     for config_name in run_configs:
         logger.info("=" * 100)
-        logger.info("Running TabPFN extrapolation batch config: %s", config_name)
+        logger.info("Running TabPFN OOD batch config: %s", config_name)
         logger.info("=" * 100)
         all_results[config_name] = run_batch_config(
             config_name=config_name,
-            batch_config=TABPFN_EXTRAPOLATION_BATCH_CONFIGS[config_name],
+            batch_config=TABPFN_OOD_BATCH_CONFIGS[config_name],
             progress_manager=progress_manager,
             dry_run=args.dry_run,
             resume=args.resume,
@@ -364,7 +383,7 @@ def main() -> None:
         )
 
     logger.info("=" * 100)
-    logger.info("TabPFN extrapolation batch summary")
+    logger.info("TabPFN OOD batch summary")
     logger.info("=" * 100)
     for config_name, results in all_results.items():
         logger.info("%s", config_name)

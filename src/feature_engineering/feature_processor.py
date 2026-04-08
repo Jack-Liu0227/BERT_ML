@@ -100,8 +100,14 @@ class FeatureProcessor:
         self.data_processor = DataProcessor(data_path)
         self.feature_extractor = FeatureExtractor()
 
-        # 初始化 EmbeddingManager
-        self.embedding_manager = EmbeddingManager(model_name=model_name)
+        # 仅在需要嵌入特征时再加载模型，避免传统特征路径被无关的 BERT 依赖阻塞
+        self.embedding_manager = None
+        if (
+            self.use_process_embedding
+            or self.use_element_embedding
+            or self.use_joint_composition_process_embedding
+        ):
+            self.embedding_manager = EmbeddingManager(model_name=model_name)
         
         # 初始化数据和特征变量
         self.data = None

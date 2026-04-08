@@ -244,7 +244,7 @@ class MLTrainingPipeline:
             y_val_pred_orig = self.scaler_y.inverse_transform(y_val_pred)
             y_val_true_orig = self.scaler_y.inverse_transform(y_val_true_scaled)
             
-            fold_metrics_for_trial = {}
+            fold_metrics_for_trial = {"fold": fold + 1}
             # Calculate R2, RMSE, MAE per target
             for i, target_name in enumerate(self.args.target_columns):
                 y_true = y_val_true_orig[:, i]

@@ -1,5 +1,5 @@
 """
-Independent batch runner for extrapolation experiments.
+Unified batch runner for OOD experiments.
 """
 
 from __future__ import annotations
@@ -14,11 +14,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from src.feature_engineering.utils import set_seed
-from src.pipelines.batch_configs_extrapolation import (
-    ALLOY_CONFIGS_EXTRAPOLATION,
-    BATCH_CONFIGS_EXTRAPOLATION,
-    get_alloy_config_extrapolation,
-    list_available_alloys_extrapolation,
+from src.pipelines.batch_configs_ood import (
+    ALLOY_CONFIGS_OOD,
+    BATCH_CONFIGS_OOD,
+    OOD_METHODS,
+    get_alloy_config_ood,
+    get_ood_method_meta,
+    list_available_alloys_ood,
+    list_available_ood_methods,
 )
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -35,7 +38,7 @@ logger = logging.getLogger(__name__)
 
 
 class ProgressManager:
-    def __init__(self, progress_file: str = ".batch_progress_extrapolation.json") -> None:
+    def __init__(self, progress_file: str = ".batch_progress_ood.json") -> None:
         self.progress_file = Path(progress_file)
         self.progress_data = self._load_progress()
 
@@ -73,10 +76,10 @@ class ProgressManager:
     def show_progress(self, config_name: Optional[str] = None) -> None:
         items = self.progress_data if config_name is None else {config_name: self.progress_data.get(config_name, {})}
         if not items or all(not value for value in items.values()):
-            logger.info("No extrapolation progress records")
+            logger.info("No OOD progress records")
             return
         logger.info("=" * 100)
-        logger.info("Extrapolation Task Progress")
+        logger.info("OOD Task Progress")
         logger.info("=" * 100)
         for cfg_name, tasks in items.items():
             if not tasks:
@@ -102,40 +105,66 @@ def _dataset_name_from_config(raw_data: str) -> str:
     return dataset_name
 
 
-def build_command(alloy_type: str, alloy_config: Dict[str, Any], args: Any, model_name: Optional[str] = None) -> List[str]:
+def _append_method_specific_args(cmd: List[str], args: Any, method_meta: Dict[str, Any]) -> None:
+    cli_args = set(method_meta.get("cli_args", []))
+    if "extrapolation_side" in cli_args:
+        cmd.extend(["--extrapolation_side", args.extrapolation_side])
+    if "sparse_candidate_pool_size" in cli_args:
+        cmd.extend(["--sparse_candidate_pool_size", str(args.sparse_candidate_pool_size)])
+    if "sparse_cluster_count" in cli_args:
+        cmd.extend(["--sparse_cluster_count", str(args.sparse_cluster_count)])
+    if "sparse_samples_per_cluster" in cli_args:
+        cmd.extend(["--sparse_samples_per_cluster", str(args.sparse_samples_per_cluster)])
+    if "sparse_kde_bandwidth" in cli_args and getattr(args, "sparse_kde_bandwidth", None) is not None:
+        cmd.extend(["--sparse_kde_bandwidth", str(args.sparse_kde_bandwidth)])
+    if "sparse_neighbors_per_seed" in cli_args:
+        cmd.extend(["--sparse_neighbors_per_seed", str(args.sparse_neighbors_per_seed)])
+    if "loco_cluster_count" in cli_args:
+        cmd.extend(["--loco_cluster_count", str(args.loco_cluster_count)])
+
+
+def build_command(
+    config_name: str,
+    alloy_type: str,
+    alloy_config: Dict[str, Any],
+    args: Any,
+    method_meta: Dict[str, Any],
+    model_name: Optional[str] = None,
+) -> List[str]:
     dataset_name = _dataset_name_from_config(alloy_config["raw_data"])
     target_column = alloy_config["target_column"]
-    result_dir = Path("output") / "extrapolation_results" / alloy_type / dataset_name / target_column / args.embedding_type
+    result_dir = (
+        Path("output")
+        / "ood_results"
+        / config_name
+        / alloy_type
+        / dataset_name
+        / target_column
+        / method_meta["result_dir_suffix"]
+        / args.embedding_type
+    )
 
     cmd = [
         sys.executable,
         "-m",
-        "src.pipelines.end_to_end_extrapolation_pipeline",
+        "src.pipelines.ood_pipeline",
         "--data_file",
         alloy_config["raw_data"],
         "--result_dir",
         str(result_dir),
         "--target_column",
         target_column,
-        "--target_columns",
-        target_column,
         "--embedding_type",
         args.embedding_type,
-        "--alloy_type",
-        alloy_type,
-        "--dataset_name",
-        dataset_name,
         "--split_strategy",
         args.split_strategy,
-        "--split_target_col",
-        target_column,
-        "--extrapolation_side",
-        args.extrapolation_side,
         "--test_size",
         str(args.test_size),
         "--random_state",
         str(args.random_state),
     ]
+
+    _append_method_specific_args(cmd, args, method_meta)
 
     processing_cols = alloy_config.get("processing_cols") or []
     if processing_cols:
@@ -166,8 +195,7 @@ def build_command(alloy_type: str, alloy_config: Dict[str, Any], args: Any, mode
         cmd.extend(["--cross_validate", "--num_folds", str(args.num_folds)])
     if args.use_optuna:
         cmd.extend(["--use_optuna", "--n_trials", str(args.n_trials)])
-    if args.evaluate_after_train:
-        cmd.append("--evaluate_after_train")
+    cmd.append("--evaluate_after_train" if args.evaluate_after_train else "--no-evaluate_after_train")
     if args.run_shap_analysis:
         cmd.append("--run_shap_analysis")
 
@@ -177,7 +205,7 @@ def build_command(alloy_type: str, alloy_config: Dict[str, Any], args: Any, mode
 def format_command_for_display(cmd: List[str]) -> str:
     parts = []
     for part in cmd:
-        if any(char in part for char in [" ", "(", ")", "%", "/", "\\", "℃"]):
+        if any(char in part for char in [" ", "(", ")", "%", "/", "\\"]):
             parts.append(f'"{part}"')
         else:
             parts.append(part)
@@ -191,10 +219,11 @@ def run_single_task(
     args: Any,
     progress_manager: ProgressManager,
     dry_run: bool,
+    method_meta: Dict[str, Any],
     model_name: Optional[str] = None,
 ) -> str:
     task_key = make_task_key(alloy_type, alloy_config["target_column"], model_name)
-    cmd = build_command(alloy_type, alloy_config, args, model_name)
+    cmd = build_command(config_name, alloy_type, alloy_config, args, method_meta, model_name)
     logger.info(f"[RUN] {task_key}")
     logger.info(format_command_for_display(cmd))
 
@@ -211,7 +240,7 @@ def run_single_task(
 def resolve_alloy_types(config: Dict[str, Any]) -> List[str]:
     alloy_types = config.get("alloy_types")
     if alloy_types is None:
-        alloy_types = list_available_alloys_extrapolation()
+        alloy_types = list_available_alloys_ood()
     excluded = set(config.get("exclude_alloys", []))
     return [alloy for alloy in alloy_types if alloy not in excluded]
 
@@ -224,15 +253,14 @@ def run_batch_config(
     resume: bool,
 ) -> Dict[str, str]:
     args = argparse.Namespace(**config)
-    if not hasattr(args, "random_state"):
-        args.random_state = 42
-
+    method_meta = get_ood_method_meta(args.ood_method)
     results: Dict[str, str] = {}
+
     for alloy_type in resolve_alloy_types(config):
-        alloy_base_config = get_alloy_config_extrapolation(alloy_type)
+        alloy_base_config = get_alloy_config_ood(alloy_type)
         targets = alloy_base_config.get("targets") or []
         if not targets:
-            raise ValueError(f"No targets configured for extrapolation alloy: {alloy_type}")
+            raise ValueError(f"No targets configured for OOD alloy: {alloy_type}")
 
         for target_column in targets:
             alloy_config = alloy_base_config.copy()
@@ -244,12 +272,13 @@ def run_batch_config(
                     results[task_key] = "skipped"
                     continue
                 results[task_key] = run_single_task(
-                    config_name,
-                    alloy_type,
-                    alloy_config,
-                    args,
-                    progress_manager,
-                    dry_run,
+                    config_name=config_name,
+                    alloy_type=alloy_type,
+                    alloy_config=alloy_config,
+                    args=args,
+                    progress_manager=progress_manager,
+                    dry_run=dry_run,
+                    method_meta=method_meta,
                 )
                 continue
 
@@ -259,29 +288,42 @@ def run_batch_config(
                     results[task_key] = "skipped"
                     continue
                 results[task_key] = run_single_task(
-                    config_name,
-                    alloy_type,
-                    alloy_config,
-                    args,
-                    progress_manager,
-                    dry_run,
-                    model_name,
+                    config_name=config_name,
+                    alloy_type=alloy_type,
+                    alloy_config=alloy_config,
+                    args=args,
+                    progress_manager=progress_manager,
+                    dry_run=dry_run,
+                    method_meta=method_meta,
+                    model_name=model_name,
                 )
 
     return results
 
 
 def list_configs() -> None:
-    logger.info("Available extrapolation alloy configs:")
-    for alloy_name, alloy_cfg in ALLOY_CONFIGS_EXTRAPOLATION.items():
+    logger.info("Available OOD alloy configs:")
+    for alloy_name, alloy_cfg in ALLOY_CONFIGS_OOD.items():
         logger.info(f"  - {alloy_name}: targets={alloy_cfg['targets']}, data={alloy_cfg['raw_data']}")
-    logger.info("Available extrapolation batch configs:")
-    for config_name, config in BATCH_CONFIGS_EXTRAPOLATION.items():
+
+    logger.info("Available OOD methods:")
+    for method_name in list_available_ood_methods():
+        method_meta = OOD_METHODS[method_name]
+        logger.info(
+            "  - %s: multi_fold=%s, summary=%s, result_suffix=%s",
+            method_name,
+            method_meta["is_multi_fold"],
+            method_meta["summary_file_name"],
+            method_meta["result_dir_suffix"],
+        )
+
+    logger.info("Available OOD batch configs:")
+    for config_name, config in BATCH_CONFIGS_OOD.items():
         logger.info(f"  - {config_name}: {config['description']}")
 
 
 def create_argument_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Independent extrapolation batch runner")
+    parser = argparse.ArgumentParser(description="Unified OOD batch runner")
     mode_group = parser.add_mutually_exclusive_group(required=False)
     mode_group.add_argument("--list", action="store_true")
     mode_group.add_argument("--config", nargs="+")
@@ -313,10 +355,10 @@ def main() -> None:
         list_configs()
         return
 
-    run_configs = args.config if args.config else list(BATCH_CONFIGS_EXTRAPOLATION.keys())
-    invalid = [name for name in run_configs if name not in BATCH_CONFIGS_EXTRAPOLATION]
+    run_configs = args.config if args.config else list(BATCH_CONFIGS_OOD.keys())
+    invalid = [name for name in run_configs if name not in BATCH_CONFIGS_OOD]
     if invalid:
-        raise ValueError(f"Invalid extrapolation batch configs: {', '.join(invalid)}")
+        raise ValueError(f"Invalid OOD batch configs: {', '.join(invalid)}")
 
     set_seed(42)
     started_at = datetime.now()
@@ -324,9 +366,9 @@ def main() -> None:
 
     for config_name in run_configs:
         logger.info("=" * 100)
-        logger.info(f"Running extrapolation batch config: {config_name}")
+        logger.info(f"Running OOD batch config: {config_name}")
         logger.info("=" * 100)
-        config = BATCH_CONFIGS_EXTRAPOLATION[config_name]
+        config = BATCH_CONFIGS_OOD[config_name]
         all_results[config_name] = run_batch_config(
             config_name=config_name,
             config=config,
@@ -336,7 +378,7 @@ def main() -> None:
         )
 
     logger.info("=" * 100)
-    logger.info("Extrapolation batch summary")
+    logger.info("OOD batch summary")
     logger.info("=" * 100)
     for config_name, results in all_results.items():
         logger.info(config_name)
@@ -347,7 +389,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-# python -m src.pipelines.run_batch_extrapolation --config experiment1_all_ml_models_extrapolation --dry_run --resume
-# python -m src.pipelines.run_batch_extrapolation --config experiment1_all_ml_models_extrapolation
-# conda activate llm
-# python -m src.pipelines.run_batch_extrapolation --config experiment2a_all_nn_scibert_extrapolation experiment2b_all_nn_steelbert_extrapolation experiment2c_all_nn_matscibert_extrapolation

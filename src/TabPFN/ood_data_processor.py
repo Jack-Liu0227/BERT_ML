@@ -1,44 +1,30 @@
 """
-Data preparation utilities for single-target TabPFN extrapolation.
+Data preparation utilities for single-target TabPFN OOD runs.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Any, Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-
-@dataclass
-class ExtrapolationSplitSummary:
-    target_col: str
-    extrapolation_side: str
-    test_size: float
-    train_size: int
-    test_size_rows: int
-    total_size: int
-    train_target_min: float
-    train_target_max: float
-    test_target_min: float
-    test_target_max: float
-
-    def to_dict(self) -> Dict[str, object]:
-        return asdict(self)
+from src.data_processing.strength_ood_common import PreparedFold, PreparedSplit, save_prepared_split
+from src.data_processing.strength_ood_registry import create_ood_processor
 
 
-class TabPFNExtrapolationDataProcessor:
-    """Prepare one target at a time for low-to-high extrapolation."""
+class TabPFNOODDataProcessor:
+    """Prepare one target at a time for supported OOD split strategies."""
 
     def __init__(self, config: Dict, base_path: str = "."):
         self.config = config
         self.base_path = Path(base_path)
         self.scaler = StandardScaler()
         self.data: pd.DataFrame | None = None
+        self.prepared_result: PreparedSplit | List[PreparedFold] | None = None
         self.available_feature_cols: list[str] = []
         self.numeric_feature_cols: list[str] = []
         self.non_numeric_feature_cols: list[str] = []
@@ -105,7 +91,7 @@ class TabPFNExtrapolationDataProcessor:
             frame[target_col] = frame[target_col].fillna(frame[target_col].mean())
 
         if frame.empty:
-            raise ValueError("No rows remain after preparing extrapolation data")
+            raise ValueError("No rows remain after preparing OOD data")
 
         frame = frame.sort_values("ID").reset_index(drop=True)
         self._set_feature_type_metadata(frame[self.available_feature_cols])
@@ -114,40 +100,75 @@ class TabPFNExtrapolationDataProcessor:
         )
         return frame
 
-    def split_low_high(
+    def prepare_ood_result(
         self,
         feature_frame: pd.DataFrame,
         target_col: str,
+        split_strategy: str,
         test_size: float = 0.2,
         extrapolation_side: str = "low_to_high",
-    ) -> Tuple[pd.DataFrame, pd.DataFrame, ExtrapolationSplitSummary]:
-        if not 0 < test_size < 1:
-            raise ValueError("test_size must be between 0 and 1")
-        if extrapolation_side != "low_to_high":
-            raise ValueError("Only 'low_to_high' extrapolation is supported")
-        if len(feature_frame) < 2:
-            raise ValueError("At least two valid rows are required for extrapolation split")
-
-        ordered = feature_frame.sort_values(target_col, ascending=True).reset_index(drop=True)
-        train_count = int(round(len(ordered) * (1 - test_size)))
-        train_count = max(1, min(train_count, len(ordered) - 1))
-
-        train_df = ordered.iloc[:train_count].copy().reset_index(drop=True)
-        test_df = ordered.iloc[train_count:].copy().reset_index(drop=True)
-
-        summary = ExtrapolationSplitSummary(
-            target_col=target_col,
-            extrapolation_side=extrapolation_side,
-            test_size=test_size,
-            train_size=len(train_df),
-            test_size_rows=len(test_df),
-            total_size=len(ordered),
-            train_target_min=float(train_df[target_col].min()),
-            train_target_max=float(train_df[target_col].max()),
-            test_target_min=float(test_df[target_col].min()),
-            test_target_max=float(test_df[target_col].max()),
+        sparse_candidate_pool_size: int = 500,
+        sparse_cluster_count: int = 50,
+        sparse_samples_per_cluster: int = 1,
+        sparse_kde_bandwidth: float | None = None,
+        sparse_neighbors_per_seed: int = 5,
+        loco_cluster_count: int = 5,
+    ) -> PreparedSplit | List[PreparedFold]:
+        processor = create_ood_processor(
+            split_strategy=split_strategy,
+            input_file=str(self.base_path / self.config["raw_data"]),
+            random_state=int(self.config.get("random_state", 42)),
         )
-        return train_df, test_df, summary
+        prepared_result = processor.prepare(
+            df=feature_frame,
+            target_col=target_col,
+            test_ratio=test_size,
+            extrapolation_side=extrapolation_side,
+            sparse_candidate_pool_size=sparse_candidate_pool_size,
+            sparse_cluster_count=sparse_cluster_count,
+            sparse_samples_per_cluster=sparse_samples_per_cluster,
+            sparse_kde_bandwidth=sparse_kde_bandwidth,
+            sparse_neighbors_per_seed=sparse_neighbors_per_seed,
+            loco_cluster_count=loco_cluster_count,
+        )
+        self.prepared_result = prepared_result
+        return prepared_result
+
+    def prepare_ood_split(
+        self,
+        feature_frame: pd.DataFrame,
+        target_col: str,
+        split_strategy: str,
+        test_size: float = 0.2,
+        extrapolation_side: str = "low_to_high",
+        sparse_candidate_pool_size: int = 500,
+        sparse_cluster_count: int = 50,
+        sparse_samples_per_cluster: int = 1,
+        sparse_kde_bandwidth: float | None = None,
+        sparse_neighbors_per_seed: int = 5,
+        loco_cluster_count: int = 5,
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+        prepared_result = self.prepare_ood_result(
+            feature_frame=feature_frame,
+            target_col=target_col,
+            split_strategy=split_strategy,
+            test_size=test_size,
+            extrapolation_side=extrapolation_side,
+            sparse_candidate_pool_size=sparse_candidate_pool_size,
+            sparse_cluster_count=sparse_cluster_count,
+            sparse_samples_per_cluster=sparse_samples_per_cluster,
+            sparse_kde_bandwidth=sparse_kde_bandwidth,
+            sparse_neighbors_per_seed=sparse_neighbors_per_seed,
+            loco_cluster_count=loco_cluster_count,
+        )
+        if isinstance(prepared_result, list):
+            raise ValueError(
+                f"TabPFN OOD trainer currently supports only single-split strategies, got '{split_strategy}'"
+            )
+
+        train_df = prepared_result.train_df.copy().reset_index(drop=True)
+        test_df = prepared_result.test_df.copy().reset_index(drop=True)
+        return train_df, test_df, dict(prepared_result.summary)
 
     def build_model_inputs(
         self,
@@ -190,25 +211,14 @@ class TabPFNExtrapolationDataProcessor:
         self,
         train_df: pd.DataFrame,
         test_df: pd.DataFrame,
-        summary: ExtrapolationSplitSummary,
+        summary: Dict[str, Any],
         output_dir: str,
     ) -> Dict[str, str]:
-        output_path = Path(output_dir)
-        output_path.mkdir(parents=True, exist_ok=True)
+        if self.prepared_result is None:
+            raise ValueError("No prepared OOD split is available to save")
+        if isinstance(self.prepared_result, list):
+            raise ValueError("save_split_artifacts only supports single prepared splits")
+        if self.prepared_result.summary != summary:
+            raise ValueError("Provided summary does not match prepared OOD split summary")
 
-        train_path = output_path / "train_low.csv"
-        test_path = output_path / "test_high.csv"
-        summary_path = output_path / "split_summary.json"
-
-        train_df.to_csv(train_path, index=False)
-        test_df.to_csv(test_path, index=False)
-        summary_path.write_text(
-            json.dumps(summary.to_dict(), indent=2, ensure_ascii=False),
-            encoding="utf-8",
-        )
-
-        return {
-            "train_file": str(train_path),
-            "test_file": str(test_path),
-            "summary_file": str(summary_path),
-        }
+        return save_prepared_split(self.prepared_result, output_dir)
