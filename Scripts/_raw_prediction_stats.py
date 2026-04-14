@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -69,8 +69,11 @@ def collect_optuna_test_metrics(optuna_trials_dir: Path) -> pd.DataFrame:
 
     rows: List[Dict] = []
     trial_dirs = sorted(
-        [path for path in optuna_trials_dir.iterdir() if path.is_dir() and path.name.startswith("trial_")],
-        key=lambda path: int(path.name.split("_")[1]),
+        [path for path in optuna_trials_dir.rglob("trial_*") if path.is_dir() and path.name.startswith("trial_")],
+        key=lambda path: (
+            str(path.parent),
+            int(path.name.split("_")[1]) if path.name.split("_")[1].isdigit() else 0,
+        ),
     )
 
     for trial_dir in trial_dirs:
@@ -120,6 +123,139 @@ def collect_optuna_test_metrics(optuna_trials_dir: Path) -> pd.DataFrame:
     if not rows:
         return pd.DataFrame()
     return pd.DataFrame(rows)
+
+
+def collect_optuna_test_metrics_from_dirs(optuna_trials_dirs: Sequence[Path]) -> pd.DataFrame:
+    candidate_dirs = [Path(path) for path in optuna_trials_dirs if Path(path).exists()]
+    if not candidate_dirs:
+        return pd.DataFrame()
+    if len(candidate_dirs) == 1:
+        return collect_optuna_test_metrics(candidate_dirs[0])
+
+    metrics_frames: List[pd.DataFrame] = []
+    trial_num_offset = 0
+    for index, optuna_dir in enumerate(candidate_dirs):
+        metrics_df = collect_optuna_test_metrics(optuna_dir)
+        if metrics_df.empty:
+            continue
+
+        metrics_df = metrics_df.copy()
+        metrics_df["trial_id"] = metrics_df["trial_id"].astype(str).map(lambda value: f"group{index}_{value}")
+        metrics_df["trial_num"] = metrics_df["trial_num"].astype(int) + trial_num_offset
+        trial_num_offset = int(metrics_df["trial_num"].max()) + 1000
+        metrics_frames.append(metrics_df)
+
+    if not metrics_frames:
+        return pd.DataFrame()
+    return pd.concat(metrics_frames, ignore_index=True)
+
+
+def build_trial_level_test_metrics(metrics_df: pd.DataFrame) -> pd.DataFrame:
+    if metrics_df.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        metrics_df.groupby(["property", "trial_id", "trial_num"], as_index=False)
+        .agg(
+            trial_mean_test_r2=("r2", "mean"),
+            trial_mean_test_mae=("mae", "mean"),
+            trial_mean_test_rmse=("rmse", "mean"),
+            trial_fold_count=("fold", "count"),
+        )
+        .sort_values(["property", "trial_num", "trial_id"], ascending=[True, True, True], na_position="last")
+        .reset_index(drop=True)
+    )
+    return grouped
+
+
+def _std_or_zero(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    if numeric.empty:
+        return 0.0
+    std_value = numeric.std()
+    if pd.isna(std_value):
+        return 0.0
+    return float(std_value)
+
+
+def infer_model_dir_from_predictions_file(predictions_file: str | Path) -> Optional[str]:
+    path = Path(str(predictions_file))
+    try:
+        return str(path.parents[4])
+    except IndexError:
+        return None
+
+
+def summarize_optuna_model_trials_from_metrics(
+    metrics_df: pd.DataFrame,
+    property_name: str | None = None,
+) -> Dict[str, Dict[str, object]]:
+    if metrics_df.empty:
+        return {}
+
+    working_df = metrics_df.copy()
+    if property_name is not None:
+        working_df = working_df[working_df["property"].astype(str) == str(property_name)].copy()
+    if working_df.empty:
+        return {}
+
+    summaries: Dict[str, Dict[str, object]] = {}
+    for current_property, property_df in working_df.groupby("property", sort=True):
+        trial_df = build_trial_level_test_metrics(property_df)
+        if trial_df.empty:
+            continue
+
+        summary_test_r2 = float(trial_df["trial_mean_test_r2"].mean())
+        summary_test_mae = float(trial_df["trial_mean_test_mae"].mean())
+        summary_test_rmse = float(trial_df["trial_mean_test_rmse"].mean())
+
+        representative_df = property_df.assign(
+            _distance_to_summary_test_r2=(pd.to_numeric(property_df["r2"], errors="coerce") - summary_test_r2).abs()
+        ).sort_values(
+            ["_distance_to_summary_test_r2", "r2", "trial_num", "fold"],
+            ascending=[True, False, True, True],
+            na_position="last",
+        )
+        representative_row = representative_df.iloc[0]
+        representative_predictions_file = str(representative_row["predictions_file"])
+        representative_model_dir = infer_model_dir_from_predictions_file(representative_predictions_file)
+
+        summaries[str(current_property)] = {
+            "trial_count": int(trial_df["trial_id"].nunique()),
+            "fold_count": int(len(property_df)),
+            "summary_test_r2": summary_test_r2,
+            "summary_test_r2_std": _std_or_zero(trial_df["trial_mean_test_r2"]),
+            "summary_test_mae": summary_test_mae,
+            "summary_test_mae_std": _std_or_zero(trial_df["trial_mean_test_mae"]),
+            "summary_test_rmse": summary_test_rmse,
+            "summary_test_rmse_std": _std_or_zero(trial_df["trial_mean_test_rmse"]),
+            "representative_selection_mode": "closest_summary_test_r2_fold",
+            "representative_trial_id": str(representative_row["trial_id"]),
+            "representative_fold": int(representative_row["fold"]),
+            "representative_test_r2": float(representative_row["r2"]),
+            "representative_test_mae": float(representative_row["mae"]),
+            "representative_test_rmse": float(representative_row["rmse"]),
+            "representative_predictions_file": representative_predictions_file,
+            "representative_model_dir": representative_model_dir,
+        }
+
+    return summaries
+
+
+def summarize_optuna_model_trials(
+    optuna_trials_dir: Path,
+    property_name: str | None = None,
+) -> Dict[str, Dict[str, object]]:
+    metrics_df = collect_optuna_test_metrics(optuna_trials_dir)
+    return summarize_optuna_model_trials_from_metrics(metrics_df, property_name=property_name)
+
+
+def summarize_optuna_model_trials_from_dirs(
+    optuna_trials_dirs: Sequence[Path],
+    property_name: str | None = None,
+) -> Dict[str, Dict[str, object]]:
+    metrics_df = collect_optuna_test_metrics_from_dirs(optuna_trials_dirs)
+    return summarize_optuna_model_trials_from_metrics(metrics_df, property_name=property_name)
 
 
 def _property_tokens(property_name: str) -> List[str]:
