@@ -1,34 +1,16 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
-import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
-import seaborn as sns
+
+from _bestplus_tabpfn_triptych_config import default_config_path, load_triptych_config
+from _bestplus_tabpfn_triptych_plotting import plot_triptych, prepare_task_table
 
 
-METHOD_ORDER = [
-    "Extrapolation",
-    "LOCO",
-    "SparseXcluster",
-    "SparseXsingle",
-    "SparseYcluster",
-    "SparseYsingle",
-]
-SERIES_ORDER = [
-    "BERT-best",
-    "Traditional-best",
-    "TabPFN-2.5-Plus-Numeric",
-    "TabPFN-2.5-Plus-Text",
-]
-PALETTE = {
-    "BERT-best": "#1b9e77",
-    "Traditional-best": "#7570b3",
-    "TabPFN-2.5-Plus-Numeric": "#d95f02",
-    "TabPFN-2.5-Plus-Text": "#e7298a",
-}
 TASK_KEYS = ["alloy_family", "dataset_name", "property"]
 CASE_KEYS = TASK_KEYS + ["ood_method"]
 
@@ -95,8 +77,14 @@ def canonicalize_summary_schema(df: pd.DataFrame) -> pd.DataFrame:
     _coalesce_column(working_df, "representative_test_rmse", ["test_rmse", "final_test_rmse"])
     _coalesce_column(working_df, "representative_predictions_file", ["predictions_file"])
     _coalesce_column(working_df, "representative_plot_file", ["plot_file"])
+    _coalesce_column(working_df, "artifact_test_r2", [])
+    _coalesce_column(working_df, "artifact_test_mae", [])
+    _coalesce_column(working_df, "artifact_test_rmse", [])
+    _coalesce_column(working_df, "plot_test_r2", ["artifact_test_r2", "summary_test_r2"])
+    _coalesce_column(working_df, "plot_test_mae", ["artifact_test_mae", "summary_test_mae"])
+    _coalesce_column(working_df, "plot_test_rmse", ["artifact_test_rmse", "summary_test_rmse"])
 
-    for column in [
+    numeric_columns = [
         "summary_test_r2",
         "summary_test_r2_std",
         "summary_test_mae",
@@ -109,25 +97,45 @@ def canonicalize_summary_schema(df: pd.DataFrame) -> pd.DataFrame:
         "representative_test_r2",
         "representative_test_mae",
         "representative_test_rmse",
-    ]:
+        "artifact_test_r2",
+        "artifact_test_mae",
+        "artifact_test_rmse",
+        "plot_test_r2",
+        "plot_test_mae",
+        "plot_test_rmse",
+    ]
+    for column in numeric_columns:
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
 
     for std_col in ["summary_test_r2_std", "summary_test_mae_std", "summary_test_rmse_std"]:
         working_df.loc[tabpfn_mask & working_df[std_col].isna(), std_col] = 0.0
     for count_col in ["trial_count", "fold_count"]:
         working_df.loc[tabpfn_mask & working_df[count_col].isna(), count_col] = 1
-    working_df.loc[tabpfn_mask & working_df["representative_selection_mode"].isna(), "representative_selection_mode"] = "single_run"
+    working_df.loc[
+        tabpfn_mask & working_df["representative_selection_mode"].isna(),
+        "representative_selection_mode",
+    ] = "single_run"
     return working_df
 
 
-def select_best_family_rows(df: pd.DataFrame, family_name: str, aggregate_label: str) -> pd.DataFrame:
+def select_best_family_rows(
+    df: pd.DataFrame,
+    family_name: str,
+    aggregate_label: str,
+    config: dict,
+) -> pd.DataFrame:
     family_df = df[df["model_family"] == family_name].copy()
     if family_df.empty:
         return family_df
 
-    family_df["_sort_r2"] = pd.to_numeric(family_df["summary_test_r2"], errors="coerce").fillna(-np.inf)
-    family_df["_sort_r2_std"] = pd.to_numeric(family_df["summary_test_r2_std"], errors="coerce").fillna(np.inf)
-    family_df["_sort_mae"] = pd.to_numeric(family_df["summary_test_mae"], errors="coerce").fillna(np.inf)
+    selection_cfg = config["selection"]
+    best_metric = selection_cfg["family_best_metric"]
+    std_metric = selection_cfg["family_best_std_metric"]
+    mae_metric = selection_cfg["family_best_mae_metric"]
+
+    family_df["_sort_r2"] = pd.to_numeric(family_df[best_metric], errors="coerce").fillna(-np.inf)
+    family_df["_sort_r2_std"] = pd.to_numeric(family_df[std_metric], errors="coerce").fillna(np.inf)
+    family_df["_sort_mae"] = pd.to_numeric(family_df[mae_metric], errors="coerce").fillna(np.inf)
     family_df = family_df.sort_values(
         CASE_KEYS + ["_sort_r2", "_sort_r2_std", "_sort_mae", "model"],
         ascending=[True, True, True, True, False, True, True, True],
@@ -140,167 +148,68 @@ def select_best_family_rows(df: pd.DataFrame, family_name: str, aggregate_label:
     return selected
 
 
-def build_selected_rows(summary_csv: Path) -> pd.DataFrame:
+def build_selected_rows(summary_csv: Path, config: dict) -> pd.DataFrame:
     df = pd.read_csv(summary_csv)
     if df.empty:
         return df
 
     df = canonicalize_summary_schema(df)
 
-    bert_best = select_best_family_rows(df, "BERT", "BERT-best")
-    traditional_best = select_best_family_rows(df, "Traditional", "Traditional-best")
+    bert_best = select_best_family_rows(df, "BERT", "BERT-best", config)
+    traditional_best = select_best_family_rows(df, "Traditional", "Traditional-best", config)
 
-    tab_df = df[df["model_family"] == "TabPFN"].copy()
-    if not tab_df.empty:
-        tab_df["aggregate_label"] = tab_df["model"]
+    standalone_mask = ~df["model_family"].astype(str).isin({"BERT", "Traditional"})
+    standalone_df = df[standalone_mask].copy()
+    if not standalone_df.empty:
+        standalone_df["aggregate_label"] = (
+            standalone_df["display_label"]
+            .where(standalone_df["display_label"].notna(), standalone_df["model"])
+            .astype(str)
+        )
 
-    selected = pd.concat([bert_best, traditional_best, tab_df], ignore_index=True)
+    selected = pd.concat([bert_best, traditional_best, standalone_df], ignore_index=True)
     if selected.empty:
         return selected
 
-    selected["ood_method"] = pd.Categorical(selected["ood_method"], categories=METHOD_ORDER, ordered=True)
+    configured_series_order = [str(label) for label in config["series_order"]]
+    active_series_order = [
+        label
+        for label in configured_series_order
+        if label in set(selected["aggregate_label"].astype(str))
+    ]
+    unconfigured_labels = [
+        label for label in selected["aggregate_label"].astype(str).drop_duplicates().tolist() if label not in active_series_order
+    ]
+    active_series_order.extend(sorted(unconfigured_labels))
+    selected["active_series_order"] = ",".join(active_series_order)
+
+    selected["ood_method"] = pd.Categorical(selected["ood_method"], categories=config["method_order"], ordered=True)
     selected["aggregate_label"] = pd.Categorical(
-        selected["aggregate_label"], categories=SERIES_ORDER, ordered=True
+        selected["aggregate_label"], categories=active_series_order, ordered=True
     )
-    selected["is_negative_r2"] = pd.to_numeric(selected["summary_test_r2"], errors="coerce") < 0
-    selected["gap_to_best_among_4"] = (
-        selected.groupby(CASE_KEYS, observed=True)["summary_test_r2"].transform("max") - selected["summary_test_r2"]
-    )
-    selected["is_win"] = selected["gap_to_best_among_4"].eq(0)
+    selected["summary_test_r2"] = pd.to_numeric(selected["summary_test_r2"], errors="coerce")
+    selected["summary_test_r2_std"] = pd.to_numeric(selected["summary_test_r2_std"], errors="coerce").fillna(0.0)
+    selected["summary_test_mae"] = pd.to_numeric(selected["summary_test_mae"], errors="coerce")
+    selected["plot_test_r2"] = pd.to_numeric(selected["plot_test_r2"], errors="coerce")
+    selected["plot_test_mae"] = pd.to_numeric(selected["plot_test_mae"], errors="coerce")
+    selected["plot_test_rmse"] = pd.to_numeric(selected["plot_test_rmse"], errors="coerce")
+    negative_flag_metric = config["display"]["negative_flag_metric"]
+    selected["negative_r2_flag"] = pd.to_numeric(selected[negative_flag_metric], errors="coerce") < 0
     return selected.sort_values(CASE_KEYS + ["aggregate_label"]).reset_index(drop=True)
 
 
-def summarise_task(task_df: pd.DataFrame) -> pd.DataFrame:
-    summary = (
-        task_df.groupby(["ood_method", "aggregate_label"], observed=True)
-        .agg(
-            median_summary_test_r2=("summary_test_r2", "median"),
-            q1_summary_test_r2=("summary_test_r2", lambda s: s.quantile(0.25)),
-            q3_summary_test_r2=("summary_test_r2", lambda s: s.quantile(0.75)),
-            win_rate=("is_win", "mean"),
-            negative_r2_rate=("is_negative_r2", "mean"),
-            representative_model=("model", lambda s: s.iloc[0]),
-            representative_summary_test_r2=("summary_test_r2", lambda s: s.iloc[0]),
-            representative_summary_test_r2_std=("summary_test_r2_std", lambda s: s.iloc[0]),
-            representative_summary_test_mae=("summary_test_mae", lambda s: s.iloc[0]),
-            n=("summary_test_r2", "size"),
-        )
-        .reset_index()
-    )
-    summary["win_rate"] *= 100
-    summary["negative_r2_rate"] *= 100
-    return summary
+def build_outputs(selected: pd.DataFrame, output_dir: Path, config: dict) -> None:
+    output_cfg = config["output"]
+    output_formats = [str(fmt).lstrip(".") for fmt in output_cfg.get("formats", ["png"])]
+    if output_cfg.get("clean_output_dir", True) and output_dir.exists():
+        shutil.rmtree(output_dir)
 
+    data_dir = output_dir / output_cfg["data_subdir"]
+    figure_dir = output_dir / output_cfg["figure_subdir"]
+    data_dir.mkdir(parents=True, exist_ok=True)
+    figure_dir.mkdir(parents=True, exist_ok=True)
 
-def plot_triptych(summary: pd.DataFrame, title: str, output_path: Path) -> None:
-    sns.set_theme(style="whitegrid", font="DejaVu Sans")
-
-    fig = plt.figure(figsize=(20, 10), constrained_layout=True)
-    gs = fig.add_gridspec(2, 2, width_ratios=[1.8, 1], height_ratios=[1, 1])
-
-    ax1 = fig.add_subplot(gs[:, 0])
-    x = np.arange(len(METHOD_ORDER))
-    offsets = {
-        "BERT-best": -0.27,
-        "Traditional-best": -0.09,
-        "TabPFN-2.5-Plus-Numeric": 0.09,
-        "TabPFN-2.5-Plus-Text": 0.27,
-    }
-
-    for label in SERIES_ORDER:
-        sub = summary[summary["aggregate_label"] == label].sort_values("ood_method")
-        if sub.empty:
-            continue
-        y = sub["median_summary_test_r2"].to_numpy()
-        yerr = np.vstack(
-            [
-                y - sub["q1_summary_test_r2"].to_numpy(),
-                sub["q3_summary_test_r2"].to_numpy() - y,
-            ]
-        )
-        ax1.errorbar(
-            x + offsets[label],
-            y,
-            yerr=yerr,
-            fmt="o-",
-            capsize=4,
-            lw=2.2,
-            markersize=7,
-            color=PALETTE[label],
-            label=label,
-        )
-
-    ax1.axhline(0, color="black", lw=1, alpha=0.6)
-    ax1.set_xticks(x)
-    ax1.set_xticklabels(METHOD_ORDER, rotation=20)
-    ax1.set_xlabel("OOD method")
-    ax1.set_ylabel("Summary test R2 (median with IQR)")
-    ax1.set_title("Best-of-family comparison using model-level summary_test_r2")
-    ax1.legend(title="Series", loc="lower right", frameon=True)
-    ax1.text(
-        0.02,
-        0.97,
-        "BERT-best / Traditional-best are chosen by summary_test_r2 desc, summary_test_r2_std asc, "
-        "summary_test_mae asc, then model asc. TabPFN variants stay as independent single-run baselines.",
-        transform=ax1.transAxes,
-        va="top",
-        ha="left",
-        fontsize=10,
-    )
-
-    ax2 = fig.add_subplot(gs[0, 1])
-    win_pivot = (
-        summary.pivot(index="aggregate_label", columns="ood_method", values="win_rate")
-        .reindex(index=SERIES_ORDER, columns=METHOD_ORDER)
-    )
-    sns.heatmap(
-        win_pivot,
-        annot=True,
-        fmt=".0f",
-        cmap="YlGnBu",
-        cbar_kws={"label": "Win rate among 4 series (%)"},
-        ax=ax2,
-        linewidths=0.5,
-        linecolor="white",
-        vmin=0,
-        vmax=100,
-    )
-    ax2.set_title("Task win rate")
-    ax2.set_xlabel("OOD method")
-    ax2.set_ylabel("")
-    ax2.tick_params(axis="x", rotation=20)
-
-    ax3 = fig.add_subplot(gs[1, 1])
-    neg_pivot = (
-        summary.pivot(index="aggregate_label", columns="ood_method", values="negative_r2_rate")
-        .reindex(index=SERIES_ORDER, columns=METHOD_ORDER)
-    )
-    sns.heatmap(
-        neg_pivot,
-        annot=True,
-        fmt=".0f",
-        cmap="Reds",
-        cbar_kws={"label": "Negative R2 rate (%)"},
-        ax=ax3,
-        linewidths=0.5,
-        linecolor="white",
-        vmin=0,
-        vmax=100,
-    )
-    ax3.set_title("Instability signal")
-    ax3.set_xlabel("OOD method")
-    ax3.set_ylabel("")
-    ax3.tick_params(axis="x", rotation=20)
-
-    fig.suptitle(title, fontsize=18, y=1.02)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-    fig.savefig(output_path, dpi=300, bbox_inches="tight")
-    plt.close(fig)
-
-
-def build_outputs(selected: pd.DataFrame, output_dir: Path) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    selected.to_csv(output_dir / "selected_rows.csv", index=False, encoding="utf-8-sig")
+    selected.to_csv(data_dir / "selected_rows.csv", index=False, encoding="utf-8-sig")
 
     all_summaries: list[pd.DataFrame] = []
     tasks = (
@@ -316,11 +225,11 @@ def build_outputs(selected: pd.DataFrame, output_dir: Path) -> None:
             & (selected["dataset_name"] == task["dataset_name"])
             & (selected["property"] == task["property"])
         ].copy()
-        summary = summarise_task(task_df)
-        summary["alloy_family"] = task["alloy_family"]
-        summary["dataset_name"] = task["dataset_name"]
-        summary["property"] = task["property"]
-        all_summaries.append(summary)
+        task_table = prepare_task_table(task_df, config)
+        task_table["alloy_family"] = task["alloy_family"]
+        task_table["dataset_name"] = task["dataset_name"]
+        task_table["property"] = task["property"]
+        all_summaries.append(task_table)
 
         stem = "__".join(
             [
@@ -330,16 +239,18 @@ def build_outputs(selected: pd.DataFrame, output_dir: Path) -> None:
                 "bestplus_tabpfn_triptych",
             ]
         )
-        summary.to_csv(output_dir / f"{stem}.csv", index=False, encoding="utf-8-sig")
-        plot_triptych(
-            summary,
-            title=f"OOD summary for {task['alloy_family']} | {task['dataset_name']} | {task['property']}",
-            output_path=output_dir / f"{stem}.png",
-        )
+        task_table.to_csv(data_dir / f"{stem}.csv", index=False, encoding="utf-8-sig")
+        for fmt in output_formats:
+            plot_triptych(
+                task_df,
+                title=output_cfg["title_template"].format(**task),
+                output_path=figure_dir / f"{stem}.{fmt}",
+                config=config,
+            )
 
     if all_summaries:
         pd.concat(all_summaries, ignore_index=True).to_csv(
-            output_dir / "all_tasks_bestplus_tabpfn_triptych_summary.csv",
+            data_dir / "all_tasks_bestplus_tabpfn_triptych_summary.csv",
             index=False,
             encoding="utf-8-sig",
         )
@@ -356,24 +267,32 @@ def main() -> None:
         help="Combined OOD summary CSV.",
     )
     parser.add_argument(
+        "--config",
+        type=Path,
+        default=default_config_path(),
+        help="Triptych JSON config file.",
+    )
+    parser.add_argument(
         "--output-dir",
         type=Path,
         default=Path("output/ood_summary_reports/Combined/figure/per_task_bestplus_tabpfn"),
-        help="Directory for per-task triptych outputs.",
+        help="Root directory for per-task triptych outputs.",
     )
     args = parser.parse_args()
 
     if not args.summary_csv.exists():
         raise FileNotFoundError(f"Summary CSV not found: {args.summary_csv}")
 
-    selected = build_selected_rows(args.summary_csv)
+    config = load_triptych_config(args.config)
+    selected = build_selected_rows(args.summary_csv, config)
     if selected.empty:
         print(f"No rows available in summary CSV: {args.summary_csv}")
         return
 
-    build_outputs(selected, args.output_dir)
+    build_outputs(selected, args.output_dir, config)
     print(f"Per-task triptych outputs written to: {args.output_dir}")
     print(f"Selected rows: {len(selected)}")
+    print(f"Config used: {args.config}")
 
 
 if __name__ == "__main__":

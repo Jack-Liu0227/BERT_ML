@@ -62,7 +62,7 @@ def infer_case_context(base_dir: Path, metrics_path: Path, payload: dict) -> tup
 
     if "folds" in relative_parts:
         fold_pos = relative_parts.index("folds")
-        model_dir = base_dir.joinpath(*relative_parts[: fold_pos + 1])
+        model_dir = base_dir.joinpath(*relative_parts[: fold_pos + 2])
     else:
         model_dir = metrics_path.parent.parent
 

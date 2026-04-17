@@ -6,11 +6,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from _external_ood_sources import load_external_ood_sources
 from _ood_summary_common import (
     OOD_METHOD_ORDER,
     normalize_alloy_family_name,
     plot_case_metric,
     reset_output_dir,
+    resolve_case_level_artifact,
     safe_name,
     save_csv,
 )
@@ -32,6 +34,7 @@ CANONICAL_COLUMNS = [
     "ood_method",
     "model_family",
     "model",
+    "display_label",
     "model_dir",
     "source_dir",
     "trial_count",
@@ -50,6 +53,16 @@ CANONICAL_COLUMNS = [
     "representative_test_rmse",
     "representative_predictions_file",
     "representative_plot_file",
+    "artifact_selection_mode",
+    "artifact_predictions_file",
+    "artifact_expected_split_file",
+    "artifact_test_r2",
+    "artifact_test_mae",
+    "artifact_test_rmse",
+    "artifact_test_row_count",
+    "plot_test_r2",
+    "plot_test_mae",
+    "plot_test_rmse",
     "family_best_metric",
     "family_rank_score",
     "rank_within_family",
@@ -69,6 +82,13 @@ NUMERIC_COLUMNS = [
     "representative_test_r2",
     "representative_test_mae",
     "representative_test_rmse",
+    "artifact_test_r2",
+    "artifact_test_mae",
+    "artifact_test_rmse",
+    "artifact_test_row_count",
+    "plot_test_r2",
+    "plot_test_mae",
+    "plot_test_rmse",
     "family_rank_score",
     "rank_within_family",
 ]
@@ -139,6 +159,8 @@ def canonicalize_family_summary(df: pd.DataFrame, family_name: str) -> pd.DataFr
     for column in ["alloy_family", "dataset_name", "property", "ood_method", "model", "model_dir", "source_dir"]:
         if column not in working_df.columns:
             working_df[column] = pd.NA
+    if "display_label" not in working_df.columns:
+        working_df["display_label"] = working_df["model"]
 
     single_run_defaults = {
         "trial_count": 1 if family_name == "TabPFN" else pd.NA,
@@ -173,6 +195,8 @@ def canonicalize_family_summary(df: pd.DataFrame, family_name: str) -> pd.DataFr
     _coalesce_column(working_df, "is_family_best", [], default=False)
 
     for column in NUMERIC_COLUMNS:
+        if column not in working_df.columns:
+            working_df[column] = np.nan
         working_df[column] = pd.to_numeric(working_df[column], errors="coerce")
     if family_name == "TabPFN":
         for std_col in ["summary_test_r2_std", "summary_test_mae_std", "summary_test_rmse_std"]:
@@ -203,6 +227,103 @@ def load_family_summary(reports_root: Path, family_name: str) -> pd.DataFrame:
     return df.reindex(columns=CANONICAL_COLUMNS)
 
 
+def enrich_with_artifact_metrics(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df
+
+    working_df = df.copy()
+    existing_artifact_defaults = {
+        "artifact_selection_mode": pd.Series(pd.NA, index=working_df.index, dtype="object"),
+        "artifact_predictions_file": pd.Series(pd.NA, index=working_df.index, dtype="object"),
+        "artifact_expected_split_file": pd.Series(pd.NA, index=working_df.index, dtype="object"),
+        "artifact_test_r2": pd.Series(np.nan, index=working_df.index, dtype="float64"),
+        "artifact_test_mae": pd.Series(np.nan, index=working_df.index, dtype="float64"),
+        "artifact_test_rmse": pd.Series(np.nan, index=working_df.index, dtype="float64"),
+        "artifact_test_row_count": pd.Series(np.nan, index=working_df.index, dtype="float64"),
+    }
+    artifact_columns = {
+        column: (
+            working_df[column].copy()
+            if column in working_df.columns
+            else default_series.copy()
+        )
+        for column, default_series in existing_artifact_defaults.items()
+    }
+
+    for idx, row in working_df.iterrows():
+        has_existing_artifact = any(
+            pd.notna(working_df.at[idx, col])
+            for col in ["artifact_test_r2", "artifact_test_mae", "artifact_test_rmse", "artifact_predictions_file"]
+            if col in working_df.columns
+        )
+        if has_existing_artifact:
+            continue
+        artifact_info = resolve_case_level_artifact(row)
+        if not artifact_info:
+            continue
+        artifact_columns["artifact_selection_mode"].iat[idx] = artifact_info.get("source_mode", pd.NA)
+        artifact_columns["artifact_predictions_file"].iat[idx] = artifact_info.get("predictions_file", pd.NA)
+        artifact_columns["artifact_expected_split_file"].iat[idx] = artifact_info.get("expected_split_file", pd.NA)
+        artifact_columns["artifact_test_r2"].iat[idx] = pd.to_numeric(pd.Series([artifact_info.get("test_r2")]), errors="coerce").iloc[0]
+        artifact_columns["artifact_test_mae"].iat[idx] = pd.to_numeric(pd.Series([artifact_info.get("test_mae")]), errors="coerce").iloc[0]
+        artifact_columns["artifact_test_rmse"].iat[idx] = pd.to_numeric(pd.Series([artifact_info.get("test_rmse")]), errors="coerce").iloc[0]
+        artifact_columns["artifact_test_row_count"].iat[idx] = pd.to_numeric(pd.Series([artifact_info.get("test_row_count")]), errors="coerce").iloc[0]
+
+    for column, series in artifact_columns.items():
+        working_df[column] = series
+
+    if "plot_test_r2" not in working_df.columns:
+        working_df["plot_test_r2"] = np.nan
+    if "plot_test_mae" not in working_df.columns:
+        working_df["plot_test_mae"] = np.nan
+    if "plot_test_rmse" not in working_df.columns:
+        working_df["plot_test_rmse"] = np.nan
+
+    existing_plot_r2 = pd.to_numeric(working_df["plot_test_r2"], errors="coerce")
+    existing_plot_mae = pd.to_numeric(working_df["plot_test_mae"], errors="coerce")
+    existing_plot_rmse = pd.to_numeric(working_df["plot_test_rmse"], errors="coerce")
+    representative_r2 = pd.to_numeric(working_df["representative_test_r2"], errors="coerce")
+    representative_mae = pd.to_numeric(working_df["representative_test_mae"], errors="coerce")
+    representative_rmse = pd.to_numeric(working_df["representative_test_rmse"], errors="coerce")
+    artifact_r2 = pd.to_numeric(working_df["artifact_test_r2"], errors="coerce")
+    artifact_mae = pd.to_numeric(working_df["artifact_test_mae"], errors="coerce")
+    artifact_rmse = pd.to_numeric(working_df["artifact_test_rmse"], errors="coerce")
+    summary_r2 = pd.to_numeric(working_df["summary_test_r2"], errors="coerce")
+    summary_mae = pd.to_numeric(working_df["summary_test_mae"], errors="coerce")
+    summary_rmse = pd.to_numeric(working_df["summary_test_rmse"], errors="coerce")
+
+    # Combined plots/data should align with the exported alloy-case artifacts under
+    # output/ood_summary_reports/*/01_alloy_cases/... . Those selected files now track
+    # the original experiment's actual OOD test split, i.e. artifact_test_*.
+    # Keep representative_* separately for tracing/diagnostics, but do not use it as
+    # the primary Combined plotting value.
+    working_df["plot_test_r2"] = existing_plot_r2.where(existing_plot_r2.notna(), artifact_r2)
+    working_df["plot_test_r2"] = pd.to_numeric(working_df["plot_test_r2"], errors="coerce").where(
+        pd.to_numeric(working_df["plot_test_r2"], errors="coerce").notna(),
+        representative_r2,
+    ).where(
+        lambda s: s.notna(),
+        summary_r2,
+    )
+    working_df["plot_test_mae"] = existing_plot_mae.where(existing_plot_mae.notna(), artifact_mae)
+    working_df["plot_test_mae"] = pd.to_numeric(working_df["plot_test_mae"], errors="coerce").where(
+        pd.to_numeric(working_df["plot_test_mae"], errors="coerce").notna(),
+        representative_mae,
+    ).where(
+        lambda s: s.notna(),
+        summary_mae,
+    )
+    working_df["plot_test_rmse"] = existing_plot_rmse.where(existing_plot_rmse.notna(), artifact_rmse)
+    working_df["plot_test_rmse"] = pd.to_numeric(working_df["plot_test_rmse"], errors="coerce").where(
+        pd.to_numeric(working_df["plot_test_rmse"], errors="coerce").notna(),
+        representative_rmse,
+    ).where(
+        lambda s: s.notna(),
+        summary_rmse,
+    )
+    return working_df.reindex(columns=CANONICAL_COLUMNS)
+
+
 def build_case_stem(alloy_family: str, dataset_name: str, property_name: str) -> str:
     return "__".join(
         [
@@ -213,8 +334,14 @@ def build_case_stem(alloy_family: str, dataset_name: str, property_name: str) ->
     )
 
 
-def build_combined_df(reports_root: Path) -> pd.DataFrame:
+def build_combined_df(reports_root: Path, external_sources_config: Path | None = None) -> pd.DataFrame:
     frames = [load_family_summary(reports_root, family_name) for family_name in SUMMARY_FILES]
+    external_df = load_external_ood_sources(external_sources_config)
+    if not external_df.empty:
+        for column in CANONICAL_COLUMNS:
+            if column not in external_df.columns:
+                external_df[column] = pd.NA
+        frames.append(external_df.reindex(columns=CANONICAL_COLUMNS))
     frames = [frame for frame in frames if not frame.empty]
     if not frames:
         return pd.DataFrame(columns=CANONICAL_COLUMNS)
@@ -226,10 +353,11 @@ def build_combined_df(reports_root: Path) -> pd.DataFrame:
         categories=OOD_METHOD_ORDER,
         ordered=True,
     )
-    return combined_df.sort_values(
+    combined_df = combined_df.sort_values(
         ["alloy_family", "dataset_name", "property", "ood_method", "model_family", "model"],
         na_position="last",
     ).reset_index(drop=True)
+    return enrich_with_artifact_metrics(combined_df)
 
 
 def summarize_case_anomalies(case_df: pd.DataFrame) -> list[dict]:
@@ -242,9 +370,9 @@ def summarize_case_anomalies(case_df: pd.DataFrame) -> list[dict]:
     missing_methods = [method for method in OOD_METHOD_ORDER if method not in available_methods]
 
     for metric_col, metric_name in [
-        ("summary_test_r2", "R2"),
-        ("summary_test_mae", "MAE"),
-        ("summary_test_rmse", "RMSE"),
+        ("plot_test_r2", "R2"),
+        ("plot_test_mae", "MAE"),
+        ("plot_test_rmse", "RMSE"),
     ]:
         metric_df = case_df[["ood_method", "model_family", "model", metric_col]].copy()
         metric_df[metric_col] = pd.to_numeric(metric_df[metric_col], errors="coerce")
@@ -258,7 +386,7 @@ def summarize_case_anomalies(case_df: pd.DataFrame) -> list[dict]:
         q3 = float(values.quantile(0.75))
         iqr = q3 - q1
         if iqr > 0:
-            if metric_col == "summary_test_r2":
+            if metric_col == "plot_test_r2":
                 outlier_mask = values < (q1 - 1.5 * iqr)
             else:
                 outlier_mask = values > (q3 + 1.5 * iqr)
@@ -278,9 +406,9 @@ def summarize_case_anomalies(case_df: pd.DataFrame) -> list[dict]:
                 notes.append(f"{row['ood_method']} missing {missing_count} models")
             if bool(outlier_mask.iloc[idx]):
                 notes.append(f"{metric_name} outlier")
-            if metric_col == "summary_test_r2" and float(row[metric_col]) < 0:
+            if metric_col == "plot_test_r2" and float(row[metric_col]) < 0:
                 notes.append("R2<0")
-            if metric_col in {"summary_test_mae", "summary_test_rmse"} and median > 0 and float(row[metric_col]) >= 2.0 * median:
+            if metric_col in {"plot_test_mae", "plot_test_rmse"} and median > 0 and float(row[metric_col]) >= 2.0 * median:
                 notes.append(f"{metric_name} >= 2x median")
 
             if not notes and not missing_methods:
@@ -341,7 +469,7 @@ def export_combined_case_outputs(combined_df: pd.DataFrame, output_root: Path) -
         pivot_df = case_df.pivot_table(
             index=["model_family", "model"],
             columns="ood_method",
-            values=["summary_test_r2", "summary_test_mae", "summary_test_rmse"],
+            values=["plot_test_r2", "plot_test_mae", "plot_test_rmse"],
             aggfunc="first",
             observed=False,
         )
@@ -350,9 +478,9 @@ def export_combined_case_outputs(combined_df: pd.DataFrame, output_root: Path) -
             pivot_df = pivot_df.reset_index()
             save_csv(pivot_df, data_root / f"{case_stem}__combined_metric_pivot.csv")
 
-        plot_case_metric(case_df, image_root / f"{case_stem}__combined_r2_summary.png", "summary_test_r2", "R2")
-        plot_case_metric(case_df, image_root / f"{case_stem}__combined_mae_summary.png", "summary_test_mae", "MAE")
-        plot_case_metric(case_df, image_root / f"{case_stem}__combined_rmse_summary.png", "summary_test_rmse", "RMSE")
+        plot_case_metric(case_df, image_root / f"{case_stem}__combined_r2_summary.png", "plot_test_r2", "R2")
+        plot_case_metric(case_df, image_root / f"{case_stem}__combined_mae_summary.png", "plot_test_mae", "MAE")
+        plot_case_metric(case_df, image_root / f"{case_stem}__combined_rmse_summary.png", "plot_test_rmse", "RMSE")
 
         audit_records.extend(summarize_case_anomalies(case_df))
 
@@ -380,6 +508,12 @@ def main() -> None:
         default=None,
         help="Combined summary output directory. Defaults to <reports-root>/Combined.",
     )
+    parser.add_argument(
+        "--external-sources-config",
+        type=Path,
+        default=Path("Scripts/external_ood_model_sources.yaml"),
+        help="Optional YAML config describing extra external OOD model sources to merge into the combined summary.",
+    )
     args = parser.parse_args()
 
     if not args.reports_root.exists():
@@ -388,7 +522,8 @@ def main() -> None:
     output_root = args.output_dir or (args.reports_root / "Combined")
     reset_output_dir(output_root)
 
-    combined_df = build_combined_df(args.reports_root)
+    external_config = args.external_sources_config if args.external_sources_config and args.external_sources_config.exists() else None
+    combined_df = build_combined_df(args.reports_root, external_config)
     if combined_df.empty:
         print(f"No family summaries found under: {args.reports_root}")
         return

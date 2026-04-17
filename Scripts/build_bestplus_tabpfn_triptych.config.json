@@ -1,0 +1,136 @@
+{
+  "method_order": [
+    "Extrapolation",
+    "LOCO",
+    "SparseXcluster",
+    "SparseXsingle",
+    "SparseYcluster",
+    "SparseYsingle"
+  ],
+  "series_order": [
+    "BERT-best",
+    "Traditional-best",
+    "TabPFN-2.5-Plus-Numeric",
+    "TabPFN-2.5-Plus-Text"
+  ],
+  "palette": {
+    "BERT-best": "#1b9e77",
+    "Traditional-best": "#7570b3",
+    "TabPFN-2.5-Plus-Numeric": "#d95f02",
+    "TabPFN-2.5-Plus-Text": "#e7298a"
+  },
+  "labels": {
+    "method_aliases": {},
+    "series_aliases": {},
+    "summary_xlabel": "OOD method",
+    "baseline_xlabel": "OOD method",
+    "rank_xlabel": "OOD method",
+    "summary_ylabel": "summary_test_mae",
+    "baseline_ylabel": "",
+    "rank_ylabel": ""
+  },
+  "selection": {
+    "family_best_metric": "summary_test_r2",
+    "family_best_std_metric": "summary_test_r2_std",
+    "family_best_mae_metric": "summary_test_mae"
+  },
+  "display": {
+    "summary_metric": "summary_test_mae",
+    "summary_std_metric": "summary_test_mae_std",
+    "summary_metric_direction": "asc",
+    "baseline_metric": "summary_test_mae",
+    "baseline_reference_label": "Traditional-best",
+    "baseline_relative_mode": "improvement_pct",
+    "baseline_better_direction": "lower",
+    "rank_metric": "summary_test_mae",
+    "rank_metric_direction": "asc",
+    "rank_std_metric": "summary_test_mae_std",
+    "rank_std_metric_direction": "asc",
+    "rank_tiebreak_metric": "summary_test_r2",
+    "rank_tiebreak_metric_direction": "desc",
+    "negative_flag_metric": "plot_test_r2",
+    "baseline_colorbar_label": "MAE improvement vs Traditional-best (%)",
+    "rank_colorbar_label": "rank in method (1=best)"
+  },
+  "panels": {
+    "summary": {
+      "enabled": true
+    },
+    "baseline": {
+      "enabled": true
+    },
+    "rank": {
+      "enabled": true
+    }
+  },
+  "figure": {
+    "context": "notebook",
+    "font_scale": 1.0,
+    "figsize": [18, 6],
+    "panel_width_ratios": {
+      "summary": 2.2,
+      "baseline": 1.1,
+      "rank": 1.1
+    },
+    "wspace": 0.26,
+    "bar_width": 0.18,
+    "bar_capsize": 3,
+    "bar_edgecolor": "black",
+    "bar_linewidth": 0.8,
+    "summary_zero_line": false,
+    "summary_show_errorbars": true,
+    "summary_show_legend": true,
+    "summary_show_value_labels": false,
+    "summary_value_label_fmt": ".1f",
+    "summary_value_label_fontsize": 8,
+    "summary_value_label_padding": 3,
+    "summary_ylim": null,
+    "summary_xtick_rotation": 20,
+    "heatmap_xtick_rotation": 20,
+    "heatmap_ytick_rotation": 0,
+    "dpi": 300,
+    "legend_title": "Series",
+    "legend_loc": "best",
+    "legend_bbox_to_anchor": null,
+    "legend_ncol": 1,
+    "legend_fontsize": 10,
+    "legend_title_fontsize": 10,
+    "legend_frameon": true,
+    "heatmap_linewidths": 0.5,
+    "linecolor": "white",
+    "heatmap_annot_fontsize": 10,
+    "heatmap_annot_color": "black",
+    "baseline_annotation_fmt": ".1f",
+    "baseline_show_colorbar": true,
+    "baseline_cbar_shrink": 1.0,
+    "baseline_heatmap_cmap": "RdBu",
+    "baseline_heatmap_center": 0.0,
+    "baseline_vmin": null,
+    "baseline_vmax": null,
+    "rank_annotation_fmt": ".0f",
+    "rank_show_colorbar": true,
+    "rank_cmap": "Blues_r",
+    "rank_vmin": 1,
+    "rank_vmax": 4,
+    "title_fontsize": 16,
+    "panel_title_fontsize": null,
+    "axis_label_fontsize": null,
+    "tick_label_fontsize": null,
+    "show_suptitle": true,
+    "suptitle_y": 1.02,
+    "tight_layout_pad": 1.08,
+    "summary_title": "Mean trial-level MAE summary",
+    "baseline_title": "MAE vs Traditional-best baseline (%)",
+    "rank_title": "Per-method rank (by mean trial-level MAE)",
+    "save_facecolor": "white",
+    "save_transparent": false,
+    "bbox_inches": "tight"
+  },
+  "output": {
+    "clean_output_dir": true,
+    "data_subdir": "data",
+    "figure_subdir": "figure",
+    "title_template": "OOD summary for {alloy_family} | {dataset_name} | {property}",
+    "formats": ["png"]
+  }
+}

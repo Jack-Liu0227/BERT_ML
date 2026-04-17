@@ -32,7 +32,7 @@ def read_prediction_csv(file_path: Path) -> Optional[pd.DataFrame]:
     usecols = [
         column
         for column in header_columns
-        if column in {"Dataset", "set"}
+        if column in {"Dataset", "set", "ID", "id"}
         or column.endswith("_Actual")
         or column.endswith("_Predicted")
         or column.startswith("True_")
