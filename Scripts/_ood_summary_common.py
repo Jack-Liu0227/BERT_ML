@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 from typing import Iterable
@@ -689,6 +690,46 @@ def _collect_case_level_prediction_candidates(model_dir: Path) -> list[Path]:
 
 def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
     property_name = str(row.get("property", "") or "")
+    loco_fold_details = _load_loco_outer_fold_best_details(row)
+    if str(row.get("ood_method", "") or "") == "LOCO" and loco_fold_details:
+        outer_df = pd.DataFrame(loco_fold_details)
+        if not outer_df.empty and {"outer_test_r2", "outer_test_mae", "outer_test_rmse"}.issubset(outer_df.columns):
+            outer_df["outer_test_r2"] = pd.to_numeric(outer_df["outer_test_r2"], errors="coerce")
+            outer_df["outer_test_mae"] = pd.to_numeric(outer_df["outer_test_mae"], errors="coerce")
+            outer_df["outer_test_rmse"] = pd.to_numeric(outer_df["outer_test_rmse"], errors="coerce")
+            outer_df["outer_test_row_count"] = pd.to_numeric(outer_df.get("outer_test_row_count"), errors="coerce")
+            valid_outer_df = outer_df.dropna(subset=["outer_test_r2", "outer_test_mae", "outer_test_rmse"]).copy()
+            if not valid_outer_df.empty:
+                summary_test_mae = pd.to_numeric(pd.Series([row.get("summary_test_mae")]), errors="coerce").iloc[0]
+                valid_outer_df["_distance_to_summary_test_mae"] = (
+                    valid_outer_df["outer_test_mae"] - summary_test_mae
+                ).abs()
+                valid_outer_df["_sort_outer_fold"] = pd.to_numeric(
+                    valid_outer_df.get("outer_fold_index"),
+                    errors="coerce",
+                ).fillna(np.inf)
+                valid_outer_df = valid_outer_df.sort_values(
+                    ["_distance_to_summary_test_mae", "outer_test_mae", "outer_test_r2", "_sort_outer_fold"],
+                    ascending=[True, True, False, True],
+                    na_position="last",
+                    kind="stable",
+                ).reset_index(drop=True)
+                representative_outer_row = valid_outer_df.iloc[0]
+                return {
+                    "predictions_file": representative_outer_row.get("outer_predictions_file", row.get("representative_predictions_file", pd.NA)),
+                    "source_mode": "loco_outer_fold_aggregate",
+                    "expected_split_file": pd.NA,
+                    "expected_split_count": np.nan,
+                    "test_r2": float(valid_outer_df["outer_test_r2"].mean()),
+                    "test_mae": float(valid_outer_df["outer_test_mae"].mean()),
+                    "test_rmse": float(valid_outer_df["outer_test_rmse"].mean()),
+                    "test_row_count": int(valid_outer_df["outer_test_row_count"].fillna(0).sum()),
+                    "distance_to_summary_test_r2": abs(
+                        float(valid_outer_df["outer_test_r2"].mean())
+                        - pd.to_numeric(pd.Series([row.get("summary_test_r2")]), errors="coerce").iloc[0]
+                    ),
+                }
+
     model_dir_text = str(row.get("model_dir", "") or "").strip()
     model_dir = Path(model_dir_text) if model_dir_text else None
     summary_test_r2 = pd.to_numeric(pd.Series([row.get("summary_test_r2")]), errors="coerce").iloc[0]
@@ -800,8 +841,133 @@ def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
     return selected
 
 
-def export_selected_artifacts(row: pd.Series, case_root: Path) -> None:
-    method_dir = case_root / safe_name(str(row["ood_method"])) / safe_name(str(row["model"]))
+def enrich_summary_with_artifact_and_plot_metrics(summary_df: pd.DataFrame) -> pd.DataFrame:
+    if summary_df.empty:
+        return summary_df
+
+    working_df = summary_df.copy()
+    for column in [
+        "artifact_selection_mode",
+        "artifact_predictions_file",
+        "artifact_expected_split_file",
+    ]:
+        if column not in working_df.columns:
+            working_df[column] = pd.NA
+    for column in [
+        "artifact_test_r2",
+        "artifact_test_mae",
+        "artifact_test_rmse",
+        "artifact_test_row_count",
+        "plot_test_r2",
+        "plot_test_mae",
+        "plot_test_rmse",
+    ]:
+        if column not in working_df.columns:
+            working_df[column] = pd.NA
+
+    for idx, row in working_df.iterrows():
+        artifact_info = resolve_case_level_artifact(row)
+        if not artifact_info:
+            continue
+        working_df.at[idx, "artifact_selection_mode"] = artifact_info.get("source_mode", pd.NA)
+        working_df.at[idx, "artifact_predictions_file"] = artifact_info.get("predictions_file", pd.NA)
+        working_df.at[idx, "artifact_expected_split_file"] = artifact_info.get("expected_split_file", pd.NA)
+        working_df.at[idx, "artifact_test_r2"] = artifact_info.get("test_r2", pd.NA)
+        working_df.at[idx, "artifact_test_mae"] = artifact_info.get("test_mae", pd.NA)
+        working_df.at[idx, "artifact_test_rmse"] = artifact_info.get("test_rmse", pd.NA)
+        working_df.at[idx, "artifact_test_row_count"] = artifact_info.get("test_row_count", pd.NA)
+
+    for metric in ["r2", "mae", "rmse"]:
+        plot_col = f"plot_test_{metric}"
+        artifact_col = f"artifact_test_{metric}"
+        representative_col = f"representative_test_{metric}"
+        summary_col = f"summary_test_{metric}"
+        plot_series = pd.to_numeric(working_df[plot_col], errors="coerce")
+        artifact_series = pd.to_numeric(working_df[artifact_col], errors="coerce")
+        representative_series = pd.to_numeric(working_df[representative_col], errors="coerce")
+        summary_series = pd.to_numeric(working_df[summary_col], errors="coerce")
+        plot_series = plot_series.where(plot_series.notna(), artifact_series)
+        plot_series = plot_series.where(plot_series.notna(), representative_series)
+        plot_series = plot_series.where(plot_series.notna(), summary_series)
+        working_df[plot_col] = plot_series
+
+    return working_df
+
+
+def _load_loco_outer_fold_best_details(row: pd.Series) -> list[dict[str, object]]:
+    raw_details = row.get("loco_outer_fold_best_details_json", pd.NA)
+    if pd.isna(raw_details):
+        return []
+
+    text = str(raw_details).strip()
+    if not text:
+        return []
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    details: list[dict[str, object]] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            details.append(item)
+    details.sort(
+        key=lambda item: (
+            np.inf if pd.isna(item.get("outer_fold_index")) else int(item.get("outer_fold_index")),
+            str(item.get("selected_trial_id", "")),
+        )
+    )
+    return details
+
+
+def _build_loco_outer_fold_export_row(base_row: pd.Series, fold_detail: dict[str, object]) -> pd.Series:
+    fold_row = base_row.copy()
+    fold_row["model_dir"] = fold_detail.get("model_dir", fold_row.get("model_dir", pd.NA))
+    fold_row["trial_count"] = 1
+    fold_row["fold_count"] = fold_detail.get("selected_trial_fold_count", fold_row.get("fold_count", pd.NA))
+    fold_row["summary_test_r2"] = fold_detail.get("outer_test_r2", fold_row.get("summary_test_r2", pd.NA))
+    fold_row["summary_test_r2_std"] = 0.0
+    fold_row["summary_test_mae"] = fold_detail.get("outer_test_mae", fold_row.get("summary_test_mae", pd.NA))
+    fold_row["summary_test_mae_std"] = 0.0
+    fold_row["summary_test_rmse"] = fold_detail.get("outer_test_rmse", fold_row.get("summary_test_rmse", pd.NA))
+    fold_row["summary_test_rmse_std"] = 0.0
+    fold_row["representative_selection_mode"] = "loco_outer_fold_oodtest"
+    fold_row["representative_trial_id"] = fold_detail.get(
+        "selected_trial_id",
+        fold_row.get("representative_trial_id", pd.NA),
+    )
+    fold_row["representative_fold"] = fold_detail.get(
+        "outer_fold_index",
+        fold_row.get("representative_fold", pd.NA),
+    )
+    fold_row["representative_test_r2"] = fold_detail.get(
+        "outer_test_r2",
+        fold_row.get("representative_test_r2", pd.NA),
+    )
+    fold_row["representative_test_mae"] = fold_detail.get(
+        "outer_test_mae",
+        fold_row.get("representative_test_mae", pd.NA),
+    )
+    fold_row["representative_test_rmse"] = fold_detail.get(
+        "outer_test_rmse",
+        fold_row.get("representative_test_rmse", pd.NA),
+    )
+    fold_row["representative_predictions_file"] = fold_detail.get(
+        "outer_predictions_file",
+        fold_row.get("representative_predictions_file", pd.NA),
+    )
+    fold_row["loco_outer_fold_index"] = fold_detail.get("outer_fold_index", pd.NA)
+    fold_row["loco_selected_trial_num"] = fold_detail.get("selected_trial_num", pd.NA)
+    fold_row["loco_selected_trial_fold_count"] = fold_detail.get("selected_trial_fold_count", pd.NA)
+    return fold_row
+
+
+def export_selected_artifacts(row: pd.Series, case_root: Path, *, method_dir: Path | None = None) -> None:
+    method_dir = method_dir or (case_root / safe_name(str(row["ood_method"])) / safe_name(str(row["model"])))
     artifacts_dir = method_dir / "selected_model_artifacts"
     artifacts_dir.mkdir(parents=True, exist_ok=True)
 
@@ -927,6 +1093,62 @@ def export_selected_artifacts(row: pd.Series, case_root: Path) -> None:
     save_csv(pd.DataFrame([selected_row]), method_dir / "selected_result_summary.csv")
 
 
+def export_loco_outer_fold_best_artifacts(row: pd.Series, case_root: Path) -> None:
+    if str(row.get("ood_method", "")) != "LOCO":
+        return
+
+    fold_details = _load_loco_outer_fold_best_details(row)
+    if not fold_details:
+        return
+
+    method_root = case_root / safe_name(str(row["ood_method"]))
+    model_root = method_root / safe_name(str(row["model"]))
+    model_root.mkdir(parents=True, exist_ok=True)
+
+    summary_rows: list[dict[str, object]] = []
+    for fold_detail in fold_details:
+        outer_fold_index = fold_detail.get("outer_fold_index")
+        if pd.isna(outer_fold_index) or outer_fold_index is None:
+            continue
+
+        fold_index = int(outer_fold_index)
+        fold_row = _build_loco_outer_fold_export_row(row, fold_detail)
+        summary_rows.append(
+            {
+                "alloy_family": fold_row.get("alloy_family", pd.NA),
+                "dataset_name": fold_row.get("dataset_name", pd.NA),
+                "property": fold_row.get("property", pd.NA),
+                "ood_method": fold_row.get("ood_method", pd.NA),
+                "model": fold_row.get("model", pd.NA),
+                "outer_fold_index": fold_index,
+                "selected_trial_id": fold_detail.get("selected_trial_id", pd.NA),
+                "selected_trial_num": fold_detail.get("selected_trial_num", pd.NA),
+                "selected_trial_fold_count": fold_detail.get("selected_trial_fold_count", pd.NA),
+                "selected_mean_test_r2": fold_detail.get("selected_mean_test_r2", pd.NA),
+                "selected_std_test_r2": fold_detail.get("selected_std_test_r2", pd.NA),
+                "selected_mean_test_mae": fold_detail.get("selected_mean_test_mae", pd.NA),
+                "selected_std_test_mae": fold_detail.get("selected_std_test_mae", pd.NA),
+                "selected_mean_test_rmse": fold_detail.get("selected_mean_test_rmse", pd.NA),
+                "selected_std_test_rmse": fold_detail.get("selected_std_test_rmse", pd.NA),
+                "selected_inner_predictions_file": fold_detail.get("selected_inner_predictions_file", pd.NA),
+                "outer_predictions_file": fold_detail.get("outer_predictions_file", pd.NA),
+                "outer_test_r2": fold_detail.get("outer_test_r2", pd.NA),
+                "outer_test_mae": fold_detail.get("outer_test_mae", pd.NA),
+                "outer_test_rmse": fold_detail.get("outer_test_rmse", pd.NA),
+                "outer_test_row_count": fold_detail.get("outer_test_row_count", pd.NA),
+                "model_dir": fold_detail.get("model_dir", pd.NA),
+            }
+        )
+        export_selected_artifacts(
+            fold_row,
+            case_root,
+            method_dir=method_root / f"fold_{fold_index}" / safe_name(str(row["model"])),
+        )
+
+    if summary_rows:
+        save_csv(pd.DataFrame(summary_rows), model_root / "loco_outer_fold_best_summary.csv")
+
+
 def export_case_outputs(summary_df: pd.DataFrame, summary_root: Path) -> None:
     canonical_df = annotate_family_ranks(summary_df)
     cases_root = summary_root / CASES_DIRNAME
@@ -950,6 +1172,7 @@ def export_case_outputs(summary_df: pd.DataFrame, summary_root: Path) -> None:
 
         for _, row in case_df.iterrows():
             export_selected_artifacts(row, case_root)
+            export_loco_outer_fold_best_artifacts(row, case_root)
 
 
 def create_global_exports(summary_df: pd.DataFrame, summary_root: Path, output_filename: str) -> None:

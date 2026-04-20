@@ -53,6 +53,8 @@ CANONICAL_COLUMNS = [
     "representative_test_rmse",
     "representative_predictions_file",
     "representative_plot_file",
+    "loco_outer_fold_best_count",
+    "loco_outer_fold_best_details_json",
     "artifact_selection_mode",
     "artifact_predictions_file",
     "artifact_expected_split_file",
@@ -82,6 +84,7 @@ NUMERIC_COLUMNS = [
     "representative_test_r2",
     "representative_test_mae",
     "representative_test_rmse",
+    "loco_outer_fold_best_count",
     "artifact_test_r2",
     "artifact_test_mae",
     "artifact_test_rmse",
@@ -161,6 +164,10 @@ def canonicalize_family_summary(df: pd.DataFrame, family_name: str) -> pd.DataFr
             working_df[column] = pd.NA
     if "display_label" not in working_df.columns:
         working_df["display_label"] = working_df["model"]
+    if "loco_outer_fold_best_count" not in working_df.columns:
+        working_df["loco_outer_fold_best_count"] = pd.NA
+    if "loco_outer_fold_best_details_json" not in working_df.columns:
+        working_df["loco_outer_fold_best_details_json"] = pd.NA
 
     single_run_defaults = {
         "trial_count": 1 if family_name == "TabPFN" else pd.NA,

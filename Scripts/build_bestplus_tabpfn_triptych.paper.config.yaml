@@ -26,24 +26,32 @@ labels:
   summary_xlabel: "OOD split"
   baseline_xlabel: "OOD split"
   rank_xlabel: "OOD split"
-  summary_ylabel: "Mean trial MAE"
+  summary_ylabel: "OOD-test MAE"
   baseline_ylabel: ""
   rank_ylabel: ""
 
+selection:
+  family_best_metric: "plot_test_mae"
+  family_best_metric_direction: "asc"
+  family_best_std_metric: "summary_test_mae_std"
+  family_best_std_metric_direction: "asc"
+  family_best_tiebreak_metric: "summary_test_r2"
+  family_best_tiebreak_metric_direction: "desc"
+
 display:
   # Left panel.
-  summary_metric: "summary_test_mae"
+  summary_metric: "plot_test_mae"
   summary_std_metric: "summary_test_mae_std"
 
   # Middle panel.
-  baseline_metric: "summary_test_mae"
+  baseline_metric: "plot_test_mae"
   baseline_reference_label: "Traditional-best"
   baseline_relative_mode: "improvement_pct"
   baseline_better_direction: "lower"
   baseline_colorbar_label: "Delta MAE vs Trad-best (%)"
 
   # Right panel ranking.
-  rank_metric: "summary_test_mae"
+  rank_metric: "plot_test_mae"
   rank_metric_direction: "asc"
   rank_std_metric: "summary_test_mae_std"
   rank_std_metric_direction: "asc"
@@ -77,7 +85,7 @@ figure:
   bar_edgecolor: "black"
   bar_linewidth: 0.6
   summary_zero_line: false
-  summary_show_errorbars: true
+  summary_show_errorbars: false
   summary_show_legend: true
   summary_show_value_labels: false
   summary_value_label_fmt: ".1f"
@@ -127,9 +135,9 @@ figure:
   suptitle_y: 0.985
   tight_layout_pad: 0.55
 
-  summary_title: "Mean MAE"
+  summary_title: "MAE"
   baseline_title: "Delta MAE vs Trad-best"
-  rank_title: "Rank by mean MAE"
+  rank_title: "Rank by OOD-test MAE"
 
   save_facecolor: "white"
   save_transparent: false

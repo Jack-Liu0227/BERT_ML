@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -13,7 +14,11 @@ from _ood_summary_common import (
     normalize_ood_method,
     reset_output_dir,
 )
-from _raw_prediction_stats import summarize_optuna_model_trials, summarize_optuna_model_trials_from_dirs
+from _raw_prediction_stats import (
+    summarize_loco_outer_fold_best_trials,
+    summarize_optuna_model_trials,
+    summarize_optuna_model_trials_from_dirs,
+)
 
 
 MODEL_MAP = {
@@ -35,6 +40,7 @@ def build_summary_row(
 ) -> dict[str, object]:
     representative_model_dir = summary.get("representative_model_dir") or str(model_dir)
     representative_model_path = Path(str(representative_model_dir))
+    loco_outer_fold_best_details = summary.get("loco_outer_fold_best_details") or []
     return {
         "alloy_family": normalize_alloy_family_name(alloy_family),
         "dataset_name": dataset_name,
@@ -60,6 +66,8 @@ def build_summary_row(
         "representative_test_rmse": summary.get("representative_test_rmse"),
         "representative_predictions_file": summary.get("representative_predictions_file"),
         "representative_plot_file": str(representative_model_path / "plots" / "best_model_all_sets_comparison.png"),
+        "loco_outer_fold_best_count": len(loco_outer_fold_best_details),
+        "loco_outer_fold_best_details_json": json.dumps(loco_outer_fold_best_details, ensure_ascii=False),
     }
 
 
@@ -81,6 +89,16 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                 if optuna_trials_dir.exists():
                     summaries = summarize_optuna_model_trials(
                         optuna_trials_dir,
+                        property_name=property_name,
+                    )
+                elif ood_method == "LOCO":
+                    loco_model_dirs = sorted(
+                        fold_dir
+                        for fold_dir in (model_dir / "folds").glob("fold_*")
+                        if (fold_dir / "predictions" / "optuna_trials").exists()
+                    ) if (model_dir / "folds").exists() else []
+                    summaries = summarize_loco_outer_fold_best_trials(
+                        loco_model_dirs,
                         property_name=property_name,
                     )
                 else:

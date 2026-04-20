@@ -10,6 +10,22 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 CSV_ENCODINGS = ["utf-8-sig", "utf-8", "gb18030", "gbk", "latin1"]
 TEST_LABELS = {"test", "testing", "extrapolationtest"}
+CASE_LEVEL_TEST_LABELS = {
+    "test",
+    "testing",
+    "oodtest",
+    "ood",
+    "oodtesting",
+    "extrapolationtest",
+    "extrapolation_test",
+    "extrapolation test",
+}
+LOCO_OUTER_PREDICTION_PATTERNS = [
+    "predictions/all_predictions.csv",
+    "predictions/best_model_all_predictions.csv",
+    "predictions/test_predictions.csv",
+    "predictions/best_model_test_predictions.csv",
+]
 
 
 def read_prediction_csv(file_path: Path) -> Optional[pd.DataFrame]:
@@ -184,6 +200,350 @@ def infer_model_dir_from_predictions_file(predictions_file: str | Path) -> Optio
         return str(path.parents[4])
     except IndexError:
         return None
+
+
+def _extract_outer_fold_index(path: Path) -> Optional[int]:
+    for candidate in (path, *path.parents):
+        name = str(candidate.name)
+        if not name.startswith("fold_"):
+            continue
+        suffix = name.split("_", 1)[1]
+        if suffix.isdigit():
+            return int(suffix)
+    return None
+
+
+def build_trial_level_test_metrics_detailed(metrics_df: pd.DataFrame) -> pd.DataFrame:
+    if metrics_df.empty:
+        return pd.DataFrame()
+
+    grouped = (
+        metrics_df.groupby(["property", "trial_id", "trial_num"], as_index=False)
+        .agg(
+            trial_mean_test_r2=("r2", "mean"),
+            trial_std_test_r2=("r2", _std_or_zero),
+            trial_mean_test_mae=("mae", "mean"),
+            trial_std_test_mae=("mae", _std_or_zero),
+            trial_mean_test_rmse=("rmse", "mean"),
+            trial_std_test_rmse=("rmse", _std_or_zero),
+            trial_fold_count=("fold", "count"),
+        )
+        .sort_values(["property", "trial_num", "trial_id"], ascending=[True, True, True], na_position="last")
+        .reset_index(drop=True)
+    )
+    return grouped
+
+
+def _select_best_trial_row(trial_df: pd.DataFrame) -> Optional[pd.Series]:
+    if trial_df.empty:
+        return None
+
+    ranked_df = trial_df.copy()
+    ranked_df["_sort_mean_mae"] = pd.to_numeric(ranked_df["trial_mean_test_mae"], errors="coerce").fillna(np.inf)
+    ranked_df["_sort_std_mae"] = pd.to_numeric(ranked_df["trial_std_test_mae"], errors="coerce").fillna(np.inf)
+    ranked_df["_sort_mean_r2"] = pd.to_numeric(ranked_df["trial_mean_test_r2"], errors="coerce").fillna(-np.inf)
+    ranked_df["_sort_trial_num"] = pd.to_numeric(ranked_df["trial_num"], errors="coerce").fillna(np.inf)
+    ranked_df = ranked_df.sort_values(
+        ["_sort_mean_mae", "_sort_std_mae", "_sort_mean_r2", "_sort_trial_num", "trial_id"],
+        ascending=[True, True, False, True, True],
+        na_position="last",
+        kind="mergesort",
+    ).reset_index(drop=True)
+    selected = ranked_df.iloc[0].copy()
+    for helper_col in ["_sort_mean_mae", "_sort_std_mae", "_sort_mean_r2", "_sort_trial_num"]:
+        if helper_col in selected.index:
+            selected = selected.drop(labels=[helper_col])
+    return selected
+
+
+def _select_inner_fold_predictions_for_trial(
+    trial_metrics_df: pd.DataFrame,
+    *,
+    target_mean_mae: float,
+) -> Optional[pd.Series]:
+    if trial_metrics_df.empty:
+        return None
+
+    ranked_df = trial_metrics_df.copy()
+    ranked_df["_distance_to_trial_mean_mae"] = (
+        pd.to_numeric(ranked_df["mae"], errors="coerce") - float(target_mean_mae)
+    ).abs()
+    ranked_df = ranked_df.sort_values(
+        ["_distance_to_trial_mean_mae", "mae", "r2", "fold", "predictions_file"],
+        ascending=[True, True, False, True, True],
+        na_position="last",
+        kind="mergesort",
+    ).reset_index(drop=True)
+    selected = ranked_df.iloc[0].copy()
+    if "_distance_to_trial_mean_mae" in selected.index:
+        selected = selected.drop(labels=["_distance_to_trial_mean_mae"])
+    return selected
+
+
+def _clean_optional_scalar(value: object) -> object:
+    if pd.isna(value):
+        return None
+    if isinstance(value, np.integer):
+        return int(value)
+    if isinstance(value, np.floating):
+        return float(value)
+    return value
+
+
+def _normalize_dataset_values(dataset_series: pd.Series) -> pd.Series:
+    return (
+        dataset_series.astype(str)
+        .str.strip()
+        .str.lower()
+        .str.replace(" ", "", regex=False)
+        .str.replace("_", "", regex=False)
+    )
+
+
+def _compute_prediction_metrics(
+    df: pd.DataFrame,
+    *,
+    actual_col: str,
+    pred_col: str,
+) -> Optional[dict[str, float]]:
+    valid_df = df[[actual_col, pred_col]].dropna()
+    if valid_df.empty:
+        return None
+
+    y_true = valid_df[actual_col].to_numpy()
+    y_pred = valid_df[pred_col].to_numpy()
+    return {
+        "test_r2": float(r2_score(y_true, y_pred)),
+        "test_mae": float(mean_absolute_error(y_true, y_pred)),
+        "test_rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+        "test_row_count": int(len(valid_df)),
+    }
+
+
+def _collect_outer_prediction_candidates(model_dir: Path) -> list[Path]:
+    if not model_dir.exists():
+        return []
+
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in LOCO_OUTER_PREDICTION_PATTERNS:
+        for candidate in model_dir.glob(pattern):
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(candidate)
+    return candidates
+
+
+def load_case_level_test_metrics(
+    model_dir: Path,
+    property_name: str,
+) -> Optional[dict[str, object]]:
+    for candidate_file in _collect_outer_prediction_candidates(model_dir):
+        df = read_prediction_csv(candidate_file)
+        if df is None:
+            continue
+
+        dataset_col, actual_col, pred_col = resolve_prediction_columns(df, property_name)
+        if actual_col is None or pred_col is None:
+            continue
+
+        metric_df: Optional[pd.DataFrame] = None
+        if dataset_col is not None:
+            normalized_dataset = _normalize_dataset_values(df[dataset_col])
+            normalized_labels = {
+                label.replace(" ", "").replace("_", "").lower() for label in CASE_LEVEL_TEST_LABELS
+            }
+            metric_df = df.loc[normalized_dataset.isin(normalized_labels)].copy()
+            if metric_df.empty and "test_predictions" in candidate_file.name.lower():
+                metric_df = df.copy()
+        else:
+            metric_df = df.copy()
+
+        if metric_df is None or metric_df.empty:
+            continue
+
+        metrics = _compute_prediction_metrics(metric_df, actual_col=actual_col, pred_col=pred_col)
+        if metrics is None:
+            continue
+
+        return {
+            "predictions_file": str(candidate_file),
+            **metrics,
+        }
+
+    return None
+
+
+def summarize_loco_outer_fold_best_trials(
+    outer_model_dirs: Sequence[Path],
+    property_name: str | None = None,
+) -> Dict[str, Dict[str, object]]:
+    candidate_model_dirs = [Path(path) for path in outer_model_dirs if Path(path).exists()]
+    if not candidate_model_dirs:
+        return {}
+
+    property_records: dict[str, list[dict[str, object]]] = {}
+    for model_dir in sorted(
+        candidate_model_dirs,
+        key=lambda path: (
+            np.inf if _extract_outer_fold_index(path) is None else _extract_outer_fold_index(path),
+            str(path),
+        ),
+    ):
+        optuna_trials_dir = model_dir / "predictions" / "optuna_trials"
+        if not optuna_trials_dir.exists():
+            continue
+
+        metrics_df = collect_optuna_test_metrics(optuna_trials_dir)
+        if metrics_df.empty:
+            continue
+
+        working_df = metrics_df.copy()
+        if property_name is not None:
+            working_df = working_df[working_df["property"].astype(str) == str(property_name)].copy()
+        if working_df.empty:
+            continue
+
+        outer_fold_index = _extract_outer_fold_index(model_dir)
+        for current_property, property_df in working_df.groupby("property", sort=True):
+            trial_df = build_trial_level_test_metrics_detailed(property_df)
+            if trial_df.empty:
+                continue
+
+            best_trial = _select_best_trial_row(trial_df)
+            if best_trial is None:
+                continue
+
+            selected_trial_df = property_df[property_df["trial_id"].astype(str) == str(best_trial["trial_id"])].copy()
+            representative_inner_row = _select_inner_fold_predictions_for_trial(
+                selected_trial_df,
+                target_mean_mae=float(best_trial["trial_mean_test_mae"]),
+            )
+            outer_test_metrics = load_case_level_test_metrics(model_dir, str(current_property))
+            if outer_test_metrics is None:
+                continue
+            property_records.setdefault(str(current_property), []).append(
+                {
+                    "outer_fold_index": outer_fold_index,
+                    "model_dir": str(model_dir),
+                    "selected_trial_id": str(best_trial["trial_id"]),
+                    "selected_trial_num": int(best_trial["trial_num"]),
+                    "selected_trial_fold_count": int(best_trial["trial_fold_count"]),
+                    "selected_mean_test_r2": float(best_trial["trial_mean_test_r2"]),
+                    "selected_std_test_r2": float(best_trial["trial_std_test_r2"]),
+                    "selected_mean_test_mae": float(best_trial["trial_mean_test_mae"]),
+                    "selected_std_test_mae": float(best_trial["trial_std_test_mae"]),
+                    "selected_mean_test_rmse": float(best_trial["trial_mean_test_rmse"]),
+                    "selected_std_test_rmse": float(best_trial["trial_std_test_rmse"]),
+                    "selected_inner_predictions_file": (
+                        str(representative_inner_row["predictions_file"])
+                        if representative_inner_row is not None
+                        else None
+                    ),
+                    "outer_predictions_file": outer_test_metrics["predictions_file"],
+                    "outer_test_r2": float(outer_test_metrics["test_r2"]),
+                    "outer_test_mae": float(outer_test_metrics["test_mae"]),
+                    "outer_test_rmse": float(outer_test_metrics["test_rmse"]),
+                    "outer_test_row_count": int(outer_test_metrics["test_row_count"]),
+                }
+            )
+
+    summaries: Dict[str, Dict[str, object]] = {}
+    for current_property, outer_rows in sorted(property_records.items()):
+        outer_df = pd.DataFrame(outer_rows)
+        if outer_df.empty:
+            continue
+
+        outer_test_r2 = pd.to_numeric(outer_df["outer_test_r2"], errors="coerce")
+        outer_test_mae = pd.to_numeric(outer_df["outer_test_mae"], errors="coerce")
+        outer_test_rmse = pd.to_numeric(outer_df["outer_test_rmse"], errors="coerce")
+        valid_outer_mask = outer_test_r2.notna() & outer_test_mae.notna() & outer_test_rmse.notna()
+        outer_df = outer_df.loc[valid_outer_mask].reset_index(drop=True)
+        if outer_df.empty:
+            continue
+
+        summary_test_r2 = float(pd.to_numeric(outer_df["outer_test_r2"], errors="coerce").mean())
+        summary_test_mae = float(pd.to_numeric(outer_df["outer_test_mae"], errors="coerce").mean())
+        summary_test_rmse = float(pd.to_numeric(outer_df["outer_test_rmse"], errors="coerce").mean())
+
+        representative_df = outer_df.assign(
+            _distance_to_summary_test_mae=(
+                pd.to_numeric(outer_df["outer_test_mae"], errors="coerce") - summary_test_mae
+            ).abs(),
+            _sort_outer_fold=pd.to_numeric(outer_df["outer_fold_index"], errors="coerce").fillna(np.inf),
+        ).sort_values(
+            ["_distance_to_summary_test_mae", "outer_test_mae", "outer_test_r2", "_sort_outer_fold"],
+            ascending=[True, True, False, True],
+            na_position="last",
+            kind="mergesort",
+        )
+        representative_row = representative_df.iloc[0]
+
+        representative_fold = representative_row["outer_fold_index"]
+        if pd.notna(representative_fold):
+            representative_fold = int(representative_fold)
+        else:
+            representative_fold = pd.NA
+
+        loco_outer_fold_best_details: list[dict[str, object]] = []
+        ordered_outer_df = outer_df.assign(
+            _sort_outer_fold=pd.to_numeric(outer_df["outer_fold_index"], errors="coerce").fillna(np.inf),
+        ).sort_values(
+            ["_sort_outer_fold", "outer_test_mae", "outer_test_r2", "selected_trial_id"],
+            ascending=[True, True, False, True],
+            na_position="last",
+            kind="mergesort",
+        )
+        for _, outer_row in ordered_outer_df.iterrows():
+            loco_outer_fold_best_details.append(
+                {
+                    "outer_fold_index": _clean_optional_scalar(outer_row.get("outer_fold_index")),
+                    "model_dir": _clean_optional_scalar(outer_row.get("model_dir")),
+                    "selected_trial_id": _clean_optional_scalar(outer_row.get("selected_trial_id")),
+                    "selected_trial_num": _clean_optional_scalar(outer_row.get("selected_trial_num")),
+                    "selected_trial_fold_count": _clean_optional_scalar(outer_row.get("selected_trial_fold_count")),
+                    "selected_mean_test_r2": _clean_optional_scalar(outer_row.get("selected_mean_test_r2")),
+                    "selected_std_test_r2": _clean_optional_scalar(outer_row.get("selected_std_test_r2")),
+                    "selected_mean_test_mae": _clean_optional_scalar(outer_row.get("selected_mean_test_mae")),
+                    "selected_std_test_mae": _clean_optional_scalar(outer_row.get("selected_std_test_mae")),
+                    "selected_mean_test_rmse": _clean_optional_scalar(outer_row.get("selected_mean_test_rmse")),
+                    "selected_std_test_rmse": _clean_optional_scalar(outer_row.get("selected_std_test_rmse")),
+                    "selected_inner_predictions_file": _clean_optional_scalar(
+                        outer_row.get("selected_inner_predictions_file")
+                    ),
+                    "outer_predictions_file": _clean_optional_scalar(outer_row.get("outer_predictions_file")),
+                    "outer_test_r2": _clean_optional_scalar(outer_row.get("outer_test_r2")),
+                    "outer_test_mae": _clean_optional_scalar(outer_row.get("outer_test_mae")),
+                    "outer_test_rmse": _clean_optional_scalar(outer_row.get("outer_test_rmse")),
+                    "outer_test_row_count": _clean_optional_scalar(outer_row.get("outer_test_row_count")),
+                }
+            )
+
+        summaries[str(current_property)] = {
+            "trial_count": int(len(outer_df)),
+            "fold_count": int(len(outer_df)),
+            "summary_test_r2": summary_test_r2,
+            "summary_test_r2_std": _std_or_zero(outer_df["outer_test_r2"]),
+            "summary_test_mae": summary_test_mae,
+            "summary_test_mae_std": _std_or_zero(outer_df["outer_test_mae"]),
+            "summary_test_rmse": summary_test_rmse,
+            "summary_test_rmse_std": _std_or_zero(outer_df["outer_test_rmse"]),
+            "representative_selection_mode": "closest_summary_test_mae_outer_fold_oodtest",
+            "representative_trial_id": str(representative_row["selected_trial_id"]),
+            "representative_fold": representative_fold,
+            "representative_test_r2": float(representative_row["outer_test_r2"]),
+            "representative_test_mae": float(representative_row["outer_test_mae"]),
+            "representative_test_rmse": float(representative_row["outer_test_rmse"]),
+            "representative_predictions_file": representative_row["outer_predictions_file"],
+            "representative_model_dir": str(representative_row["model_dir"]),
+            "loco_outer_fold_best_details": loco_outer_fold_best_details,
+        }
+
+    return summaries
 
 
 def summarize_optuna_model_trials_from_metrics(

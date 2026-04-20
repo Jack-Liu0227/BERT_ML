@@ -46,6 +46,15 @@ def _coalesce_column(
     df[target] = series
 
 
+def _direction_to_ascending(direction: str) -> bool:
+    normalized = str(direction).strip().lower()
+    if normalized in {"asc", "ascending", "low", "lower", "min", "minimum"}:
+        return True
+    if normalized in {"desc", "descending", "high", "higher", "max", "maximum"}:
+        return False
+    raise ValueError(f"Unsupported sort direction: {direction}")
+
+
 def canonicalize_summary_schema(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df
@@ -115,6 +124,15 @@ def canonicalize_summary_schema(df: pd.DataFrame) -> pd.DataFrame:
         tabpfn_mask & working_df["representative_selection_mode"].isna(),
         "representative_selection_mode",
     ] = "single_run"
+
+    loco_summary_mask = working_df["ood_method"].astype(str).eq("LOCO") & family_series.isin({"Traditional", "BERT"})
+    for metric in ["r2", "mae", "rmse"]:
+        summary_col = f"summary_test_{metric}"
+        plot_col = f"plot_test_{metric}"
+        working_df.loc[loco_summary_mask, plot_col] = pd.to_numeric(
+            working_df.loc[loco_summary_mask, summary_col],
+            errors="coerce",
+        )
     return working_df
 
 
@@ -130,20 +148,44 @@ def select_best_family_rows(
 
     selection_cfg = config["selection"]
     best_metric = selection_cfg["family_best_metric"]
+    best_metric_direction = selection_cfg.get("family_best_metric_direction", "desc")
     std_metric = selection_cfg["family_best_std_metric"]
-    mae_metric = selection_cfg["family_best_mae_metric"]
+    std_metric_direction = selection_cfg.get("family_best_std_metric_direction", "asc")
+    tiebreak_metric = selection_cfg.get("family_best_tiebreak_metric")
+    tiebreak_metric_direction = selection_cfg.get("family_best_tiebreak_metric_direction", "asc")
 
-    family_df["_sort_r2"] = pd.to_numeric(family_df[best_metric], errors="coerce").fillna(-np.inf)
-    family_df["_sort_r2_std"] = pd.to_numeric(family_df[std_metric], errors="coerce").fillna(np.inf)
-    family_df["_sort_mae"] = pd.to_numeric(family_df[mae_metric], errors="coerce").fillna(np.inf)
+    family_df["_sort_best_metric"] = pd.to_numeric(family_df[best_metric], errors="coerce")
+    if _direction_to_ascending(best_metric_direction):
+        family_df["_sort_best_metric"] = family_df["_sort_best_metric"].fillna(np.inf)
+    else:
+        family_df["_sort_best_metric"] = family_df["_sort_best_metric"].fillna(-np.inf)
+
+    family_df["_sort_std_metric"] = pd.to_numeric(family_df[std_metric], errors="coerce")
+    if _direction_to_ascending(std_metric_direction):
+        family_df["_sort_std_metric"] = family_df["_sort_std_metric"].fillna(np.inf)
+    else:
+        family_df["_sort_std_metric"] = family_df["_sort_std_metric"].fillna(-np.inf)
+
+    sort_columns = CASE_KEYS + ["_sort_best_metric", "_sort_std_metric"]
+    ascending = [True, True, True, True, _direction_to_ascending(best_metric_direction), _direction_to_ascending(std_metric_direction)]
+
+    if tiebreak_metric:
+        family_df["_sort_tiebreak_metric"] = pd.to_numeric(family_df[tiebreak_metric], errors="coerce")
+        if _direction_to_ascending(tiebreak_metric_direction):
+            family_df["_sort_tiebreak_metric"] = family_df["_sort_tiebreak_metric"].fillna(np.inf)
+        else:
+            family_df["_sort_tiebreak_metric"] = family_df["_sort_tiebreak_metric"].fillna(-np.inf)
+        sort_columns.append("_sort_tiebreak_metric")
+        ascending.append(_direction_to_ascending(tiebreak_metric_direction))
+
     family_df = family_df.sort_values(
-        CASE_KEYS + ["_sort_r2", "_sort_r2_std", "_sort_mae", "model"],
-        ascending=[True, True, True, True, False, True, True, True],
+        sort_columns + ["model"],
+        ascending=ascending + [True],
         kind="mergesort",
         na_position="last",
     )
     selected = family_df.groupby(CASE_KEYS, as_index=False, observed=True).head(1).copy()
-    selected = selected.drop(columns=["_sort_r2", "_sort_r2_std", "_sort_mae"])
+    selected = selected.drop(columns=[col for col in ["_sort_best_metric", "_sort_std_metric", "_sort_tiebreak_metric"] if col in selected.columns])
     selected["aggregate_label"] = aggregate_label
     return selected
 
@@ -198,6 +240,40 @@ def build_selected_rows(summary_csv: Path, config: dict) -> pd.DataFrame:
     return selected.sort_values(CASE_KEYS + ["aggregate_label"]).reset_index(drop=True)
 
 
+def build_overall_task_rank_table(task_table: pd.DataFrame) -> pd.DataFrame:
+    if task_table.empty:
+        return pd.DataFrame()
+
+    summary_df = (
+        task_table.groupby("aggregate_label", dropna=False, observed=True)
+        .agg(
+            overall_method_count=("ood_method", "nunique"),
+            overall_mean_rank_in_method=("rank_in_method", "mean"),
+            overall_mean_plot_test_mae=("plot_test_mae", "mean"),
+            overall_worst_plot_test_mae=("plot_test_mae", "max"),
+        )
+        .reset_index()
+    )
+
+    summary_df = summary_df.sort_values(
+        [
+            "overall_mean_rank_in_method",
+            "overall_mean_plot_test_mae",
+            "overall_worst_plot_test_mae",
+            "aggregate_label",
+        ],
+        ascending=[True, True, True, True],
+        kind="mergesort",
+        na_position="last",
+    ).reset_index(drop=True)
+    summary_df["overall_rank_across_ood_methods"] = np.arange(1, len(summary_df) + 1, dtype=int)
+    summary_df["is_overall_best_across_ood_methods"] = summary_df["overall_rank_across_ood_methods"].eq(1)
+    summary_df["overall_best_criterion"] = "mean(rank_in_method by plot_test_mae)"
+    overall_best_label = str(summary_df.loc[summary_df["overall_rank_across_ood_methods"].eq(1), "aggregate_label"].iloc[0])
+    summary_df["overall_best_label"] = overall_best_label
+    return summary_df
+
+
 def build_outputs(selected: pd.DataFrame, output_dir: Path, config: dict) -> None:
     output_cfg = config["output"]
     output_formats = [str(fmt).lstrip(".") for fmt in output_cfg.get("formats", ["png"])]
@@ -212,6 +288,7 @@ def build_outputs(selected: pd.DataFrame, output_dir: Path, config: dict) -> Non
     selected.to_csv(data_dir / "selected_rows.csv", index=False, encoding="utf-8-sig")
 
     all_summaries: list[pd.DataFrame] = []
+    all_overall_rank_summaries: list[pd.DataFrame] = []
     tasks = (
         selected[TASK_KEYS]
         .drop_duplicates()
@@ -226,6 +303,18 @@ def build_outputs(selected: pd.DataFrame, output_dir: Path, config: dict) -> Non
             & (selected["property"] == task["property"])
         ].copy()
         task_table = prepare_task_table(task_df, config)
+        overall_rank_table = build_overall_task_rank_table(task_table)
+        if not overall_rank_table.empty:
+            overall_rank_table["alloy_family"] = task["alloy_family"]
+            overall_rank_table["dataset_name"] = task["dataset_name"]
+            overall_rank_table["property"] = task["property"]
+            all_overall_rank_summaries.append(overall_rank_table.copy())
+            task_table = task_table.merge(
+                overall_rank_table,
+                on="aggregate_label",
+                how="left",
+                validate="many_to_one",
+            )
         task_table["alloy_family"] = task["alloy_family"]
         task_table["dataset_name"] = task["dataset_name"]
         task_table["property"] = task["property"]
@@ -240,6 +329,12 @@ def build_outputs(selected: pd.DataFrame, output_dir: Path, config: dict) -> Non
             ]
         )
         task_table.to_csv(data_dir / f"{stem}.csv", index=False, encoding="utf-8-sig")
+        if not overall_rank_table.empty:
+            overall_rank_table.to_csv(
+                data_dir / f"{stem.replace('__bestplus_tabpfn_triptych', '__bestplus_tabpfn_overall_rank')}.csv",
+                index=False,
+                encoding="utf-8-sig",
+            )
         for fmt in output_formats:
             plot_triptych(
                 task_df,
@@ -251,6 +346,12 @@ def build_outputs(selected: pd.DataFrame, output_dir: Path, config: dict) -> Non
     if all_summaries:
         pd.concat(all_summaries, ignore_index=True).to_csv(
             data_dir / "all_tasks_bestplus_tabpfn_triptych_summary.csv",
+            index=False,
+            encoding="utf-8-sig",
+        )
+    if all_overall_rank_summaries:
+        pd.concat(all_overall_rank_summaries, ignore_index=True).to_csv(
+            data_dir / "all_tasks_bestplus_tabpfn_overall_rank.csv",
             index=False,
             encoding="utf-8-sig",
         )
@@ -297,3 +398,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+
+# python Scripts\build_bestplus_tabpfn_triptych.py --config Scripts\build_bestplus_tabpfn_triptych.paper.config.json --output-dir output\ood_summary_reports\Combined\figure\per_task_bestplus_tabpfn_paper

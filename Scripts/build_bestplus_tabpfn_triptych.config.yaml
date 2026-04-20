@@ -18,11 +18,11 @@ series_order:
   - gpt-5.4
 
 palette:
-  BERT-best: "#1b9e77"
-  Traditional-best: "#7570b3"
-  TabPFN-2.5-Plus-Numeric: "#d95f02"
-  TabPFN-2.5-Plus-Text: "#e7298a"
-  gpt-5.4: "#8c564b"
+  BERT-best: "#009E73"
+  Traditional-best: "#3B5BDB"
+  TabPFN-2.5-Plus-Numeric: "#E66100"
+  TabPFN-2.5-Plus-Text: "#D81B60"
+  gpt-5.4: "#4D4D4D"
 
 labels:
   method_aliases: {}
@@ -30,30 +30,33 @@ labels:
   summary_xlabel: "OOD method"
   baseline_xlabel: "OOD method"
   rank_xlabel: "OOD method"
-  summary_ylabel: "summary_test_mae"
+  summary_ylabel: "OOD-test MAE"
   baseline_ylabel: ""
   rank_ylabel: ""
 
 selection:
-  # Family-best selection still uses model-level summary R2.
-  family_best_metric: "summary_test_r2"
-  family_best_std_metric: "summary_test_r2_std"
-  family_best_mae_metric: "summary_test_mae"
+  # Family-best selection uses the minimum plotted OOD-test MAE.
+  family_best_metric: "plot_test_mae"
+  family_best_metric_direction: "asc"
+  family_best_std_metric: "summary_test_mae_std"
+  family_best_std_metric_direction: "asc"
+  family_best_tiebreak_metric: "summary_test_r2"
+  family_best_tiebreak_metric_direction: "desc"
 
 display:
   # Left panel metric.
-  summary_metric: "summary_test_mae"
+  summary_metric: "plot_test_mae"
   summary_std_metric: "summary_test_mae_std"
   summary_metric_direction: "asc"
 
   # Middle panel baseline comparison.
-  baseline_metric: "summary_test_mae"
+  baseline_metric: "plot_test_mae"
   baseline_reference_label: "Traditional-best"
   baseline_relative_mode: "improvement_pct"
   baseline_better_direction: "lower"
 
   # Right panel ranking.
-  rank_metric: "summary_test_mae"
+  rank_metric: "plot_test_mae"
   rank_metric_direction: "asc"
   rank_std_metric: "summary_test_mae_std"
   rank_std_metric_direction: "asc"
@@ -89,7 +92,7 @@ figure:
   bar_edgecolor: "black"
   bar_linewidth: 0.8
   summary_zero_line: false
-  summary_show_errorbars: true
+  summary_show_errorbars: false
   summary_show_legend: true
   summary_show_value_labels: false
   summary_value_label_fmt: ".1f"
@@ -137,9 +140,9 @@ figure:
   suptitle_y: 1.02
   tight_layout_pad: 1.08
 
-  summary_title: "Mean trial-level MAE summary"
+  summary_title: "MAE summary"
   baseline_title: "MAE vs Traditional-best baseline (%)"
-  rank_title: "Per-method rank (by mean trial-level MAE)"
+  rank_title: "Per-method rank (by OOD-test MAE)"
 
   save_facecolor: "white"
   save_transparent: false

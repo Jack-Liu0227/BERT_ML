@@ -32,7 +32,7 @@ ALLOY_CONFIGS_OOD: Dict[str, Dict[str, Any]] = {
         "processing_text_column": "Processing_Description",
         "description": "Aluminum alloy OOD dataset",
     },
-    "HEA_half": {
+    "HEA": {
         "raw_data": "datasets/HEA_data/hea.csv",
         "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
         "processing_cols": [

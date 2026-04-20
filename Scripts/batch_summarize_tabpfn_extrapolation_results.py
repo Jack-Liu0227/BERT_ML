@@ -13,6 +13,7 @@ from _ood_summary_common import (
     normalize_alloy_family_name,
     normalize_ood_method,
     reset_output_dir,
+    resolve_case_level_artifact,
 )
 
 
@@ -171,6 +172,59 @@ def aggregate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
     return aggregated_rows
 
 
+def add_artifact_and_plot_columns(summary_df: pd.DataFrame) -> pd.DataFrame:
+    if summary_df.empty:
+        return summary_df
+
+    working_df = summary_df.copy()
+    for column in [
+        "artifact_selection_mode",
+        "artifact_predictions_file",
+        "artifact_expected_split_file",
+    ]:
+        if column not in working_df.columns:
+            working_df[column] = pd.NA
+    for column in [
+        "artifact_test_r2",
+        "artifact_test_mae",
+        "artifact_test_rmse",
+        "artifact_test_row_count",
+        "plot_test_r2",
+        "plot_test_mae",
+        "plot_test_rmse",
+    ]:
+        if column not in working_df.columns:
+            working_df[column] = pd.NA
+
+    for idx, row in working_df.iterrows():
+        artifact_info = resolve_case_level_artifact(row)
+        if not artifact_info:
+            continue
+        working_df.at[idx, "artifact_selection_mode"] = artifact_info.get("source_mode", pd.NA)
+        working_df.at[idx, "artifact_predictions_file"] = artifact_info.get("predictions_file", pd.NA)
+        working_df.at[idx, "artifact_expected_split_file"] = artifact_info.get("expected_split_file", pd.NA)
+        working_df.at[idx, "artifact_test_r2"] = artifact_info.get("test_r2", pd.NA)
+        working_df.at[idx, "artifact_test_mae"] = artifact_info.get("test_mae", pd.NA)
+        working_df.at[idx, "artifact_test_rmse"] = artifact_info.get("test_rmse", pd.NA)
+        working_df.at[idx, "artifact_test_row_count"] = artifact_info.get("test_row_count", pd.NA)
+
+    for metric in ["r2", "mae", "rmse"]:
+        plot_col = f"plot_test_{metric}"
+        artifact_col = f"artifact_test_{metric}"
+        representative_col = f"representative_test_{metric}"
+        summary_col = f"summary_test_{metric}"
+        plot_series = pd.to_numeric(working_df[plot_col], errors="coerce")
+        artifact_series = pd.to_numeric(working_df[artifact_col], errors="coerce")
+        representative_series = pd.to_numeric(working_df[representative_col], errors="coerce")
+        summary_series = pd.to_numeric(working_df[summary_col], errors="coerce")
+        plot_series = plot_series.where(plot_series.notna(), artifact_series)
+        plot_series = plot_series.where(plot_series.notna(), representative_series)
+        plot_series = plot_series.where(plot_series.notna(), summary_series)
+        working_df[plot_col] = plot_series
+
+    return working_df
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Batch summarize TabPFN 2.5-Plus multi-OOD experiment results.")
     parser.add_argument(
@@ -220,6 +274,12 @@ def main() -> None:
 
     summary_df = annotate_family_ranks(pd.DataFrame(rows))
     summary_df["alloy_family"] = summary_df["alloy_family"].map(normalize_alloy_family_name)
+    # Keep the family summary aligned with the alloy-case exported artifacts and the
+    # Combined report figures. For TabPFN, especially under fold-based methods such as
+    # LOCO, summary_test_* stays as the fold aggregate, while plot/artifact metrics
+    # should point to the exact case-level OOD predictions file exported in
+    # 01_alloy_cases/.../selected_model_artifacts/.
+    summary_df = add_artifact_and_plot_columns(summary_df)
     create_global_exports(summary_df, summary_root, "all_tabpfn_ood_model_summary.csv")
     export_case_outputs(summary_df, summary_root)
 

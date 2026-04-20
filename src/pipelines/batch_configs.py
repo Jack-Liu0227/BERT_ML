@@ -67,7 +67,7 @@ ALLOY_CONFIGS = {
         "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset"
     },
 
-    "HEA_half": {
+    "HEA": {
         "raw_data": "datasets/HEA_data/hea.csv",
         "targets": ["YS(MPa)", "UTS(MPa)", "El(%)"],
         "processing_cols": [

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -14,7 +15,11 @@ from _ood_summary_common import (
     normalize_ood_method,
     reset_output_dir,
 )
-from _raw_prediction_stats import summarize_optuna_model_trials, summarize_optuna_model_trials_from_dirs
+from _raw_prediction_stats import (
+    summarize_loco_outer_fold_best_trials,
+    summarize_optuna_model_trials,
+    summarize_optuna_model_trials_from_dirs,
+)
 
 
 MODEL_MAP = {
@@ -38,6 +43,7 @@ def build_summary_row(
 ) -> dict[str, object]:
     representative_model_dir = summary.get("representative_model_dir") or str(model_dir)
     representative_model_path = Path(str(representative_model_dir))
+    loco_outer_fold_best_details = summary.get("loco_outer_fold_best_details") or []
     return {
         "alloy_family": normalize_alloy_family_name(alloy_family),
         "dataset_name": dataset_name,
@@ -63,6 +69,8 @@ def build_summary_row(
         "representative_test_rmse": summary.get("representative_test_rmse"),
         "representative_predictions_file": summary.get("representative_predictions_file"),
         "representative_plot_file": str(representative_model_path / "plots" / "final_model_evaluation_all_sets_comparison.png"),
+        "loco_outer_fold_best_count": len(loco_outer_fold_best_details),
+        "loco_outer_fold_best_details_json": json.dumps(loco_outer_fold_best_details, ensure_ascii=False),
     }
 
 
@@ -125,10 +133,16 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                     loco_case_models.setdefault(key, []).append(model_dir)
 
     for (alloy_family, dataset_name, property_name, ood_method, model_label, experiment_dir), model_dirs in sorted(loco_case_models.items()):
-        summaries = summarize_optuna_model_trials_from_dirs(
-            [model_dir / "predictions" / "optuna_trials" for model_dir in model_dirs],
-            property_name=property_name,
-        )
+        if str(ood_method) == "LOCO":
+            summaries = summarize_loco_outer_fold_best_trials(
+                model_dirs,
+                property_name=property_name,
+            )
+        else:
+            summaries = summarize_optuna_model_trials_from_dirs(
+                [model_dir / "predictions" / "optuna_trials" for model_dir in model_dirs],
+                property_name=property_name,
+            )
         if not summaries:
             continue
 
