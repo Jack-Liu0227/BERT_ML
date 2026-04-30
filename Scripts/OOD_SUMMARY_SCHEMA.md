@@ -2,6 +2,16 @@
 
 This repo now uses a canonical OOD summary schema across `BERT`, `Traditional`, `TabPFN`, and `Combined`.
 
+Supported OOD methods in the reporting layer are:
+
+- `RandomCV`
+- `Extrapolation`
+- `LOCO`
+- `SparseXcluster`
+- `SparseXsingle`
+- `SparseYcluster`
+- `SparseYsingle`
+
 ## One row means
 
 Each family summary row corresponds to:
@@ -12,9 +22,9 @@ Each family summary row corresponds to:
 - `ood_method`
 - `model`
 
-For `BERT` and `Traditional`, the row is built from all available trial/fold results of that model under the fixed case above.
+For every family, the canonical `summary_test_*` fields now align to the final exported OOD-test semantics used by `artifact_test_*` / `plot_test_*`.
 
-Special case for `LOCO`:
+Special case for outer-fold methods such as `LOCO` and `RandomCV`:
 
 - `BERT` and `Traditional` first align on the outer `fold_*` split
 - within each outer fold, re-scan `optuna_trials` and choose the best trial by:
@@ -24,6 +34,9 @@ Special case for `LOCO`:
   4. smaller trial number
 - then read the selected outer fold's final `OODTest` / test predictions from the fold root
 - `summary_test_*` is the mean/std across those outer-fold final-test metrics, not the inner-fold CV means
+
+For `RandomCV`, the outer `fold_*` directories come from a standard shuffled 5-fold random split of the full dataset.
+- `TabPFN` uses the mean/std across fold-level final `ood_test` metrics and the canonical artifact value is the same fold aggregate
 
 For `TabPFN`, the row is built from the available run units for that case:
 
@@ -44,17 +57,22 @@ For `TabPFN`, the row is built from the available run units for that case:
 For `BERT` and `Traditional`:
 
 - non-LOCO methods:
-  - first compute trial-level means from fold-level metrics
-  - then compute the model-level mean/std across trial means
+  - optuna / CV artifacts are still scanned for provenance and representative-trial tracing
+  - but canonical `summary_test_*` is overwritten to the case-level final OOD-test result from the selected exported model
+  - therefore the canonical non-LOCO `summary_test_*_std` is `0.0`
 - `LOCO`:
   - first choose one best trial inside each outer `fold_*`
   - then compute the mean/std across the corresponding outer-fold final `OODTest` metrics
-  - `trial_count` / `fold_count` both mean the number of outer folds that actually contributed valid final-test metrics
+  - `trial_count` / `fold_count` stay as the already-exported aggregation metadata for that row
 
 For `TabPFN`:
 
-- non-LOCO methods use the single available run
-- `LOCO` uses the mean/std across fold metrics
+- non-LOCO methods use the single available final `ood_test` run
+- `LOCO` uses the mean/std across fold-level final `ood_test` metrics, and canonical artifact/plot metrics use the same fold aggregate
+
+For external `LLM` rows such as `gpt-5.4`:
+
+- `summary_test_*`, `artifact_test_*`, and `plot_test_*` already refer to the same final OOD-test semantics
 
 ## Representative result fields
 
@@ -77,6 +95,8 @@ For multi-fold/multi-trial families, representative selection is for tracing onl
   1. smallest `abs(representative_test_r2 - summary_test_r2)`
   2. higher `representative_test_r2`
   3. smaller trial id / fold index / stable file order
+- non-LOCO single-run canonical rows:
+  - the representative result is rewritten to the same case-level final OOD-test artifact used by `summary_test_*`
 - `LOCO` for `BERT` and `Traditional`:
   1. smallest `abs(selected_outer_fold_oodtest_mae - summary_test_mae)`
   2. smaller selected outer-fold `OODTest` MAE
@@ -115,6 +135,6 @@ The following scripts now read the canonical schema directly:
 - `batch_summarize_combined_ood_reports.py`
 - `build_bestplus_tabpfn_triptych.py`
 
-`Combined` and triptych outputs should use the canonical LOCO-aligned final-test values for plotting and comparison.
+`Combined` and triptych outputs should use the canonical final OOD-test-aligned values for plotting and comparison.
 
-In practice, `per_task_bestplus_tabpfn` applies a LOCO-only override for `BERT` and `Traditional` so their `plot_test_*` values are aligned to these canonical LOCO final-test `summary_test_*` values before family-best selection, plotting, and ranking.
+In practice, `summary_test_*`, `artifact_test_*`, and `plot_test_*` are intended to be numerically aligned for every exported row. Any remaining family-specific extra metadata is for provenance only.

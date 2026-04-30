@@ -180,6 +180,8 @@ def build_command(
         command.extend(["--sparse_neighbors_per_seed", str(batch_config["sparse_neighbors_per_seed"])])
     if batch_config.get("loco_cluster_count") is not None:
         command.extend(["--loco_cluster_count", str(batch_config["loco_cluster_count"])])
+    if batch_config.get("baseline_num_folds") is not None:
+        command.extend(["--baseline_num_folds", str(batch_config["baseline_num_folds"])])
     if model_version:
         command.extend(["--model_version", model_version])
     if feature_mode:
@@ -394,3 +396,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# python -m src.TabPFN.run_tabpfn_ood_batch --config tabpfn_all_random_cv_baseline --backend api --feature_mode text
+# python -m src.TabPFN.run_tabpfn_ood_batch --config tabpfn_all_random_cv_baseline --backend api --feature_mode numeric

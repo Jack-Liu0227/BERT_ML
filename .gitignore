@@ -30,6 +30,9 @@ env/
 .venv
 .env
 
+# Node.js dependencies
+node_modules/
+
 # IDE
 .vscode/
 .idea/

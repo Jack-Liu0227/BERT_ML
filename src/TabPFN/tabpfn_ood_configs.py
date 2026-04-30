@@ -25,6 +25,7 @@ DEFAULT_OOD_SETTINGS: Dict[str, Any] = {
     "sparse_kde_bandwidth": None,
     "sparse_neighbors_per_seed": 5,
     "loco_cluster_count": 5,
+    "baseline_num_folds": 5,
 }
 
 
@@ -113,6 +114,11 @@ OOD_METHOD_BATCH_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "description": "Run LOCO OOD TabPFN for all supported alloys and targets.",
         "split_strategy": "loco",
         "loco_cluster_count": 5,
+    },
+    "random_cv_baseline": {
+        "description": "Run RandomCV OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "random_cv_baseline",
+        "baseline_num_folds": 5,
     },
 }
 

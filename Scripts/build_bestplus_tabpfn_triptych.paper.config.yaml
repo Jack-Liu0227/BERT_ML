@@ -9,6 +9,7 @@
 labels:
   # Rename long OOD method names for compact paper figures.
   method_aliases:
+    RandomCV: "RandCV"
     Extrapolation: "Extra"
     SparseXcluster: "SparseX\ncluster"
     SparseXsingle: "SparseX\nsingle"
@@ -116,7 +117,7 @@ figure:
   rank_show_colorbar: true
   rank_cmap: "Blues_r"
   rank_vmin: 1
-  rank_vmax: 4
+  rank_vmax: 5
 
   # Font sizes / layout.
   dpi: 400

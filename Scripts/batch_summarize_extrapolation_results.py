@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from _ood_summary_common import (
+    align_summary_metrics_to_artifact,
     annotate_family_ranks,
     create_global_exports,
     export_case_outputs,
@@ -16,7 +17,7 @@ from _ood_summary_common import (
     reset_output_dir,
 )
 from _raw_prediction_stats import (
-    summarize_loco_outer_fold_best_trials,
+    summarize_outer_fold_final_test_metrics,
     summarize_optuna_model_trials,
     summarize_optuna_model_trials_from_dirs,
 )
@@ -133,8 +134,8 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                     loco_case_models.setdefault(key, []).append(model_dir)
 
     for (alloy_family, dataset_name, property_name, ood_method, model_label, experiment_dir), model_dirs in sorted(loco_case_models.items()):
-        if str(ood_method) == "LOCO":
-            summaries = summarize_loco_outer_fold_best_trials(
+        if str(ood_method) in {"LOCO", "RandomCV"}:
+            summaries = summarize_outer_fold_final_test_metrics(
                 model_dirs,
                 property_name=property_name,
             )
@@ -191,7 +192,8 @@ def main() -> None:
         print(f"No Traditional multi-OOD metrics were collected under: {args.base_dir}")
         return
 
-    summary_df = annotate_family_ranks(pd.DataFrame(rows))
+    summary_df = align_summary_metrics_to_artifact(pd.DataFrame(rows))
+    summary_df = annotate_family_ranks(summary_df)
     summary_df["alloy_family"] = summary_df["alloy_family"].map(normalize_alloy_family_name)
     create_global_exports(summary_df, summary_root, "all_traditional_ood_model_summary.csv")
     export_case_outputs(summary_df, summary_root)

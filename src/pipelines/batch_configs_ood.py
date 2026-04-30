@@ -71,6 +71,7 @@ COMMON_OOD_DEFAULTS: Dict[str, Any] = {
     "evaluate_after_train": True,
     "test_size": 0.2,
     "random_state": 42,
+    "baseline_num_folds": 5,
 }
 
 
@@ -182,6 +183,18 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
             "loco_cluster_count": 5,
         },
         "cli_args": ["split_strategy", "test_size", "loco_cluster_count"],
+    },
+    "random_cv_baseline": {
+        "display_name": "RandomCV",
+        "config_suffix": "random_cv_baseline",
+        "result_dir_suffix": "random_cv_baseline",
+        "summary_file_name": "random_cv_manifest.json",
+        "is_multi_fold": True,
+        "default_params": {
+            "split_strategy": "random_cv_baseline",
+            "baseline_num_folds": 5,
+        },
+        "cli_args": ["split_strategy", "baseline_num_folds"],
     },
 }
 

@@ -113,6 +113,7 @@ class TabPFNOODDataProcessor:
         sparse_kde_bandwidth: float | None = None,
         sparse_neighbors_per_seed: int = 5,
         loco_cluster_count: int = 5,
+        baseline_num_folds: int = 5,
     ) -> PreparedSplit | List[PreparedFold]:
         processor = create_ood_processor(
             split_strategy=split_strategy,
@@ -130,6 +131,7 @@ class TabPFNOODDataProcessor:
             sparse_kde_bandwidth=sparse_kde_bandwidth,
             sparse_neighbors_per_seed=sparse_neighbors_per_seed,
             loco_cluster_count=loco_cluster_count,
+            baseline_num_folds=baseline_num_folds,
         )
         self.prepared_result = prepared_result
         return prepared_result
@@ -147,6 +149,7 @@ class TabPFNOODDataProcessor:
         sparse_kde_bandwidth: float | None = None,
         sparse_neighbors_per_seed: int = 5,
         loco_cluster_count: int = 5,
+        baseline_num_folds: int = 5,
     ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
         prepared_result = self.prepare_ood_result(
             feature_frame=feature_frame,
@@ -160,6 +163,7 @@ class TabPFNOODDataProcessor:
             sparse_kde_bandwidth=sparse_kde_bandwidth,
             sparse_neighbors_per_seed=sparse_neighbors_per_seed,
             loco_cluster_count=loco_cluster_count,
+            baseline_num_folds=baseline_num_folds,
         )
         if isinstance(prepared_result, list):
             raise ValueError(

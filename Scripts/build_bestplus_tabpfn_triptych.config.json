@@ -1,5 +1,6 @@
 {
   "method_order": [
+    "RandomCV",
     "Extrapolation",
     "LOCO",
     "SparseXcluster",
@@ -11,7 +12,8 @@
     "BERT-best",
     "Traditional-best",
     "TabPFN-2.5-Plus-Numeric",
-    "TabPFN-2.5-Plus-Text"
+    "TabPFN-2.5-Plus-Text",
+    "gpt-5.4"
   ],
   "palette": {
     "BERT-best": "#009E73",
@@ -115,7 +117,7 @@
     "rank_show_colorbar": true,
     "rank_cmap": "Blues_r",
     "rank_vmin": 1,
-    "rank_vmax": 4,
+    "rank_vmax": 5,
     "title_fontsize": 16,
     "panel_title_fontsize": null,
     "axis_label_fontsize": null,

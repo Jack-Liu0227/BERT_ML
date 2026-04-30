@@ -14,6 +14,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans
+from sklearn.model_selection import KFold
 from sklearn.manifold import TSNE
 from sklearn.neighbors import KernelDensity
 from sklearn.preprocessing import StandardScaler
@@ -182,6 +183,8 @@ def resolve_split_labels(split_strategy: str, extrapolation_side: str | None = N
     if split_strategy == "sparse_y_cluster":
         return "train_inlier", "test_sparse_y_cluster"
     if split_strategy == "loco":
+        return "train", "test"
+    if split_strategy == "random_cv_baseline":
         return "train", "test"
     return "train", "test"
 
@@ -956,6 +959,90 @@ def prepare_loco_folds(
                     "fold_index": int(fold_index),
                     "held_out_cluster_id": int(cluster_id),
                     "cluster_size": int(len(test_ids)),
+                },
+            )
+        )
+    return folds
+
+
+def prepare_random_cv_baseline_folds(
+    df: pd.DataFrame,
+    target_col: str,
+    num_folds: int,
+    random_state: int,
+) -> List[PreparedFold]:
+    work_df = prepare_work_dataframe(df, target_col)
+    num_folds = ensure_positive_int("baseline_num_folds", num_folds)
+    if num_folds < 2:
+        raise ValueError("baseline_num_folds must be at least 2")
+    if num_folds > len(work_df):
+        raise ValueError("baseline_num_folds cannot exceed the number of valid rows")
+
+    density_context = build_density_context(
+        work_df=work_df,
+        target_col=target_col,
+        random_state=random_state,
+        selection_space="x",
+        include_y_curve=False,
+    )
+
+    folds: List[PreparedFold] = []
+    train_label, test_label = resolve_split_labels("random_cv_baseline")
+    splitter = KFold(n_splits=num_folds, shuffle=True, random_state=random_state)
+
+    row_ids = work_df["__row_id__"].to_numpy()
+    for fold_index, (train_idx, test_idx) in enumerate(splitter.split(row_ids)):
+        train_ids = row_ids[train_idx].tolist()
+        test_ids = row_ids[test_idx].tolist()
+        selected_test_rows = enrich_rows_for_trace(work_df, target_col, density_context.density_scores, test_ids)
+        selected_test_rows["outer_fold_index"] = int(fold_index)
+        selected_test_rows["split_mode"] = "random_cv"
+        trace = build_trace_artifacts(
+            work_df=work_df,
+            target_col=target_col,
+            density_context=density_context,
+            split_strategy="random_cv_baseline",
+            train_label=train_label,
+            test_label=test_label,
+            test_row_ids=test_ids,
+            candidate_pool=selected_test_rows,
+            selected_test_rows=selected_test_rows,
+            metadata={
+                "fold_index": int(fold_index),
+                "outer_fold_index": int(fold_index),
+                "outer_fold_count": int(num_folds),
+                "split_mode": "random_cv",
+            },
+        )
+        split = make_prepared_split(
+            work_df=work_df,
+            target_col=target_col,
+            split_strategy="random_cv_baseline",
+            train_row_ids=train_ids,
+            test_row_ids=test_ids,
+            trace=trace,
+            train_label=train_label,
+            test_label=test_label,
+            extra_summary={
+                "selection_space": "x",
+                "outer_fold_count": int(num_folds),
+                "outer_fold_index": int(fold_index),
+                "fold_index": int(fold_index),
+                "split_mode": "random_cv",
+            },
+        )
+        folds.append(
+            PreparedFold(
+                fold_index=fold_index,
+                held_out_cluster_id=-1,
+                split=split,
+                metadata={
+                    "fold_index": int(fold_index),
+                    "outer_fold_index": int(fold_index),
+                    "outer_fold_count": int(num_folds),
+                    "split_mode": "random_cv",
+                    "test_size": int(len(test_ids)),
+                    "train_size": int(len(train_ids)),
                 },
             )
         )

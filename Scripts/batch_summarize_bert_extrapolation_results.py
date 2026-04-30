@@ -7,6 +7,7 @@ from pathlib import Path
 import pandas as pd
 
 from _ood_summary_common import (
+    align_summary_metrics_to_artifact,
     annotate_family_ranks,
     create_global_exports,
     export_case_outputs,
@@ -15,7 +16,7 @@ from _ood_summary_common import (
     reset_output_dir,
 )
 from _raw_prediction_stats import (
-    summarize_loco_outer_fold_best_trials,
+    summarize_outer_fold_final_test_metrics,
     summarize_optuna_model_trials,
     summarize_optuna_model_trials_from_dirs,
 )
@@ -91,13 +92,13 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                         optuna_trials_dir,
                         property_name=property_name,
                     )
-                elif ood_method == "LOCO":
+                elif ood_method in {"LOCO", "RandomCV"}:
                     loco_model_dirs = sorted(
                         fold_dir
                         for fold_dir in (model_dir / "folds").glob("fold_*")
                         if (fold_dir / "predictions" / "optuna_trials").exists()
                     ) if (model_dir / "folds").exists() else []
-                    summaries = summarize_loco_outer_fold_best_trials(
+                    summaries = summarize_outer_fold_final_test_metrics(
                         loco_model_dirs,
                         property_name=property_name,
                     )
@@ -157,7 +158,8 @@ def main() -> None:
         print(f"No BERT multi-OOD metrics were collected under: {args.base_dir}")
         return
 
-    summary_df = annotate_family_ranks(pd.DataFrame(rows))
+    summary_df = align_summary_metrics_to_artifact(pd.DataFrame(rows))
+    summary_df = annotate_family_ranks(summary_df)
     summary_df["alloy_family"] = summary_df["alloy_family"].map(normalize_alloy_family_name)
     create_global_exports(summary_df, summary_root, "all_bert_ood_model_summary.csv")
     export_case_outputs(summary_df, summary_root)

@@ -190,6 +190,74 @@ def select_best_family_rows(
     return selected
 
 
+def select_best_aggregate_rows(df: pd.DataFrame, config: dict) -> pd.DataFrame:
+    """Keep one deterministic row per task/OOD/aggregate series label.
+
+    BERT and Traditional rows are already reduced to one family-best row per
+    task/OOD case. Standalone sources (for example external LLM/TabPFN runs) can
+    still contain repeated labels for the same case when multiple source
+    directories map to the same display label. The plotting code needs a single
+    value for each (ood_method, aggregate_label) cell, so resolve such repeats
+    with the same metric priority used for family-best selection.
+    """
+    if df.empty:
+        return df
+
+    duplicate_keys = TASK_KEYS + ["ood_method", "aggregate_label"]
+    working_df = df.copy()
+    selection_cfg = config["selection"]
+
+    sort_columns = duplicate_keys.copy()
+    ascending = [True] * len(sort_columns)
+
+    def add_numeric_sort_column(config_key: str, direction_key: str, temp_column: str) -> None:
+        metric = selection_cfg.get(config_key)
+        if not metric or metric not in working_df.columns:
+            return
+        direction = selection_cfg.get(direction_key, "asc")
+        sort_series = pd.to_numeric(working_df[metric], errors="coerce")
+        if _direction_to_ascending(direction):
+            sort_series = sort_series.fillna(np.inf)
+        else:
+            sort_series = sort_series.fillna(-np.inf)
+        working_df[temp_column] = sort_series
+        sort_columns.append(temp_column)
+        ascending.append(_direction_to_ascending(direction))
+
+    add_numeric_sort_column("family_best_metric", "family_best_metric_direction", "_sort_best_metric")
+    add_numeric_sort_column("family_best_std_metric", "family_best_std_metric_direction", "_sort_std_metric")
+    add_numeric_sort_column("family_best_tiebreak_metric", "family_best_tiebreak_metric_direction", "_sort_tiebreak_metric")
+
+    deterministic_tie_columns = [
+        column
+        for column in [
+            "model_family",
+            "model",
+            "display_label",
+            "model_dir",
+            "source_dir",
+            "representative_predictions_file",
+            "artifact_predictions_file",
+        ]
+        if column in working_df.columns
+    ]
+    sort_columns.extend(deterministic_tie_columns)
+    ascending.extend([True] * len(deterministic_tie_columns))
+
+    selected = (
+        working_df.sort_values(
+            sort_columns,
+            ascending=ascending,
+            kind="mergesort",
+            na_position="last",
+        )
+        .drop_duplicates(duplicate_keys, keep="first")
+        .copy()
+    )
+    cleanup_columns = ["_sort_best_metric", "_sort_std_metric", "_sort_tiebreak_metric"]
+    return selected.drop(columns=[col for col in cleanup_columns if col in selected.columns])
+
+
 def build_selected_rows(summary_csv: Path, config: dict) -> pd.DataFrame:
     df = pd.read_csv(summary_csv)
     if df.empty:
@@ -212,6 +280,7 @@ def build_selected_rows(summary_csv: Path, config: dict) -> pd.DataFrame:
     selected = pd.concat([bert_best, traditional_best, standalone_df], ignore_index=True)
     if selected.empty:
         return selected
+    selected = select_best_aggregate_rows(selected, config)
 
     configured_series_order = [str(label) for label in config["series_order"]]
     active_series_order = [
@@ -400,3 +469,14 @@ if __name__ == "__main__":
     main()
 
 # python Scripts\build_bestplus_tabpfn_triptych.py --config Scripts\build_bestplus_tabpfn_triptych.paper.config.json --output-dir output\ood_summary_reports\Combined\figure\per_task_bestplus_tabpfn_paper
+
+# python Scripts\batch_summarize_extrapolation_results.py
+# python Scripts\batch_summarize_bert_extrapolation_results.py
+# python Scripts\batch_summarize_tabpfn_extrapolation_results.py
+# python Scripts\batch_summarize_combined_ood_reports.py
+# python Scripts\build_bestplus_tabpfn_triptych.py --output-dir output\ood_summary_reports\Combined\figure\per_task_bestplus_tabpfn
+# batch_summarize_extrapolation_results.py	否，只管 Traditional
+# batch_summarize_bert_extrapolation_results.py	否，只管 BERT
+# batch_summarize_tabpfn_extrapolation_results.py	否，只管 TabPFN
+# batch_summarize_combined_ood_reports.py	是，把 fewshot/LLM 合并进 Combined
+# build_bestplus_tabpfn_triptych.py	不读取原始 fewshot，只使用 Combined 里的结果画图

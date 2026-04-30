@@ -1,6 +1,7 @@
 {
   "labels": {
     "method_aliases": {
+      "RandomCV": "RandCV",
       "Extrapolation": "Extra",
       "SparseXcluster": "SparseX\ncluster",
       "SparseXsingle": "SparseX\nsingle",
@@ -11,7 +12,8 @@
       "BERT-best": "BERT-best",
       "Traditional-best": "Trad-best",
       "TabPFN-2.5-Plus-Numeric": "TabPFN-num",
-      "TabPFN-2.5-Plus-Text": "TabPFN-text"
+      "TabPFN-2.5-Plus-Text": "TabPFN-text",
+      "gpt-5.4": "gpt-5.4"
     },
     "summary_xlabel": "OOD split",
     "baseline_xlabel": "OOD split",
@@ -109,7 +111,7 @@
     "rank_show_colorbar": true,
     "rank_cmap": "Blues_r",
     "rank_vmin": 1,
-    "rank_vmax": 4,
+    "rank_vmax": 5,
     "title_fontsize": 11.5,
     "panel_title_fontsize": 10.0,
     "axis_label_fontsize": 9.0,

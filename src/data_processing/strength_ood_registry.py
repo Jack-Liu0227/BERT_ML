@@ -9,6 +9,7 @@ from src.data_processing.strength_sparse_x_cluster_data_processor import Strengt
 from src.data_processing.strength_sparse_x_single_data_processor import StrengthSparseXSingleDataProcessor
 from src.data_processing.strength_sparse_y_cluster_data_processor import StrengthSparseYClusterDataProcessor
 from src.data_processing.strength_sparse_y_single_data_processor import StrengthSparseYSingleDataProcessor
+from src.data_processing.strength_random_cv_baseline_data_processor import StrengthRandomCVBaselineDataProcessor
 
 
 PROCESSOR_REGISTRY: Dict[str, Type[StrengthOODProcessorBase]] = {
@@ -18,6 +19,7 @@ PROCESSOR_REGISTRY: Dict[str, Type[StrengthOODProcessorBase]] = {
     "sparse_x_cluster": StrengthSparseXClusterDataProcessor,
     "sparse_y_cluster": StrengthSparseYClusterDataProcessor,
     "loco": StrengthLocoDataProcessor,
+    "random_cv_baseline": StrengthRandomCVBaselineDataProcessor,
 }
 
 

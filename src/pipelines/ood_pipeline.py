@@ -14,6 +14,7 @@ from src.data_processing.strength_ood_common import PreparedFold, PreparedSplit,
 from src.data_processing.strength_ood_registry import create_ood_processor, get_supported_split_strategies
 from src.feature_engineering.feature_processor import FeatureProcessor
 from src.feature_engineering.utils import set_seed
+from src.pipelines.batch_configs_ood import get_ood_method_meta
 from src.pipelines.ood_train_eval import run_ood_training
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -103,6 +104,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sparse_kde_bandwidth", type=float, default=None)
     parser.add_argument("--sparse_neighbors_per_seed", type=int, default=5)
     parser.add_argument("--loco_cluster_count", type=int, default=5)
+    parser.add_argument("--baseline_num_folds", type=int, default=5)
     return parser
 
 
@@ -132,6 +134,8 @@ def validate_arguments(args: argparse.Namespace) -> None:
 
     if args.split_strategy == "loco" and args.loco_cluster_count <= 0:
         raise ValueError("loco_cluster_count must be a positive integer")
+    if args.split_strategy == "random_cv_baseline" and args.baseline_num_folds <= 1:
+        raise ValueError("baseline_num_folds must be greater than 1")
 
 
 def _build_feature_dir(base_dir: Path, split_name: str, embedding_type: str) -> Path:
@@ -176,10 +180,9 @@ def _clone_args_with_result_dir(args: argparse.Namespace, result_dir: Path) -> a
 
 
 def _build_method_params(args: argparse.Namespace) -> Dict[str, Any]:
-    params: Dict[str, Any] = {
-        "split_strategy": args.split_strategy,
-        "test_size": args.test_size,
-    }
+    params: Dict[str, Any] = {"split_strategy": args.split_strategy}
+    if args.split_strategy != "random_cv_baseline":
+        params["test_size"] = args.test_size
     if args.split_strategy == "target_extrapolation":
         params["extrapolation_side"] = args.extrapolation_side
     if args.split_strategy.endswith("_single"):
@@ -201,6 +204,8 @@ def _build_method_params(args: argparse.Namespace) -> Dict[str, Any]:
         )
     if args.split_strategy == "loco":
         params["loco_cluster_count"] = args.loco_cluster_count
+    if args.split_strategy == "random_cv_baseline":
+        params["baseline_num_folds"] = args.baseline_num_folds
     return params
 
 
@@ -273,7 +278,12 @@ def _run_single_split_flow(
     }
 
 
-def _run_loco_flow(args: argparse.Namespace, folds: List[PreparedFold], result_root: Path) -> None:
+def _run_multi_fold_flow(
+    args: argparse.Namespace,
+    folds: List[PreparedFold],
+    result_root: Path,
+    manifest_file_name: str,
+) -> None:
     fold_entries: List[Dict[str, Any]] = []
     for prepared_fold in folds:
         fold_root = result_root / "folds" / f"fold_{prepared_fold.fold_index}"
@@ -295,14 +305,14 @@ def _run_loco_flow(args: argparse.Namespace, folds: List[PreparedFold], result_r
             }
         )
 
-    loco_manifest = {
+    multi_fold_manifest = {
         "data_file": args.data_file,
         "target_column": args.target_column,
         "method_params": _build_method_params(args),
         "fold_count": len(fold_entries),
         "folds": fold_entries,
     }
-    save_json(result_root / "loco_manifest.json", loco_manifest)
+    save_json(result_root / manifest_file_name, multi_fold_manifest)
 
 
 def main() -> None:
@@ -329,11 +339,17 @@ def main() -> None:
 
     result_root = Path(args.result_dir)
     result_root.mkdir(parents=True, exist_ok=True)
+    method_meta = get_ood_method_meta(args.split_strategy)
 
     if isinstance(prepared_result, PreparedSplit):
         _run_single_split_flow(args=args, prepared_split=prepared_result, run_root=result_root)
     else:
-        _run_loco_flow(args=args, folds=prepared_result, result_root=result_root)
+        _run_multi_fold_flow(
+            args=args,
+            folds=prepared_result,
+            result_root=result_root,
+            manifest_file_name=str(method_meta["summary_file_name"]),
+        )
 
     logger.info("OOD pipeline completed")
 

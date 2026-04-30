@@ -17,7 +17,7 @@ class BERTModelLoader:
     BERT 模型加载器类
     支持通过配置切换不同的本地 BERT 模型
     """
-    
+
     # 模型配置字典：映射模型名称到本地路径
     MODEL_CONFIGS = {
         "steelbert": {
@@ -33,29 +33,29 @@ class BERTModelLoader:
             "description": "SciBERT - 科学文献领域的 BERT 模型"
         }
     }
-    
+
     # 兼容旧路径的映射
     LEGACY_PATHS = {
         "./SteelBERTmodel": "steelbert"
     }
-    
+
     def __init__(self, project_root: Optional[str] = None):
         """
         初始化模型加载器
-        
+
         Args:
             project_root: 项目根目录路径，用于解析相对路径。如果为 None，使用当前工作目录
         """
         self.project_root = Path(project_root) if project_root else Path.cwd()
         logger.info(f"BERTModelLoader 初始化，项目根目录: {self.project_root}")
-    
+
     def _resolve_path(self, path: str) -> Path:
         """
         解析路径为绝对路径
-        
+
         Args:
             path: 相对或绝对路径
-            
+
         Returns:
             Path: 绝对路径对象
         """
@@ -63,43 +63,43 @@ class BERTModelLoader:
         if path_obj.is_absolute():
             return path_obj
         return (self.project_root / path_obj).resolve()
-    
+
     def _validate_model_path(self, model_path: Path) -> bool:
         """
         验证模型路径是否存在且包含必要文件
-        
+
         Args:
             model_path: 模型目录路径
-            
+
         Returns:
             bool: 路径是否有效
         """
         if not model_path.exists():
             logger.error(f"模型路径不存在: {model_path}")
             return False
-        
+
         if not model_path.is_dir():
             logger.error(f"模型路径不是目录: {model_path}")
             return False
-        
+
         # 检查必要的模型文件
         required_files = ["config.json"]
         model_files = ["pytorch_model.bin", "model.safetensors"]
-        
+
         # 检查 config.json
         if not (model_path / "config.json").exists():
             logger.error(f"缺少 config.json 文件: {model_path}")
             return False
-        
+
         # 检查至少有一个模型权重文件
         has_model_file = any((model_path / f).exists() for f in model_files)
         if not has_model_file:
             logger.error(f"缺少模型权重文件 (pytorch_model.bin 或 model.safetensors): {model_path}")
             return False
-        
+
         logger.info(f"模型路径验证通过: {model_path}")
         return True
-    
+
     def _auto_migrate_legacy_model(self, legacy_path: Path, target_path: Path) -> bool:
         """
         自动迁移旧模型到新位置
@@ -141,6 +141,85 @@ class BERTModelLoader:
             logger.error(f"自动迁移失败: {str(e)}")
             logger.info("请手动运行迁移脚本: python scripts/migrate_steelbert.py")
             return False
+
+    def _ensure_safetensors_weights(self, model_path: Path) -> Path:
+        """
+        如果模型目录中只有 pytorch_model.bin，则自动补齐 model.safetensors。
+
+        这是为了兼容新版 transformers 在 torch < 2.6 环境下
+        对 `.bin` 权重加载的限制。
+
+        Args:
+            model_path: 模型目录
+
+        Returns:
+            Path: safetensors 权重文件路径
+
+        Raises:
+            RuntimeError: 当 `.bin` 权重转换失败时抛出
+        """
+        bin_path = model_path / "pytorch_model.bin"
+        safetensors_path = model_path / "model.safetensors"
+
+        if safetensors_path.exists() or not bin_path.exists():
+            return safetensors_path
+
+        logger.warning(
+            "检测到模型目录仅包含 pytorch_model.bin，"
+            "正在自动转换为 model.safetensors 以兼容当前环境..."
+        )
+
+        try:
+            import torch
+            from safetensors.torch import save_file
+
+            try:
+                state_dict = torch.load(
+                    bin_path,
+                    map_location="cpu",
+                    weights_only=True,
+                )
+            except TypeError:
+                state_dict = torch.load(bin_path, map_location="cpu")
+
+            if isinstance(state_dict, dict) and "state_dict" in state_dict and isinstance(state_dict["state_dict"], dict):
+                state_dict = state_dict["state_dict"]
+
+            if not isinstance(state_dict, dict):
+                raise TypeError(
+                    f"pytorch_model.bin 解析结果不是 state_dict 字典，而是: {type(state_dict)}"
+                )
+
+            tensor_state_dict = {}
+            skipped_keys = []
+            for key, value in state_dict.items():
+                if torch.is_tensor(value):
+                    tensor_state_dict[key] = value.detach().cpu().clone().contiguous()
+                else:
+                    skipped_keys.append(key)
+
+            if not tensor_state_dict:
+                raise ValueError("未从 pytorch_model.bin 中解析到可保存的张量权重")
+
+            if skipped_keys:
+                logger.warning(
+                    "转换 safetensors 时忽略了 %d 个非张量字段: %s",
+                    len(skipped_keys),
+                    skipped_keys[:10],
+                )
+
+            tmp_path = safetensors_path.with_name(f"{safetensors_path.name}.tmp")
+            save_file(tensor_state_dict, str(tmp_path))
+            tmp_path.replace(safetensors_path)
+
+            logger.info("已自动生成 safetensors 权重: %s", safetensors_path)
+            return safetensors_path
+
+        except Exception as e:
+            logger.error(f"自动转换 safetensors 失败: {str(e)}")
+            raise RuntimeError(
+                f"无法将模型目录 '{model_path}' 中的 pytorch_model.bin 转换为 safetensors: {str(e)}"
+            )
 
     def get_model_path(self, model_name: str) -> str:
         """
@@ -217,55 +296,63 @@ class BERTModelLoader:
             f"支持的模型名称: {list(self.MODEL_CONFIGS.keys())}\n"
             f"或提供有效的本地模型路径"
         )
-    
+
     def load_model(self, model_name: str) -> Tuple[PreTrainedTokenizer, PreTrainedModel]:
         """
         加载指定的 BERT 模型和 tokenizer
-        
+
         Args:
             model_name: 模型名称（如 "steelbert", "matscibert"）或本地路径
-            
+
         Returns:
             Tuple[PreTrainedTokenizer, PreTrainedModel]: (tokenizer, model) 元组
-            
+
         Raises:
             RuntimeError: 如果模型加载失败
         """
         try:
-            model_path = self.get_model_path(model_name)
-            
+            model_path = Path(self.get_model_path(model_name))
+
             logger.info(f"正在从本地加载模型: {model_path}")
-            
+
             # 加载 tokenizer
             tokenizer = AutoTokenizer.from_pretrained(
-                model_path,
+                str(model_path),
                 local_files_only=True
             )
             logger.info("Tokenizer 加载成功")
-            
+
+            self._ensure_safetensors_weights(model_path)
+
             # 加载模型
+            model_kwargs = {
+                "local_files_only": True,
+            }
+            if (model_path / "model.safetensors").exists():
+                model_kwargs["use_safetensors"] = True
+
             model = AutoModel.from_pretrained(
-                model_path,
-                local_files_only=True
+                str(model_path),
+                **model_kwargs,
             )
             logger.info("模型加载成功")
-            
+
             return tokenizer, model
-            
+
         except Exception as e:
             logger.error(f"加载模型时出错: {str(e)}")
             raise RuntimeError(f"无法加载模型 '{model_name}': {str(e)}")
-    
+
     @classmethod
     def list_available_models(cls) -> dict:
         """
         列出所有可用的预配置模型
-        
+
         Returns:
             dict: 模型配置字典
         """
         return cls.MODEL_CONFIGS.copy()
-    
+
     @staticmethod
     def download_model_from_huggingface(
         model_id: str,
@@ -274,43 +361,42 @@ class BERTModelLoader:
     ) -> None:
         """
         从 Hugging Face 下载模型到本地
-        
+
         Args:
             model_id: Hugging Face 模型 ID（如 "m3rg-iitd/matscibert"）
             save_path: 本地保存路径
             force_download: 是否强制重新下载
-            
+
         Raises:
             RuntimeError: 如果下载失败
         """
         try:
             save_path_obj = Path(save_path)
-            
+
             # 检查路径是否已存在
             if save_path_obj.exists() and not force_download:
                 logger.warning(f"目标路径已存在: {save_path}，跳过下载")
                 logger.info("如需重新下载，请设置 force_download=True")
                 return
-            
+
             # 创建目录
             save_path_obj.mkdir(parents=True, exist_ok=True)
-            
+
             logger.info(f"正在从 Hugging Face 下载模型: {model_id}")
             logger.info(f"保存路径: {save_path}")
-            
+
             # 下载 tokenizer
             tokenizer = AutoTokenizer.from_pretrained(model_id)
             tokenizer.save_pretrained(save_path)
             logger.info("Tokenizer 下载完成")
-            
+
             # 下载模型
             model = AutoModel.from_pretrained(model_id)
             model.save_pretrained(save_path)
             logger.info("模型下载完成")
-            
+
             logger.info(f"模型已成功下载到: {save_path}")
-            
+
         except Exception as e:
             logger.error(f"下载模型时出错: {str(e)}")
             raise RuntimeError(f"无法下载模型 '{model_id}': {str(e)}")
-

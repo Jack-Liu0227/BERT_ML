@@ -118,6 +118,7 @@ class TabPFNOODTrainer:
         sparse_kde_bandwidth: float | None = None,
         sparse_neighbors_per_seed: int = 5,
         loco_cluster_count: int = 5,
+        baseline_num_folds: int = 5,
         backend: str = "auto",
         model_version: Optional[str] = None,
         feature_mode: str | None = None,
@@ -156,6 +157,7 @@ class TabPFNOODTrainer:
         self.config["sparse_kde_bandwidth"] = sparse_kde_bandwidth
         self.config["sparse_neighbors_per_seed"] = sparse_neighbors_per_seed
         self.config["loco_cluster_count"] = loco_cluster_count
+        self.config["baseline_num_folds"] = baseline_num_folds
 
         self.processor = TabPFNOODDataProcessor(self.config, base_path=str(self.base_path))
         self.model = None
@@ -200,6 +202,7 @@ class TabPFNOODTrainer:
             sparse_kde_bandwidth=self.config["sparse_kde_bandwidth"],
             sparse_neighbors_per_seed=int(self.config["sparse_neighbors_per_seed"]),
             loco_cluster_count=int(self.config["loco_cluster_count"]),
+            baseline_num_folds=int(self.config["baseline_num_folds"]),
         )
 
         self.result_dir.mkdir(parents=True, exist_ok=True)
@@ -605,6 +608,7 @@ class TabPFNOODTrainer:
             "sparse_kde_bandwidth": self.config["sparse_kde_bandwidth"],
             "sparse_neighbors_per_seed": self.config["sparse_neighbors_per_seed"],
             "loco_cluster_count": self.config["loco_cluster_count"],
+            "baseline_num_folds": self.config["baseline_num_folds"],
             "model_name": model_info["model_name"],
             "model_dirname": model_info["model_dirname"],
             "feature_mode": model_info["feature_mode"],
@@ -641,14 +645,15 @@ class TabPFNOODTrainer:
             self.test_result_key: aggregated_test,
         }
 
-    def _run_loco(self, align_predictions: bool, drop_na: bool) -> Dict[str, Any]:
-        logger.info("Preparing LOCO folds for %s - %s", self.alloy_type, self.target_col)
+    def _run_multi_fold(self, align_predictions: bool, drop_na: bool) -> Dict[str, Any]:
+        split_strategy = str(self.config["split_strategy"])
+        logger.info("Preparing %s folds for %s - %s", split_strategy, self.alloy_type, self.target_col)
         raw_df = self.processor.load_data()
         feature_frame = self.processor.prepare_feature_frame(self.target_col, drop_na=drop_na)
         prepared_result = self.processor.prepare_ood_result(
             feature_frame=feature_frame,
             target_col=self.target_col,
-            split_strategy="loco",
+            split_strategy=split_strategy,
             test_size=float(self.config["test_size"]),
             extrapolation_side=str(self.config["extrapolation_side"]),
             sparse_candidate_pool_size=int(self.config["sparse_candidate_pool_size"]),
@@ -657,9 +662,10 @@ class TabPFNOODTrainer:
             sparse_kde_bandwidth=self.config["sparse_kde_bandwidth"],
             sparse_neighbors_per_seed=int(self.config["sparse_neighbors_per_seed"]),
             loco_cluster_count=int(self.config["loco_cluster_count"]),
+            baseline_num_folds=int(self.config["baseline_num_folds"]),
         )
         if not isinstance(prepared_result, list):
-            raise ValueError("LOCO split strategy expected a list of prepared folds")
+            raise ValueError(f"{split_strategy} expected a list of prepared folds")
 
         self.raw_row_count = len(raw_df)
         fold_results: List[Dict[str, Any]] = []
@@ -670,7 +676,8 @@ class TabPFNOODTrainer:
                 "held_out_cluster_id": prepared_fold.held_out_cluster_id,
             }
             logger.info(
-                "Running LOCO fold %d (held_out_cluster_id=%s)",
+                "Running %s fold %d (held_out_cluster_id=%s)",
+                split_strategy,
                 prepared_fold.fold_index,
                 prepared_fold.held_out_cluster_id,
             )
@@ -684,10 +691,10 @@ class TabPFNOODTrainer:
             )
 
         aggregated = self._aggregate_fold_results(fold_results)
-        loco_manifest = {
+        multi_fold_manifest = {
             "alloy_type": self.alloy_type,
             "target_col": self.target_col,
-            "split_strategy": "loco",
+            "split_strategy": split_strategy,
             "fold_count": len(fold_results),
             "folds": [
                 {
@@ -704,23 +711,25 @@ class TabPFNOODTrainer:
                 self.test_result_key: aggregated[self.test_result_key],
             },
         }
-        save_json(self.result_dir / "loco_manifest.json", loco_manifest)
+        manifest_name = "loco_manifest.json" if split_strategy == "loco" else f"{split_strategy}_manifest.json"
+        save_json(self.result_dir / manifest_name, multi_fold_manifest)
 
         result = {
             "status": "success",
-            "split_strategy": "loco",
+            "split_strategy": split_strategy,
             "model_info": fold_results[0]["model_info"] if fold_results else self.runtime_info,
             "train": aggregated["train"],
             self.test_result_key: aggregated[self.test_result_key],
             "fold_results": fold_results,
             "split_summary": {
-                "split_strategy": "loco",
+                "split_strategy": split_strategy,
                 "fold_count": len(fold_results),
             },
-            "loco_manifest": str(self.result_dir / "loco_manifest.json"),
+            "multi_fold_manifest": str(self.result_dir / manifest_name),
         }
         logger.info(
-            "LOCO completed: folds=%d mean_test_r2=%.4f mean_test_mae=%.4f",
+            "%s completed: folds=%d mean_test_r2=%.4f mean_test_mae=%.4f",
+            split_strategy,
             len(fold_results),
             result[self.test_result_key]["r2"],
             result[self.test_result_key]["mae"],
@@ -736,8 +745,8 @@ class TabPFNOODTrainer:
             self.config["split_strategy"],
         )
         logger.info("Result directory: %s", self.result_dir)
-        if self.config["split_strategy"] == "loco":
-            return self._run_loco(align_predictions=align_predictions, drop_na=drop_na)
+        if self.config["split_strategy"] in {"loco", "random_cv_baseline"}:
+            return self._run_multi_fold(align_predictions=align_predictions, drop_na=drop_na)
         self.prepare_data(scale=scale, drop_na=drop_na)
         self.train_regression()
 
@@ -778,6 +787,7 @@ def run_single_ood_experiment(
     sparse_kde_bandwidth: float | None = None,
     sparse_neighbors_per_seed: int = 5,
     loco_cluster_count: int = 5,
+    baseline_num_folds: int = 5,
     align_predictions: bool = True,
     backend: str = "auto",
     model_version: Optional[str] = None,
@@ -798,6 +808,7 @@ def run_single_ood_experiment(
         sparse_kde_bandwidth=sparse_kde_bandwidth,
         sparse_neighbors_per_seed=sparse_neighbors_per_seed,
         loco_cluster_count=loco_cluster_count,
+        baseline_num_folds=baseline_num_folds,
         backend=backend,
         model_version=model_version,
         feature_mode=feature_mode,
@@ -818,6 +829,7 @@ def run_all_ood_experiments(
     sparse_kde_bandwidth: float | None = None,
     sparse_neighbors_per_seed: int = 5,
     loco_cluster_count: int = 5,
+    baseline_num_folds: int = 5,
     align_predictions: bool = True,
     backend: str = "auto",
     model_version: Optional[str] = None,
@@ -871,6 +883,7 @@ def run_all_ood_experiments(
                     sparse_kde_bandwidth=sparse_kde_bandwidth,
                     sparse_neighbors_per_seed=sparse_neighbors_per_seed,
                     loco_cluster_count=loco_cluster_count,
+                    baseline_num_folds=baseline_num_folds,
                     align_predictions=align_predictions,
                     backend=backend,
                     model_version=model_version,
@@ -993,6 +1006,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--sparse_kde_bandwidth", default=None, type=float)
     parser.add_argument("--sparse_neighbors_per_seed", default=5, type=int)
     parser.add_argument("--loco_cluster_count", default=5, type=int)
+    parser.add_argument("--baseline_num_folds", default=5, type=int)
     parser.add_argument("--disable_alignment", action="store_true")
     return parser
 
@@ -1063,6 +1077,7 @@ def main() -> None:
                 sparse_kde_bandwidth=args.sparse_kde_bandwidth,
                 sparse_neighbors_per_seed=args.sparse_neighbors_per_seed,
                 loco_cluster_count=args.loco_cluster_count,
+                baseline_num_folds=args.baseline_num_folds,
                 align_predictions=not args.disable_alignment,
                 backend=args.backend,
                 model_version=args.model_version,
@@ -1107,6 +1122,7 @@ def main() -> None:
                 sparse_kde_bandwidth=args.sparse_kde_bandwidth,
                 sparse_neighbors_per_seed=args.sparse_neighbors_per_seed,
                 loco_cluster_count=args.loco_cluster_count,
+                baseline_num_folds=args.baseline_num_folds,
                 align_predictions=not args.disable_alignment,
                 backend=args.backend,
                 model_version=args.model_version,

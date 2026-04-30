@@ -16,6 +16,7 @@ sources:
 
     # Map external result folders to the OOD method labels used in BERT_ML.
     method_map:
+      strength_ood_random_cv_baseline_no_analysis: "RandomCV"
       strength_ood_extrapolation_no_analysis: "Extrapolation"
       strength_ood_loco_no_analysis: "LOCO"
       strength_ood_sparse_x_cluster_no_analysis: "SparseXcluster"
@@ -29,6 +30,38 @@ sources:
         alloy_family: "Ti"
         dataset_name: "titanium"
         property: "UTS(MPa)"
+      ti_el:
+        alloy_family: "Ti"
+        dataset_name: "titanium"
+        property: "El(%)"
+      al_uts:
+        alloy_family: "Al"
+        dataset_name: "aluminum"
+        property: "UTS(MPa)"
+      hea_ys:
+        alloy_family: "HEA"
+        dataset_name: "hea"
+        property: "YS(MPa)"
+      hea_uts:
+        alloy_family: "HEA"
+        dataset_name: "hea"
+        property: "UTS(MPa)"
+      hea_el:
+        alloy_family: "HEA"
+        dataset_name: "hea"
+        property: "El(%)"
+      steel_ys:
+        alloy_family: "Steel"
+        dataset_name: "steel"
+        property: "YS(MPa)"
+      steel_uts:
+        alloy_family: "Steel"
+        dataset_name: "steel"
+        property: "UTS(MPa)"
+      steel_el:
+        alloy_family: "Steel"
+        dataset_name: "steel"
+        property: "El(%)"
 
     # Future models can be added here without changing Python code.
     models:

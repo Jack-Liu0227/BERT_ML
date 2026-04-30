@@ -9,6 +9,7 @@ import yaml
 
 DEFAULT_TRIPTYCH_CONFIG: dict[str, Any] = {
     "method_order": [
+        "RandomCV",
         "Extrapolation",
         "LOCO",
         "SparseXcluster",
@@ -21,6 +22,7 @@ DEFAULT_TRIPTYCH_CONFIG: dict[str, Any] = {
         "Traditional-best",
         "TabPFN-2.5-Plus-Numeric",
         "TabPFN-2.5-Plus-Text",
+        "gpt-5.4",
     ],
     "palette": {
         "BERT-best": "#009E73",
@@ -203,3 +205,10 @@ def load_triptych_config(config_path: Path | None = None) -> dict[str, Any]:
         raise ValueError("At least one output format must be provided in output.formats")
 
     return config
+
+
+# python Scripts\batch_summarize_extrapolation_results.py
+# python Scripts\batch_summarize_bert_extrapolation_results.py
+# python Scripts\batch_summarize_tabpfn_extrapolation_results.py
+# python Scripts\batch_summarize_combined_ood_reports.py
+# python Scripts\build_bestplus_tabpfn_triptych.py --output-dir output\ood_summary_reports\Combined\figure\per_task_bestplus_tabpfn

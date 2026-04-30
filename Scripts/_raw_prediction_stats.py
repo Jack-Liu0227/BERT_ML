@@ -378,9 +378,11 @@ def load_case_level_test_metrics(
     return None
 
 
-def summarize_loco_outer_fold_best_trials(
+def summarize_outer_fold_final_test_metrics(
     outer_model_dirs: Sequence[Path],
     property_name: str | None = None,
+    *,
+    include_selected_trial_details: bool = True,
 ) -> Dict[str, Dict[str, object]]:
     candidate_model_dirs = [Path(path) for path in outer_model_dirs if Path(path).exists()]
     if not candidate_model_dirs:
@@ -410,19 +412,22 @@ def summarize_loco_outer_fold_best_trials(
 
         outer_fold_index = _extract_outer_fold_index(model_dir)
         for current_property, property_df in working_df.groupby("property", sort=True):
-            trial_df = build_trial_level_test_metrics_detailed(property_df)
-            if trial_df.empty:
-                continue
+            best_trial = None
+            representative_inner_row = None
+            if include_selected_trial_details:
+                trial_df = build_trial_level_test_metrics_detailed(property_df)
+                if trial_df.empty:
+                    continue
 
-            best_trial = _select_best_trial_row(trial_df)
-            if best_trial is None:
-                continue
+                best_trial = _select_best_trial_row(trial_df)
+                if best_trial is None:
+                    continue
 
-            selected_trial_df = property_df[property_df["trial_id"].astype(str) == str(best_trial["trial_id"])].copy()
-            representative_inner_row = _select_inner_fold_predictions_for_trial(
-                selected_trial_df,
-                target_mean_mae=float(best_trial["trial_mean_test_mae"]),
-            )
+                selected_trial_df = property_df[property_df["trial_id"].astype(str) == str(best_trial["trial_id"])].copy()
+                representative_inner_row = _select_inner_fold_predictions_for_trial(
+                    selected_trial_df,
+                    target_mean_mae=float(best_trial["trial_mean_test_mae"]),
+                )
             outer_test_metrics = load_case_level_test_metrics(model_dir, str(current_property))
             if outer_test_metrics is None:
                 continue
@@ -430,15 +435,51 @@ def summarize_loco_outer_fold_best_trials(
                 {
                     "outer_fold_index": outer_fold_index,
                     "model_dir": str(model_dir),
-                    "selected_trial_id": str(best_trial["trial_id"]),
-                    "selected_trial_num": int(best_trial["trial_num"]),
-                    "selected_trial_fold_count": int(best_trial["trial_fold_count"]),
-                    "selected_mean_test_r2": float(best_trial["trial_mean_test_r2"]),
-                    "selected_std_test_r2": float(best_trial["trial_std_test_r2"]),
-                    "selected_mean_test_mae": float(best_trial["trial_mean_test_mae"]),
-                    "selected_std_test_mae": float(best_trial["trial_std_test_mae"]),
-                    "selected_mean_test_rmse": float(best_trial["trial_mean_test_rmse"]),
-                    "selected_std_test_rmse": float(best_trial["trial_std_test_rmse"]),
+                    "selected_trial_id": (
+                        str(best_trial["trial_id"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_id"))
+                        else None
+                    ),
+                    "selected_trial_num": (
+                        int(best_trial["trial_num"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_num"))
+                        else None
+                    ),
+                    "selected_trial_fold_count": (
+                        int(best_trial["trial_fold_count"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_fold_count"))
+                        else None
+                    ),
+                    "selected_mean_test_r2": (
+                        float(best_trial["trial_mean_test_r2"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_mean_test_r2"))
+                        else None
+                    ),
+                    "selected_std_test_r2": (
+                        float(best_trial["trial_std_test_r2"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_std_test_r2"))
+                        else None
+                    ),
+                    "selected_mean_test_mae": (
+                        float(best_trial["trial_mean_test_mae"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_mean_test_mae"))
+                        else None
+                    ),
+                    "selected_std_test_mae": (
+                        float(best_trial["trial_std_test_mae"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_std_test_mae"))
+                        else None
+                    ),
+                    "selected_mean_test_rmse": (
+                        float(best_trial["trial_mean_test_rmse"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_mean_test_rmse"))
+                        else None
+                    ),
+                    "selected_std_test_rmse": (
+                        float(best_trial["trial_std_test_rmse"])
+                        if best_trial is not None and pd.notna(best_trial.get("trial_std_test_rmse"))
+                        else None
+                    ),
                     "selected_inner_predictions_file": (
                         str(representative_inner_row["predictions_file"])
                         if representative_inner_row is not None
@@ -544,6 +585,17 @@ def summarize_loco_outer_fold_best_trials(
         }
 
     return summaries
+
+
+def summarize_loco_outer_fold_best_trials(
+    outer_model_dirs: Sequence[Path],
+    property_name: str | None = None,
+) -> Dict[str, Dict[str, object]]:
+    return summarize_outer_fold_final_test_metrics(
+        outer_model_dirs,
+        property_name=property_name,
+        include_selected_trial_details=True,
+    )
 
 
 def summarize_optuna_model_trials_from_metrics(

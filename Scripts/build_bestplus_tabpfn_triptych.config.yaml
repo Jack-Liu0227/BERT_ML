@@ -3,6 +3,7 @@
 # when creating paper-specific presets.
 
 method_order:
+  - RandomCV
   - Extrapolation
   - LOCO
   - SparseXcluster
@@ -121,7 +122,7 @@ figure:
   rank_show_colorbar: true
   rank_cmap: "Blues_r"
   rank_vmin: 1
-  rank_vmax: 4
+  rank_vmax: 5
 
   # Fonts/layout.
   dpi: 300

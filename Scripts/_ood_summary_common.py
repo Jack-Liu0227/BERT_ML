@@ -27,6 +27,7 @@ plt.rcParams["figure.dpi"] = 300
 
 
 OOD_METHOD_MAP = {
+    "random_cv_baseline": "RandomCV",
     "target_extrapolation": "Extrapolation",
     "loco": "LOCO",
     "sparse_x_cluster": "SparseXcluster",
@@ -35,6 +36,7 @@ OOD_METHOD_MAP = {
     "sparse_y_single": "SparseYsingle",
 }
 OOD_METHOD_ORDER = [
+    "RandomCV",
     "Extrapolation",
     "LOCO",
     "SparseXcluster",
@@ -691,7 +693,7 @@ def _collect_case_level_prediction_candidates(model_dir: Path) -> list[Path]:
 def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
     property_name = str(row.get("property", "") or "")
     loco_fold_details = _load_loco_outer_fold_best_details(row)
-    if str(row.get("ood_method", "") or "") == "LOCO" and loco_fold_details:
+    if str(row.get("ood_method", "") or "") in {"LOCO", "RandomCV"} and loco_fold_details:
         outer_df = pd.DataFrame(loco_fold_details)
         if not outer_df.empty and {"outer_test_r2", "outer_test_mae", "outer_test_rmse"}.issubset(outer_df.columns):
             outer_df["outer_test_r2"] = pd.to_numeric(outer_df["outer_test_r2"], errors="coerce")
@@ -715,9 +717,14 @@ def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
                     kind="stable",
                 ).reset_index(drop=True)
                 representative_outer_row = valid_outer_df.iloc[0]
+                source_mode = (
+                    "loco_outer_fold_aggregate"
+                    if str(row.get("ood_method", "") or "") == "LOCO"
+                    else "randomcv_outer_fold_aggregate"
+                )
                 return {
                     "predictions_file": representative_outer_row.get("outer_predictions_file", row.get("representative_predictions_file", pd.NA)),
-                    "source_mode": "loco_outer_fold_aggregate",
+                    "source_mode": source_mode,
                     "expected_split_file": pd.NA,
                     "expected_split_count": np.nan,
                     "test_r2": float(valid_outer_df["outer_test_r2"].mean()),
@@ -727,6 +734,52 @@ def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
                     "distance_to_summary_test_r2": abs(
                         float(valid_outer_df["outer_test_r2"].mean())
                         - pd.to_numeric(pd.Series([row.get("summary_test_r2")]), errors="coerce").iloc[0]
+                    ),
+                }
+
+    tabpfn_loco_fold_details = _load_tabpfn_loco_fold_details(row)
+    if (
+        str(row.get("ood_method", "") or "") in {"LOCO", "RandomCV"}
+        and str(row.get("model_family", "") or "") == "TabPFN"
+        and tabpfn_loco_fold_details
+    ):
+        fold_df = pd.DataFrame(tabpfn_loco_fold_details)
+        if not fold_df.empty and {"test_r2", "test_mae", "test_rmse"}.issubset(fold_df.columns):
+            fold_df["test_r2"] = pd.to_numeric(fold_df["test_r2"], errors="coerce")
+            fold_df["test_mae"] = pd.to_numeric(fold_df["test_mae"], errors="coerce")
+            fold_df["test_rmse"] = pd.to_numeric(fold_df["test_rmse"], errors="coerce")
+            valid_fold_df = fold_df.dropna(subset=["test_r2", "test_mae", "test_rmse"]).copy()
+            if not valid_fold_df.empty:
+                summary_test_r2 = pd.to_numeric(pd.Series([row.get("summary_test_r2")]), errors="coerce").iloc[0]
+                representative_predictions_file = str(row.get("representative_predictions_file", "") or "").strip()
+                predictions_file = representative_predictions_file
+                if not predictions_file:
+                    representative_df = valid_fold_df.assign(
+                        _distance_to_summary_test_r2=(valid_fold_df["test_r2"] - summary_test_r2).abs(),
+                        _sort_fold=pd.to_numeric(valid_fold_df.get("fold_index"), errors="coerce").fillna(np.inf),
+                    ).sort_values(
+                        ["_distance_to_summary_test_r2", "test_r2", "_sort_fold", "predictions_file"],
+                        ascending=[True, False, True, True],
+                        na_position="last",
+                        kind="stable",
+                    )
+                    predictions_file = str(representative_df.iloc[0].get("predictions_file", "") or "")
+                source_mode = (
+                    "tabpfn_loco_fold_aggregate"
+                    if str(row.get("ood_method", "") or "") == "LOCO"
+                    else "tabpfn_randomcv_fold_aggregate"
+                )
+                return {
+                    "predictions_file": predictions_file or pd.NA,
+                    "source_mode": source_mode,
+                    "expected_split_file": pd.NA,
+                    "expected_split_count": np.nan,
+                    "test_r2": float(valid_fold_df["test_r2"].mean()),
+                    "test_mae": float(valid_fold_df["test_mae"].mean()),
+                    "test_rmse": float(valid_fold_df["test_rmse"].mean()),
+                    "test_row_count": np.nan,
+                    "distance_to_summary_test_r2": abs(
+                        float(valid_fold_df["test_r2"].mean()) - summary_test_r2
                     ),
                 }
 
@@ -894,6 +947,69 @@ def enrich_summary_with_artifact_and_plot_metrics(summary_df: pd.DataFrame) -> p
     return working_df
 
 
+def align_summary_metrics_to_artifact(summary_df: pd.DataFrame) -> pd.DataFrame:
+    if summary_df.empty:
+        return summary_df
+
+    working_df = enrich_summary_with_artifact_and_plot_metrics(summary_df)
+
+    summary_mae = pd.to_numeric(working_df.get("summary_test_mae"), errors="coerce")
+    artifact_mae = pd.to_numeric(working_df.get("artifact_test_mae"), errors="coerce")
+    summary_r2 = pd.to_numeric(working_df.get("summary_test_r2"), errors="coerce")
+    artifact_r2 = pd.to_numeric(working_df.get("artifact_test_r2"), errors="coerce")
+    summary_rmse = pd.to_numeric(working_df.get("summary_test_rmse"), errors="coerce")
+    artifact_rmse = pd.to_numeric(working_df.get("artifact_test_rmse"), errors="coerce")
+
+    changed_mask = (
+        artifact_mae.notna()
+        & artifact_r2.notna()
+        & artifact_rmse.notna()
+        & (
+            (summary_mae - artifact_mae).abs().fillna(0.0).gt(1e-9)
+            | (summary_r2 - artifact_r2).abs().fillna(0.0).gt(1e-9)
+            | (summary_rmse - artifact_rmse).abs().fillna(0.0).gt(1e-9)
+        )
+    )
+
+    for metric in ["r2", "mae", "rmse"]:
+        summary_col = f"summary_test_{metric}"
+        artifact_col = f"artifact_test_{metric}"
+        working_df[summary_col] = pd.to_numeric(working_df[artifact_col], errors="coerce").where(
+            pd.to_numeric(working_df[artifact_col], errors="coerce").notna(),
+            pd.to_numeric(working_df[summary_col], errors="coerce"),
+        )
+
+    for std_col in ["summary_test_r2_std", "summary_test_mae_std", "summary_test_rmse_std"]:
+        working_df[std_col] = pd.to_numeric(working_df[std_col], errors="coerce")
+        working_df.loc[changed_mask, std_col] = 0.0
+        working_df[std_col] = working_df[std_col].fillna(0.0)
+
+    for count_col in ["trial_count", "fold_count"]:
+        working_df[count_col] = pd.to_numeric(working_df[count_col], errors="coerce")
+        working_df.loc[changed_mask, count_col] = 1
+
+    working_df.loc[changed_mask, "representative_selection_mode"] = "case_level_oodtest"
+    working_df.loc[changed_mask, "representative_trial_id"] = pd.NA
+    working_df.loc[changed_mask, "representative_fold"] = pd.NA
+    for metric in ["r2", "mae", "rmse"]:
+        rep_col = f"representative_test_{metric}"
+        artifact_col = f"artifact_test_{metric}"
+        working_df.loc[changed_mask, rep_col] = pd.to_numeric(working_df.loc[changed_mask, artifact_col], errors="coerce")
+    if "artifact_predictions_file" in working_df.columns:
+        working_df.loc[changed_mask, "representative_predictions_file"] = working_df.loc[
+            changed_mask, "artifact_predictions_file"
+        ]
+
+    for metric in ["r2", "mae", "rmse"]:
+        plot_col = f"plot_test_{metric}"
+        working_df[plot_col] = pd.to_numeric(working_df[plot_col], errors="coerce").where(
+            pd.to_numeric(working_df[plot_col], errors="coerce").notna(),
+            pd.to_numeric(working_df[f"summary_test_{metric}"], errors="coerce"),
+        )
+
+    return working_df
+
+
 def _load_loco_outer_fold_best_details(row: pd.Series) -> list[dict[str, object]]:
     raw_details = row.get("loco_outer_fold_best_details_json", pd.NA)
     if pd.isna(raw_details):
@@ -919,6 +1035,36 @@ def _load_loco_outer_fold_best_details(row: pd.Series) -> list[dict[str, object]
         key=lambda item: (
             np.inf if pd.isna(item.get("outer_fold_index")) else int(item.get("outer_fold_index")),
             str(item.get("selected_trial_id", "")),
+        )
+    )
+    return details
+
+
+def _load_tabpfn_loco_fold_details(row: pd.Series) -> list[dict[str, object]]:
+    raw_details = row.get("tabpfn_loco_fold_details_json", pd.NA)
+    if pd.isna(raw_details):
+        return []
+
+    text = str(raw_details).strip()
+    if not text:
+        return []
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        return []
+
+    if not isinstance(parsed, list):
+        return []
+
+    details: list[dict[str, object]] = []
+    for item in parsed:
+        if isinstance(item, dict):
+            details.append(item)
+    details.sort(
+        key=lambda item: (
+            np.inf if pd.isna(item.get("fold_index")) else int(item.get("fold_index")),
+            str(item.get("predictions_file", "")),
         )
     )
     return details

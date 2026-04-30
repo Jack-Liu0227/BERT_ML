@@ -4,9 +4,11 @@ import argparse
 import json
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from _ood_summary_common import (
+    align_summary_metrics_to_artifact,
     annotate_family_ranks,
     create_global_exports,
     export_case_outputs,
@@ -18,6 +20,7 @@ from _ood_summary_common import (
 
 
 VALID_METHODS = {
+    "random_cv_baseline",
     "target_extrapolation",
     "loco",
     "sparse_x_cluster",
@@ -144,7 +147,53 @@ def aggregate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         if len(group_df) > 1:
             selection_mode = "closest_summary_test_r2_fold"
 
+        tabpfn_loco_fold_details: list[dict[str, object]] = []
+        if str(group_values[3]) in {"LOCO", "RandomCV"}:
+            detail_df = group_df.assign(
+                _fold_sort=pd.to_numeric(group_df["fold_index"], errors="coerce").fillna(np.inf),
+            ).sort_values(
+                ["_fold_sort", "predictions_file"],
+                ascending=[True, True],
+                na_position="last",
+                kind="stable",
+            )
+            for _, fold_row in detail_df.iterrows():
+                tabpfn_loco_fold_details.append(
+                    {
+                        "fold_index": (
+                            int(fold_row["fold_index"])
+                            if pd.notna(fold_row["fold_index"])
+                            else None
+                        ),
+                        "model_dir": str(fold_row["model_dir"]),
+                        "predictions_file": str(fold_row["predictions_file"]),
+                        "test_r2": (
+                            float(fold_row["raw_test_r2"])
+                            if pd.notna(fold_row["raw_test_r2"])
+                            else None
+                        ),
+                        "test_mae": (
+                            float(fold_row["raw_test_mae"])
+                            if pd.notna(fold_row["raw_test_mae"])
+                            else None
+                        ),
+                        "test_rmse": (
+                            float(fold_row["raw_test_rmse"])
+                            if pd.notna(fold_row["raw_test_rmse"])
+                            else None
+                        ),
+                    }
+                )
+
         record = dict(zip(group_cols, group_values))
+        method_label = str(group_values[3])
+        selection_mode = "single_run"
+        if len(group_df) > 1:
+            selection_mode = (
+                "closest_summary_test_r2_outer_fold"
+                if method_label in {"LOCO", "RandomCV"}
+                else "closest_summary_test_r2_fold"
+            )
         record.update(
             {
                 "model_dir": str(representative_row["model_dir"]),
@@ -165,6 +214,12 @@ def aggregate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
                 "representative_test_rmse": float(representative_row["raw_test_rmse"]),
                 "representative_predictions_file": str(representative_row["predictions_file"]),
                 "representative_plot_file": str(representative_row["plot_file"]),
+                "tabpfn_loco_fold_count": len(tabpfn_loco_fold_details) if tabpfn_loco_fold_details else pd.NA,
+                "tabpfn_loco_fold_details_json": (
+                    json.dumps(tabpfn_loco_fold_details, ensure_ascii=False)
+                    if tabpfn_loco_fold_details
+                    else pd.NA
+                ),
             }
         )
         aggregated_rows.append(record)
@@ -272,14 +327,9 @@ def main() -> None:
         print(f"No TabPFN multi-OOD metrics were collected under: {base_dirs}")
         return
 
-    summary_df = annotate_family_ranks(pd.DataFrame(rows))
+    summary_df = align_summary_metrics_to_artifact(pd.DataFrame(rows))
+    summary_df = annotate_family_ranks(summary_df)
     summary_df["alloy_family"] = summary_df["alloy_family"].map(normalize_alloy_family_name)
-    # Keep the family summary aligned with the alloy-case exported artifacts and the
-    # Combined report figures. For TabPFN, especially under fold-based methods such as
-    # LOCO, summary_test_* stays as the fold aggregate, while plot/artifact metrics
-    # should point to the exact case-level OOD predictions file exported in
-    # 01_alloy_cases/.../selected_model_artifacts/.
-    summary_df = add_artifact_and_plot_columns(summary_df)
     create_global_exports(summary_df, summary_root, "all_tabpfn_ood_model_summary.csv")
     export_case_outputs(summary_df, summary_root)
 

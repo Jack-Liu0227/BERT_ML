@@ -121,6 +121,8 @@ def _append_method_specific_args(cmd: List[str], args: Any, method_meta: Dict[st
         cmd.extend(["--sparse_neighbors_per_seed", str(args.sparse_neighbors_per_seed)])
     if "loco_cluster_count" in cli_args:
         cmd.extend(["--loco_cluster_count", str(args.loco_cluster_count)])
+    if "baseline_num_folds" in cli_args:
+        cmd.extend(["--baseline_num_folds", str(args.baseline_num_folds)])
 
 
 def build_command(
@@ -389,3 +391,5 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+# python -m src.pipelines.run_batch_ood --config experiment2a_all_nn_scibert_random_cv_baseline experiment2b_all_nn_steelbert_random_cv_baseline experiment2c_all_nn_matscibert_random_cv_baseline
+# python -m src.pipelines.run_batch_ood --config experiment1_all_ml_models_random_cv_baseline
