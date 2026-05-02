@@ -1,0 +1,1568 @@
+--- PAGE 1 ---
+npj | computational materials
+Article
+Published in partnership with the Shanghai Institute of Ceramics of the Chinese Academy of Sciences
+https://doi.org/10.1038/s41524-024-01316-4
+Structure-based out-of-distribution (OOD)
+materials property prediction: a
+benchmark study
+Check for updates
+Sadman Sadeed Omee
+1, Nihang Fu1, Rongzhi Dong
+1, Ming Hu
+2
+& Jianjun Hu
+1
+In real-world materials research, machine learning (ML) models are usually expected to predict and
+discover novel exceptional materials that deviate from the known materials. It is thus a pressing
+questionto provide an objective evaluation of ML modelperformancesin property prediction of out-of-
+distribution (OOD) materials that are different from the training set. Traditional performance evaluation
+of materials property prediction models through the random splitting of the dataset frequently results
+in artiﬁcially high-performance assessments due to the inherent redundancy of typical material
+datasets. Here we present a comprehensive benchmark study of structure-based graph neural
+networks (GNNs) for extrapolative OOD materials property prediction. We formulate ﬁve different
+categories of OOD ML problems for three benchmark datasets from the MatBench study. Our
+extensive experiments show that current state-of-the-art GNN algorithms signiﬁcantly underperform
+for the OOD property prediction tasks on average compared to their baselines in the MatBench study,
+demonstrating a crucial generalization gap in realistic material prediction tasks. We further examine
+the latent physical spaces of these GNN models and identify the sources of CGCNN, ALIGNN, and
+DeeperGATGNN’s signiﬁcantly more robust OOD performance than those of the current best models
+in the MatBench study (coGN and coNGN) as a case study for the perovskites dataset, and provide
+insights to improve their performance.
+Machine learning (ML)-based models have swiftly emerged as the state-of-
+the-art (SOTA) performers in a wide range of materials informatics pro-
+blems
+such
+as
+materials
+property
+prediction1–7,
+crystal
+structure
+prediction8–12, material generation13–16, high-throughput screening17,18, and
+inverse design of materials19,20. Among these, one of the most exciting
+applications of ML-based models is to predict various properties of mate-
+rials given their compositions, or structures. Composition-based ML
+models have shown limited prediction performance21–23, as most material
+properties are highly dependent on their crystal structures. Recent research
+has demonstrated that structure-based deep learning (DL) models can
+achieve signiﬁcantly better accuracy in predicting materials properties
+compared to methods that exclusively rely on composition descriptors24–26.
+Especially, graph neural network (GNN) models have been widely utilized
+for this purpose due to their demonstrated superior effectiveness in this
+task3,4,24,27,28. This is because GNNs excel at capturing the local environment
+of each atom by considering its neighboring atoms and their interactions,
+which is crucial in determining the macro-properties of a material29–33.
+Several benchmark studies have been conducted to evaluate the per-
+formances of existing ML methods24,26,34,35. Fung et al.24 presented a com-
+prehensive benchmark of SOTA GNN models evaluated across multiple
+diverse problems, while Varivoda et al.35 presented a benchmark study of
+ML models for property prediction with uncertainty quantiﬁcation. Both
+benchmarks overlooked the inclusion of OODtest sets, compromising their
+applicability for real-world materials property prediction. Dunn et al.26
+presented the Matbench benchmark test suite and an automated procedure
+for evaluating ML models for predicting material properties. This bench-
+mark contains nine distinct structure-based property prediction tasks.
+Remarkably, the SOTA GNN model coGN36 has consistently demonstrated
+superior performance with an MAE of 0.017 eV for formation energy
+prediction and 0.156 eV for bandgap prediction, while the top positions on
+the leaderboard37 for all nine tasks are all secured by structure-based GNN
+models. However, the excellent performances of these GNN models are
+overestimated, as veriﬁed by our work. We ﬁnd that the reported superior
+performancesofSOTAmodelsintheMatBenchstudyoriginatedfromtheir
+1Department of Computer Science and Engineering, University of South Carolina, Columbia, SC, USA. 2Department of Mechanical Engineering, University of South
+Carolina, Columbia, SC, USA.
+e-mail: hu@sc.edu; jianjunh@cse.sc.edu
+npj Computational Materials |  (2024) 10:144
+1
+1234567890():,;
+1234567890():,;
+
+
+--- PAGE 2 ---
+performanceevaluationmethod,inwhichanentiredatasetisrandomlysplit
+into ﬁve training and test folds leading to high similarity between both sets
+due to the high sample redundancy of materials databases38. This dataset
+redundancy in material databases such as ICSD39, Materials Project40,
+OQMD41, and AFLOW42, is caused by the historical iterative tinkering
+process of experimental material discovery and accumulation, which tends
+to generate many materials with high similarity. Moreover, studies have
+revealed that current ML models have low generalization performance on
+material datasets for test samples with different data distributions, and their
+performances are frequently overestimated because of high dataset
+redundancy34,38,43–45. Li et al.44 discovered that ML models trained on
+Materials Project 2018 data may experience a signiﬁcant decline in per-
+formance when applied to new materials introduced in Materials Project
+2021 data, primarily due to a shift in data distribution. Consequently, the
+resulting high prediction performance over these test sets in Matbench
+assumed homogeneity in terms of composition, structure, or properties and
+was randomly distributed within the entire dataset space. This material
+property performance evaluation approach, guided by the assumption of
+independent and identically distributed (i.i.d.) data, proved inadequate in
+replicating their performance in real-world material discovery applications.
+In practical scenarios, ML models are often utilized to discover or screen
+outlier materials that deviate from the distribution of the training set and
+need their property to be predicted. Moreover, in real-world situations,
+researchers commonly are more interested in a limited number of outlier
+materials that are different from the known material compositions or
+structures, referred to as OOD materials. These materials could be located in
+a chemical space with limited known counterparts, or they might display
+exceptionally high or low property values38. An evaluation of ML-based
+material property prediction performance in these particular situations was
+not provided in the MatBench study and in the literature to our knowledge.
+Recently, within the domain of ML, researchers started to extensively
+investigate OOD generalization resulting from changes in data distribution
+between the original and target domains, primarily in the context of transfer
+learning46, domain generalization47,48, causal learning49, and domain
+adaptation50.Thisshiftindistributionisakeyconcernintheseareas.Mostof
+these methods are still unexplored for improving the material property
+prediction performancein OODmaterials. To our knowledge, there has not
+been a comprehensive benchmark study of ML models for OOD property
+prediction of inorganic materials in general. Another shortcoming of cur-
+rent ML approaches for material property prediction is that the ML models
+are usually trained without considering the distribution of the test set. In
+practical materials property prediction tasks, the compositions or structures
+of the targetmaterialsare alreadyavailable,whichcanbe and should be used
+as guidance information for training better ML models for property pre-
+diction of these target materials38. Furthermore, Schrier et al.51 highlighted
+that material scientists usually prioritize investigating the properties of new
+materials with unique compositions or characteristics, which frequently
+gives rise to challenging OOD ML problems. This underscores the critical
+need for a systematic investigation into the prediction problem of the
+properties of OOD materials.
+DuetothesheerdominanceofGNNsintheMatBenchstudy,thiswork
+aims for a benchmark study for GNN-based OOD materials property
+prediction. Our work is complementary to the benchmark study by Fung
+et al.24 on GNNs’ performance on materials property prediction. However,
+their analysis did not consider OOD materials as test sets. Although several
+works have been done on the OOD topic in general48,52–54 including a similar
+benchmark work55 for organic materials, a benchmark study of structure-
+based GNNs for inorganic materials in general was highly warranted. Pre-
+viousrelatedworks38,45,56,57docontainsomelevelofOODpredictionsforML
+models, but no prior work does a complete benchmark study for inorganic
+materials in general for structure-based GNNs and identiﬁes issues with
+current popular benchmarks. Kauwe et al.56 tested only two simple ML
+models (SVM and logistic regression) for a composition-based extrapola-
+tion performance study. Xiong et al.34 provided only a single method to split
+the data to identify outlier materials, whereas our current paper proposes
+ﬁve different methods to generate outlier test sets (See the “OOD test set
+generation” subsection). Additionally, they only experimented with one
+GNN model, where we took account of eight different SOTA GNN models.
+Meredig et al.45 provided two different methods for OOD target generation,
+but their target generation methods are based solely on the elemental
+composition of the materials and do not apply to structure-based models
+which are the current SOTA performers. OC2057 and OC2258 both pre-
+sented clearly deﬁned data-splitting methods (ID/OOD) for catalyst data-
+sets. Not only they did not include the SOTA performing models for
+materials property prediction in their benchmark (ALIGNN, Dee-
+perGATGNN, coGN and coNGN) which makes their results prone to
+criticism, they also did the benchmark with respect to catalyst datasets or for
+the realmof catalysis,and notfor general inorganic materials.They sampled
+their splits based on catalyst composition (ID: for those from the same
+distribution as training, and OOD: for unseen catalyst compositions). They
+did not provide any structure-based target set clustering like our work.
+Moreover, they treated any data that is unseen (not in the dataset) as OOD,
+whereas those OOD data can come from the same distribution as their ID
+set, which is a big issue. Hu et al.38 proposed ﬁve target generation methods
+based on composition-based descriptors. However, it failed to deﬁne a
+method to generateOODtargetsfor evaluatingstructure-based ML models.
+Our paper’s target generation method can handle structures of crystals by
+incorporating structure-based descriptors such as OFM for the clustering,
+which was missing from their work. Furthermore, none of the previous
+studies systematically provided any insight regarding the current bottle-
+necks of GNNs for OOD materials property prediction. Although
+Choudhary and Sumpter59 demonstrated that a GNN model, once trained
+solely on perfect materials, is capable of predicting vacancy formation
+energies (Evac) in defective structures, eliminating the necessity for extra
+training data, their ﬁndings are not generalized and tested across multiple
+datasets, models, and target material properties. In response, we addressed
+theselimitationsinourbenchmarkstudy.Inparticular,ourworkfocusedon
+effectively predicting properties of minority or outlier material clusters that
+exhibit different distributions compared to the training set. These scenarios
+are characterized by the core issue of OOD ML. A general framework of our
+benchmark study is presented in Fig. 1. Details about the datasets and the
+OOD target generation methods can be found in the next section. Our
+contributions are summarized as follows:
+• We proposed a set of OOD material property prediction benchmark
+problems for three datasets from the MatBench study, where each
+category of OOD targets possesses unique characteristics, creating a
+more realistic and complex challenge for current SOTA GNN
+algorithms.
+• Through comprehensive experiments on these OOD problems, we
+benchmarked GNN algorithms for property prediction for these OOD
+datasets. We showed that current GNN algorithms have limited gen-
+eralization capabilities and are not well-suited for real-world OOD
+material property prediction tasks, with the exception of a few cases. In
+general, all the algorithms perform worse on average on the OOD test
+problems than their baseline performance in the original MatBench
+study, suggesting methods like domain adaptation are needed to
+improve their OOD prediction performance.
+• By delving into the physical latent spaces of the GNN models, we
+identiﬁed possible reasons for the comparatively better performance of
+CGCNN, ALIGNN, and DeeperGATGNN and the subpar perfor-
+mance of the current top models in the MatBench leaderboard - coGN
+and coNGN as a case study on the perovskites dataset.
+Results
+OOD benchmark problems, models and datasets
+WeanalyzedeightGNNmodelsformaterialpropertyregressiontasksusing
+three datasets sourced from MatBench26 and mentioned in Table 1. Details
+about the GNN models can be found in the “Methods” section. The raw
+dataset details are shown in Table 2. For simplicity, we refer to the mat-
+bench_dielectric dataset as the ‘dielectric dataset’, the matbench_log_gvrh
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+2
+
+
+--- PAGE 3 ---
+dataset as the ‘elasticity dataset’, and the matbench_perovskites dataset as
+the ‘perovskites dataset’.
+In realistic scenarios, the test set often deviates signiﬁcantly from the
+training and validation set in terms of distribution. Rather than applying
+conventional methods like random train-test splitting or k-fold cross-
+validation(whichalsoreliesonrandomsplitting),weproposedﬁvepractical
+scenarios for predicting material properties. These scenarios are designed to
+focus on properties of less common or underrepresented materials in the
+dataset,whichareoftenof particularinteresttomaterialresearcherswho are
+more interested in discovering novel exceptional outlier materials. For each
+rawdataset,weoutlinedﬁvemethods(seethenextsubsectionfordetails)for
+selecting which samples from the sparse property or structure space will be
+designated asthe target testsamples. Overall, each targetgeneration method
+generates50clusters,whereeachclusterhasadifferentdistributionfromthe
+others. As materials property prediction datasets are relatively small data-
+sets, whereas the number of GNN parameters varies from ≈1.8–6 million,
+we opted for a higher number of folds for our work. To efﬁcientlytrain these
+GNN models, we need a decent amount of training samples. If we used a
+small number of folds, then each model would have been trained on a
+smallertrainingsetand tested ona largertest fold.Here,thepotentialfor the
+data distribution in the test fold to differ from the training set will be bigger,
+and we thus expect a higher prediction error on average60. In contrast, using
+a highernumber of folds (≈30–50) means that each model will be trained on
+a larger training set and tested on a smaller test fold which leads to a lower
+prediction error as the models see more of the available data60. For each fold,
+weselectedaclusterasthetestset,andtherestastrainingandvalidationsets,
+and averaged the results over 50 folds to get the ﬁnal result.
+OOD test set generation
+In typical real-world scenarios, researchers are acquainted with their target
+materials of interest, often lacking labeled samples. In this work, we speci-
+ﬁcally concentrate on instances where the target set comprises no labeled
+samples. Accordingly, we propose the following target set generation
+Fig. 1 | The overall framework and workﬂow of our OOD materials benchmark.
+First, we generate OOD test sets for the three datasets chosen, where we propose ﬁve
+different methods to split each dataset into 50 folds, ensuring the test set varies in
+distribution from the training set in each fold. Next, we perform preprocessing steps
+such as input representation, data scaling, etc. for the GNNs. Subsequently, we train
+the GNN models and compile the test set results. After that, we evaluate the per-
+formance over the 50 folds for each OOD target generation method. We conduct
+additional analyses on the obtained results, including investigating the physical
+latent spaces of the GNN models to understand their characteristics in predicting the
+properties of OOD materials.
+Table 1 | List of the GNN models used in this work
+GNN model
+Source
+Publishing year
+CGCNN
+Xie and Grossman1
+2018
+SchNet
+Schütt et al.65
+2018
+MEGNet
+Chen et al.2
+2019
+DimeNet++
+Gasteiger et al.66
+2020
+ALIGNN
+Choudhary and DeCost3
+2021
+DeeperGATGNN
+Omee et al.4
+2022
+coGN
+Ruff et al.36
+2023
+coNGN
+Ruff et al.36
+2023
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+3
+
+
+--- PAGE 4 ---
+methods to simulate real-world conditions for materials property
+prediction.
+Leave-one-cluster-out (LOCO). Meredig et al.45 proposed this approach
+in their assessment of the generalization performance of ML models for
+predicting
+material
+properties.
+Initially,
+we
+apply
+the
+k-means
+algorithm61 based on the orbital-ﬁeld matrix (OFM) features62 to cluster
+the whole dataset into 50 clusters. OFM captures the electronic structure
+of materials by considering the orbitals’ interactions, which are funda-
+mental to understanding the material’s properties, and easily inter-
+pretable due to their physical basis63. The OFM features were calculated
+fast using the MatMiner23 package. Subsequently, we evaluate the models’
+performance by iteratively using each of the clusters as test sets. While
+enhancing the widely employed random splitting method to mitigate
+performance overestimation, it still incorporates all samples, especially
+those located in densely redundant areas. This implies that it retains a
+susceptibility to some degree of overestimation.
+Single-point targets with the lowest structure density (SparseXsin-
+gle). In this method, we begin by converting material structures into the
+1024-dimension OFM feature space. Subsequently, we apply the
+t-distributed stochastic neighbor embedding (t-SNE)64 for dimension
+reduction converting the OFM feature space to a 2D space (x-value).
+Following this, we calculate the densityfor each data point inthe 2D space
+and select 500 samples with the lowest density. The density was calculated
+using Gaussian Kernel Density function of the t-SNE. We apply k-means
+clustering on these chosen samples to convert them into 50 clusters.
+Finally, we extract one sample from each cluster, yielding a test set with 50
+target samples.
+Single-point targets with the lowest property density (SparseY-
+single). In this method, we follow the preprocessing method of Spar-
+seXsingle, where all structures are converted into 1024-dimension OFM
+features. Following this, we sort the samples based on their property
+values (y-value). This process estimates the density of y-values using
+kernel density estimation for each data point and picks the 500 samples
+with the lowest density. Then we apply the k-means clustering to convert
+these chosen samples to 50 clusters. From each cluster, we pick one
+sample, obtaining our test set with 50 target samples.
+Cluster targets with the lowest structure density (SparseXcluster).
+This sparse cluster target set generation method is similar to the Spar-
+seXsingle method. However, after k-means clustering, rather than
+selecting just one sample, we extend the selection to include N nearest
+neighbors for each chosen sample to form the target cluster. The process
+of picking neighbors ensures that no sample is selected into multiple
+target clusters with the neighbors determined by the Euclidean distance
+of OFM features.
+Cluster targets with the lowest property density (SparseYcluster).
+This sparse cluster target set generation method closely resembles the
+SparseYsingle method but with a notable distinction. Following k-means
+clustering, instead of selecting a single sample, we expand the selection to
+include N nearest neighbors for each chosen sample to create a target
+cluster. The neighbor-picking process is conducted to prevent any sample
+from being selected into multiple target clusters. The determination of
+neighbors is based on the Euclidean distance of OFM features.
+The distribution of the whole dielectric datasets and their different
+target sets are shown in Fig. 2. Additionally, Supplementary Fig. 1 and 2
+provide visualizations for the elasticity and perovskites datasets. It can be
+observed that realistic target sets predominantly reside in sparser regions,
+whereas commonly employed random splitting tends to align with dense
+areas exhibiting a distribution akin to that of the training set. In total, we
+prepared 3 datasets, the dielectric dataset, the elasticity dataset, and the
+perovskites dataset, for the benchmark evaluations, and each of them
+contains LOCO, SparseXsingle, SparseXcluster, SparseYsingle, and Spar-
+seYcluster test sets for regression. The number of samples for each clusterof
+these datasets is shown in Supplementary Tables 1, 2, and 3.
+Performance comparison on OOD test sets
+Here we report the OOD performance of selected GNN models for three
+datasets. The training hyperparameters used for this benchmark study are
+listed in the Supplementary Notes. The results of the dielectric dataset for
+ﬁve different OOD target generation methods are summarized in Table 3.
+For the LOCO generation method, we found that coNGN achieved the
+SOTA OOD test results on the dielectric dataset (MAE: 0.4983), and coGN
+performed the second best (MAE: 0.4984), showing a 3.11% better perfor-
+mance than the third best model CGCNN (MAE: 0.5911). The other GNN
+models(exceptDeeperGATGNN)performedsigniﬁcantlyworsethanthese
+two for the LOCO targets, with DimeNet++ registeringthe highestMAE at
+2.7720. This discrepancy in performance can be attributed to the fact that in
+contrasttorandomtrain-testsplittingor cross-validation,theLOCO targets
+tend to have different distributions compared to the training sets (refer to
+Fig. 2b). This introduces increased complexity and challenges for conven-
+tionalML/DLmodelssuchasMEGNetthatarewell-trainedtoachievegood
+prediction performance on i.i.d. test sets. The OOD test sets for the Spar-
+seXcluster and SparseYcluster datasets are formed through a two-step
+process.Initially,50seedsampleswiththehighestsparsityintheOFMspace
+are chosen. From these, 10 samples that are most similar to the seed samples
+(depending on the x-axis or y-axis) are selected. The main goal for these
+target generation methods is to evaluate the effectiveness of an ML/DL
+algorithm to predict the properties without using closest neighbors. For the
+SparseXcluster targets, coGN and coNGN achieved the best performances
+on thedielectricdataset(MAE:0.5241and 0.5242,respectively), followed by
+CGCNN with an MAE increase of ≈14.57% to 0.6006. However, for the
+SparseYcluster targets, DeeperGATGNN achieved the SOTA MAE of
+0.3959, which is 10.10% less than that of its closest model ALIGNN (MAE:
+0.4359). The remaining models again displayed signiﬁcantly subpar per-
+formance compared to these three models for SparseXcluster and Spar-
+seYcluster targets. The single-point sparse X and sparse Y test sets are
+distinctive because they consist of only one sample each, with all other
+samples being utilized for training and validation. coGN and coNGN out-
+performed all other models for the SparseXsingle targets (MAE: 0.5518 and
+0.5519, respectively), with a staggering 44.18% decrease in MAE than the
+second best performing model, CGCNN (MAE: 0.9888). For the SparseY-
+single targets, ALIGNN achieved the lowest MAE (0.2513), which is slightly
+better (8.75%) than its closest performer, DeeperGATGNN (MAE: 0.2733).
+In contrast, other models were consistently outperformed by these three
+models by a large margin for the single-point Sparse X and Y targets, with
+SchNet achieving the highest MAE (3.9767) for SparseXsingle targets, and
+DimeNet++ obtaining the highest MAE (2.5866)for SparseYsingle targets.
+Table4showsthesummarizedresultsfor ﬁvetypesofOODtestsetson
+the elasticity dataset. CGCNN achieved the SOTA MAE for both LOCO
+(0.0585 log10(GPa)) and SparseXcluster (0.0499 log10(GPa)) targets, which
+Table 2 | Details of the three benchmark datasets used in this work
+Dataset
+Target property
+Total samples
+Original source
+MatBench best algorithm (MAE)
+Unit
+matbench_dielectric
+Refractive index
+4764
+Materials Project40,70
+MODNet71 (0.2711)
+Unitless
+matbench_log_gvrh
+Shear modulus
+10987
+Materials Project40,70
+coNGN36 (0.0670)
+log10(GPa)
+matbench_perovskites
+Formation energy
+18928
+Castelli et al.72
+coGN36 (0.0269)
+eV/unit cell
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+4
+
+
+--- PAGE 5 ---
+is signiﬁcantly better than the second best performing model ALIGNN
+(MAE: 0.0974 log10(GPa), and 0.0834 log10(GPa), respectively) for both
+these OOD targets (66.50%, and 67.13%, respectively). On the other hand,
+ALIGNN achieved the SOTA MAEs on the rest of the OOD targets
+(SparseYcluster: 0.0631 log10(GPa), SparseXsingle: 0.0853 log10(GPa), and
+SparseYsingle: 0.0450 log10(GPa)). CGCNN performed the second best for
+the SparseYcluster and SparseXsingle targets (MAE: 0.0752 log10(GPa), and
+0.0895 log10(GPa), respectively), with an increase in MAE of 16.09%, and
+4.92%, respectively, while DeeperGATGNN performed the second best for
+the SparseYsingle targets (MAE: 0.0807 log10(GPa)) with a remarkable
+79.33% increase in MAE. coGN and coNGN were outperformed by
+CGCNN and ALIGNN on all ﬁve types of targets, while DeeperGATGNN
+performed better than them on four out of ﬁve targets. Other models per-
+formed consistently worse than CGCNN, ALIGNN, and DeeperGATGNN
+on the elasticity dataset, with MEGNet registering the worst MAE for the
+LOCO (1.4468 log10(GPa)), SparseXcluster (1.4113 log10(GPa)), and
+SparseYcluster (1.5659 log10(GPa)) targets, DimeNet++ achieving the
+worst MAE for the SparseXsingle targets (1.3214 log10(GPa)), and SchNet
+Table 3| 50-foldcross-validation MAEs (unitless) of different GNN models onthe dielectric dataset forﬁve different types ofOOD
+problems
+Algorithm
+LOCO
+SparseXcluster
+SparseXsingle
+SparseYcluster
+SparseYsingle
+CGCNN
+0.5144
+0.6006
+0.9888
+0.5254
+0.4777
+MEGNet
+2.6830
+2.8044
+3.8384
+2.5918
+2.5706
+SchNet
+2.7074
+2.8368
+3.9767
+2.5988
+2.5566
+DimeNet++
+2.7720
+2.9378
+3.8629
+2.5947
+2.5866
+ALIGNN
+0.8592
+0.6953
+1.5115
+0.4359
+0.2513
+DeeperGATGNN
+0.5911
+1.4056
+1.5755
+0.3959
+0.2733
+coGN
+0.4984
+0.5241
+0.5519
+0.4673
+0.3589
+coNGN
+0.4983
+0.5242
+0.5518
+0.4674
+0.3589
+The best results and second best results are marked by bold letters and underlines, respectively
+Fig. 2 | Distribution of standard cross-validation (CV) test set and ﬁve OOD test
+sets using various target generation methods for the dielectric dataset. a 50-fold
+CV (with random splitting) of the whole dielectric dataset with 4764 samples
+represented by cross symbols with 50 different colors. b Leave-one-cluster-out target
+(LOCO) clusters. c In SparseXsingle, 50 test samples are represented by cross
+symbols with 50 different colors, and gray points represent the remaining samples.
+d In SparseYsingle, 50 test samples are represented by cross symbols with 50 dif-
+ferent colors, and gray points represent the remaining samples. e SparseXcluster
+displays 50 test clusters represented by cross symbols with 50 different colors, and
+gray points represent the remaining samples. f SparseYcluster displays 50 test
+clusters represented by cross symbols with 50 different colors, and gray points
+represent the remaining samples.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+5
+
+
+--- PAGE 6 ---
+recording
+the
+poorest
+MAE
+for
+the
+SparseYsingle
+targets
+(1.4855 log10(GPa)).
+Results on the perovskites dataset are summarized in Table 5. We can
+ﬁnd that DeeperGATGNN outperformed all other algorithms for four out
+of ﬁve OOD targets (MAEs - LOCO: 0.036 eV/unit cell, SparseXcluster:
+0.0464 eV/unit cell, SparseYcluster: 0.0333 eV/unit cell, SparseXsingle:
+0.0373 eV/unit cell), demonstrating superior performance on the per-
+ovskitesdata. ALIGNN trailed its performance with a signiﬁcant increase in
+MAE of 5.75%, 0.86%, 22.52%, and 2.40%, for the LOCO (MAE: 0.0386 eV/
+unit cell), SparseXcluster (MAE: 0.0468 eV/unit cell), SparseYcluster (MAE:
+0.0341 eV/unit cell), and SparseXsingle (MAE: 0.0457 eV/unit cell) targets,
+respectively. ALIGNN achievedthe SOTA performance for the single-point
+Sparse Y targets (MAE: 0.0243 eV/unit cell), outperforming Dee-
+perGATGNN (MAE: 0.0259 eV/unit cell) by a slight margin (6.58%). coGN
+and coNGN performed worse ALIGNN and DeeperGATGNN on all ﬁve
+OOD targets, while CGCNN achieved lower MAE than them on four out of
+ﬁvetargets.Allothermodelsdemonstrated theirsubparperformanceonthe
+OOD perovskites data, with DimeNet++ achieving the highest MAEs for
+LOCO (MAE: 1.4666 eV/unit cell), SparseXcluster (MAE: 1.4567 eV/unit
+cell), and SparseXsingle targets (MAE: 1.5248 eV/unit cell), and SchNet
+registering poorest MAEs for SparseYcluster (MAE: 1.4736 eV/unit cell),
+and SparseYsingle (MAE: 1.5173 eV/unit cell) targets.
+While the latest SOTA GNN models try to outperform each other by
+achieving the best results on speciﬁc datasets as reported in the Matbench
+study26, they often overﬁt the i.i.d. training datasets, which prevent them
+from achieving good performance on the OOD test sets. CGCNN’s sim-
+plicity and primitiveness overcome this issue as it carries less bias from its
+design to perform well on OOD tests of some speciﬁc datasets (e.g., Mate-
+rialsProject formation energy/ band-gap dataset, etc.). This is why it out-
+performed all many SOTA GNN algorithms on several targets. However,
+with the dataset size increasing, its performance started to lag behind
+ALIGNN and DeeperGATGNN. ALIGNN’s SOTA performance can be
+attributed to its line graph encoding used to incorporate the triplet feature
+and the two-step edge-gated convolution operation. On the other hand,
+DeeperGATGNN’s unique architecture based on a global attention
+mechanism aided with differentiable group normalization and skip-
+connection contributes to its overall SOTA performance on the per-
+ovskitesdataset.NotwithstandingthatcoGNand coNGNachievedsuperior
+resultsforthreecategoriesoftargetsonthedielectricdataset,overallitlagged
+behind CGCNN, ALIGNN and DeeperGATGNN on average considering
+15 different OOD targets across three datasets. Their line-graph (similar to
+ALIGNN) and nested line graph-based architectures, better atom neigh-
+borhood selection method, and the usage of asymmetric unit cell repre-
+sentationcanbeattributedforthis.Butwiththeincreaseofdatasetsize,their
+OOD performances deteriorated. But they outperformed the rest of the
+algorithms (except the mentioned three GNNs) as they are also designed to
+adapt well for some particular datasets. This indicates that OOD data
+techniques, such as domain adaptation, are needed to alleviate their pre-
+diction performance. Moreover, we found that MEGNet, SchNet, and
+DimeNet++ achieved worse but similar OOD performances on all three
+datasets, which demonstrates they are not suitable GNN models for making
+OOD materials property predictions.
+Although CGCNN, ALIGNN, and DeeperGATGNN displayed high
+resilience in handling OOD test data (and coGN and coNGN only for the
+dielectric dataset targets) across all datasets’ targets, their results are still
+bottlenecked by poor results for a few test clusters. The fold-wise MAE plots
+for these three algorithms on the dielectric dataset, elasticity dataset, and
+perovskites dataset are presented in Fig. 3, Supplementary Fig. 3, and 4,
+respectively. The distribution of the MAE for 50 folds/clusters showed that
+only a few clusters are responsible for the overall MAE of each algorithm to
+Table 4 | 50-fold cross-validation MAEs (log10(GPa)) of different GNN models on the elasticity dataset for ﬁve different types of
+OOD problems
+Algorithm
+LOCO
+SparseXcluster
+SparseXsingle
+SparseYcluster
+SparseYsingle
+CGCNN
+0.0585
+0.0499
+0.0895
+0.0752
+0.0840
+MEGNet
+1.4468
+1.4113
+1.3099
+1.5659
+1.4491
+SchNet
+1.4065
+1.3455
+1.2363
+1.5592
+1.4855
+DimeNet++
+1.4242
+1.3562
+1.3214
+1.5454
+1.4828
+ALIGNN
+0.0974
+0.0834
+0.0853
+0.0631
+0.0450
+DeeperGATGNN
+0.1173
+0.1109
+0.1140
+0.0858
+0.0807
+coGN
+0.1017
+0.1416
+0.2919
+0.0823
+0.1852
+coNGN
+0.1019
+0.1417
+0.2918
+0.0823
+0.1853
+The best results and second best results are marked by bold letters and underlines, respectively.
+Table 5 | 50-fold cross-validation MAEs (eV/unit cell) of different GNN models on the perovskites dataset for ﬁve different types
+of OOD problems
+Algorithm
+LOCO
+SparseXcluster
+SparseXsingle
+SparseYcluster
+SparseYsingle
+CGCNN
+0.0651
+0.0839
+0.0689
+0.0740
+0.0768
+MEGNet
+1.4654
+1.4485
+1.5005
+1.4685
+1.5048
+SchNet
+1.4644
+1.4509
+1.5133
+1.4736
+1.5173
+DimeNet++
+1.4666
+1.4567
+1.5248
+1.4732
+1.5148
+ALIGNN
+0.0386
+0.0468
+0.0457
+0.0341
+0.0243
+DeeperGATGNN
+0.0365
+0.0464
+0.0373
+0.0333
+0.0259
+coGN
+0.0631
+0.1306
+0.2199
+0.0925
+0.1884
+coNGN
+0.0632
+0.1306
+0.2200
+0.0926
+0.1886
+The best results and second best results are marked by bold letters and underlines, respectively.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+6
+
+
+--- PAGE 7 ---
+surge. We also ﬁnd that while ALIGNN achieves best or the second best
+OOD performance on the dielectric datasets (Table 3), it can have sig-
+niﬁcantlydegradedpredictionMAEsforafewOODtestsetsasshowninthe
+highest peak in Fig. 3a–e. This analysis highlights speciﬁc areas where each
+algorithm’s performance could be further optimized to enhance its overall
+accuracy and reliability. The parity plots of CGCNN, coGN, and Dee-
+perGATGNN’s prediction performance on the perovskites dataset are
+plotted in Fig. 4 for the LOCO targets, and in Supplementary Figs. 5–8 for
+the rest of the targets. These ﬁgures demonstrated superior OOD prediction
+performance of DeeperGATGNN compared to CGCNN and coGN on the
+perovskites dataset. For all categories of targets, DeeperGATGNN achieved
+better prediction accuracy compared to CGCNN and coGN for non-OOD
+samples, which is proportional to their prediction accuracy for the OOD
+samples.
+Performance comparison with MatBench SOTA performance
+To investigate the issue of performance degradation of GNN models in
+OOD material property prediction, we compared the MatBench SOTA
+algorithms’ performance on the OOD datasets with those on the Matbench
+study(Fig.5).The MatBench SOTA algorithmsand theirMAEsforall three
+datasets in the Matbench study26 are listed in Table 2. We calculated the
+performance changes (in percentage) from the MatBench SOTA MAE to
+the MAE found for all ﬁve OOD target generation methods for each algo-
+rithm. The goal of this analysis is to ﬁnd out the feasibility of current GNN
+Fig. 3 | Distribution of the MAEs for each fold of CGCNN, ALIGNN, and Dee-
+perGATGNN on the dielectric dataset. Distribution of the MAEs for each fold of
+CGCNN, ALIGNN, and DeeperGATGNN on the dielectric dataset for (a) LOCO,
+(b) SparseXcluster, (c) SparseYcluster, (d) SparseXsingle, and (e) SparseYsingle
+OOD targets. It showed that a few folds/clusters are extremely difﬁcult to predict
+with MAE values greater than 1.0, which lead to high variation in the models'
+predictions.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+7
+
+
+--- PAGE 8 ---
+algorithms for high-performance OOD materials property prediction. We
+found that all models’ OOD performances are signiﬁcantly worse than their
+SOTA results in MatBench, with degradation ranging from −0.83% to a
+substantial -1366.87%. These results indicate the inadequacy of current
+GNN algorithms for OOD property prediction for materials data. The only
+exception found on the dielectric dataset is for the SparseYsingle targets,
+where ALIGNN’s performance is found to be improved by 7.31%. On the
+otherhand,MEGNet,SchNet,andDimeNet++performedtheworstwitha
+performance change of >−750% for all ﬁve types of OOD targets. However,
+judging from Fig. 5a, we observed that coGN and coNGN adapted the best
+on average in the new OOD target-based predictions on the dielectric
+dataset, but with no improvements over the MatBench SOTA results.
+Similar comparison results on the elasticity dataset are shown in
+Fig. 5b. Again, all the GNN algorithms exhibited their deﬁciency to
+generalize, achieving the MAE increases for all algorithms across all
+OOD test sets ranging from -12.24% to a remarkable -2237.23%.
+Exception from these results are CGCNN’s outperforming the MAEs of
+SOTA algorithms for LOCO and SparseXcluster targets (12.7%, and
+25.51% improvement, respectively), and ALIGNN’s superior perfor-
+mance for both the SparseYcluster and SparseYsingle targets (5.82%, and
+32.82% improvement, respectively). The ﬁnding from this ﬁgure is that
+with the increase of data from the dielectric dataset to the elasticity
+dataset, the previously deteriorated results of MEGNet, SchNet, and
+DimeNet++ became even more deteriorated with a notable perfor-
+mance degradation of >−1500% for all ﬁve types of OOD targets.
+However, DeeperGATGNN, CGCNN, and ALIGNN’s average perfor-
+mance degradations on the elasticity dataset were lower than those of the
+dielectric dataset.
+Fig. 4 | Parity plots for both OOD and non-OOD samples for the LOCO target
+generation method on the perovskites dataset. These show that DeeperGATGNN
+has better performance (MAE: 0.0365 eV/unit cell, R2 score ≈0.96) on the non-OOD
+samples compared to CGCNN (MAE: 0.0651 eV/unit cell, R2 score ≈0.90) and
+coGN (MAE: 0.0631 eV/unit cell, R2 score ≈0.92), which is proportional to its better
+OOD performance than the other two for the LOCO targets.
+Fig. 5 | Performance comparison of different GNN models’ MAEs vs MatBench
+SOTA MAEs. Performance comparison of different GNN models’ MAEs for all ﬁve
+different types of OOD targets with the SOTA MAEs found in the MatBench study
+on the (a) dielectric dataset, (b) elasticity dataset, and (c) perovskites dataset.
+Although on average, all models' MAEs are signiﬁcantly higher than the SOTA
+MAEs, CGCNN, ALIGNN, and DeeperGATGNN outperformed MatBench’s SOTA
+results in some cases.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+8
+
+
+--- PAGE 9 ---
+Finally, we showed the performance degradation on the perovskites
+dataset of the MAEs for all MatBench SOTA algorithms by comparing the
+OOD results in Fig. 5c and their i.i.d. performance in Table 2. We again
+noticed that almost all algorithms’ performance is much worse than their
+performance on the MatBench study, ranging from -23.84% to a staggering
+-5568.31%. In contrast, ALIGNN and DeeperGATGNN outperformed the
+previous SOTA MAE by 3.87%, and 9.73%, respectively, for the SparseY-
+single targets. We observed that ALIGNN improved on all three datasets for
+the SparseYsingle OOD targets, which demonstrated its fair generalization
+capability for this type of OOD target. But considering all the OOD target
+generation methods, none of the algorithms showed good generalization
+capability on average, demonstrating the necessity for methods like domain
+adaptation to improve the OOD prediction performance of current GNN
+models.
+Comparison of OOD performance with baseline i.i.d.
+performance
+Here we aim to check how the evaluated GNNs’ performances degrade
+when changing their test sets fromi.i.d to OOD. The i.i.d. baseline MAEs for
+all GNN algorithms can be found on the MatBench leaderboard37, while the
+OOD test set performances on the dielectric, elasticity, and perovskites
+datasetcanbefoundinTables3,4,and5,respectively.Thecomparisonofall
+algorithms’ prediction performances for all ﬁve OOD targets with their i.i.d.
+baseline MAEs in the MatBench study on the dielectric dataset are shown in
+Fig. 6a. We limited the maximumvalue of y-axis to 3 forbetter visualization.
+We found that OOD MAEs of MEGNet, SchNet, DimeNet++, coGN, and
+coNGN are signiﬁcantly worse than their i.i.d. baseline MAEs for all OOD
+target sets, which proved their inadequate prediction capabilities on OOD
+datasets. However, CGCNN was found to be most beneﬁted from the 50-
+fold OOD test set cross-validation experiments as it improved over its
+baseline performance in the MatBench study on three targets - LOCO
+(14.09%), SparseYcluster (12.26%), and SparseYsingle (20.23%), while
+ALIGNN and DeeperGATGNN only managed to improve for the Spar-
+seYsingle targets (27.14%, and 18.53%, respectively).
+The OOD test set comparison with the MatBench baseline results of
+each algorithmon the elasticity and perovskites datasetare shown in Fig. 6b,
+and 6c, respectively. We again limited the maximum value of y-axis to 1 for
+both these ﬁgures for better visualization. On both these datasets, MEGNet,
+SchNet, DimeNet++, coGN, and coNGN proved to be much worse that
+their baseline prediction settings. This wasevidentfrom the resultsof Tables
+4 and 5 as all of the SOTA OOD results on these datasets were achieved by
+either CGCNN, ALIGNN, or DeeperGATGNN. On the elasticity dataset,
+CGCNN improved over its baseline MAE for all OOD target sets (LOCO:
+34.65%, SparseXcluster: 44.24%, SparseYcluster: 15.98%, SparseXsingle:
+0.01%, SparseYsingle: 6.18%), while it failed to improve over its baseline
+performance on the perovskites dataset for any type of OOD targets.
+ALIGNNandDeeperGATGNN’sOODresultsarebetterthantheirbaseline
+results for only the SparseYcluster targets (11.75%, and 5%, respectively),
+and SparseYsingle targets (37.05%, and 10.65%, respectively) on the elas-
+ticitydataset.However,theyonlysucceededinimprovingovertheirbaseline
+MAEs for the SparseXsingle targets (15.68%, and 10.21%, respectively). In
+contrast, all other models performed signiﬁcantly worse than these three on
+both datasets.
+Our 50-fold cross-validation scenario is a much more complex chal-
+lenge for the current GNN algorithms than the scenario presented in the
+MatBench Study because of the OOD test sets for each fold rather than the
+i.i.d. test sets from random splitting as used in Matbench. Despite this, three
+algorithms’ success in outperforming their baseline results for multiple
+targetsproved the robustness of their inherent prediction capabilities. It also
+manifested the lack of reliability of the material property prediction
+Fig. 6 | Performance comparison of different GNN models’ MAEs vs corre-
+sponding baseline MatBench i.i.d MAEs. Performance comparison of different
+GNN models’ MAEs for all ﬁve different types of OOD targets with their baseline
+i.i.d. MAEs found in the MatBench study on the (a) dielectric dataset, (b) elasticity
+dataset, and (c) perovskites dataset. The baseline MAE for each algorithm is labeled.
+All the models on average achieved higher MAEs than their baseline i.i.d. MAEs
+which proved the inadequacy of current GNN models for OOD materials property
+prediction.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+9
+
+
+--- PAGE 10 ---
+performanceof currentGNNsreported intheMatBenchstudyasindicators
+of their effectiveness in real-world materials property prediction, especially
+for those obscure materials that researchers desire.
+Physical insights
+We utilized t-distributed stochastic neighbor embedding (t-SNE)64, a
+commonly utilized non-linear method for visualizing and interpreting
+complex, high-dimensional data, to investigate speciﬁc insights into the
+materials’ physics. t-SNE aims to reduce higher-dimensional data into a
+much lower dimension (typically 2D or 3D) while preserving the proximity
+of data points in both dimensions. We selected the perovskites formation
+energy dataset for training. We also only investigated CGCNN, ALIGNN,
+DeeperGATGNN, coGN, and coNGN for this experiment - the ﬁrst three
+models for their comparatively robust OOD prediction performance on
+average across all ﬁve targets on this dataset and the last two for their SOTA
+performance in the current MatBench leaderboard37. Our objective is to
+visualize the distribution of latent representations learned through the
+training of different models. Foreach trained model,we retrieved the output
+of theﬁrst layer aftertheﬁnalgraph convolutionlayerand plotted the t-SNE
+diagrams in Fig. 7.
+The t-SNE diagrams portray integrated latent spaces that combine
+structure and composition information for the materials that have been
+trained.Variouscolorscorrespondtodifferentlevelsofformationenergyfor
+the samples representedin those latent spaces. We noticedthat each of these
+GNNs is capable of producing effective representations that result in the
+clustering of materials with similar formation energies. Within each cluster,
+it can be anticipated that points will exhibit resemblances in both their
+atomic conﬁgurations and elemental compositions. While each model may
+produce distinct latent spaces, we can gain valuable insights into their
+prediction patterns by examining these clusters. For example, we observed
+thatcoGNandcoNGNhavesimilarpatternsintheirlatentspaceswhichcan
+explain their similar OOD benchmark results(see Table 5). Also, we can see
+that the lower and higher energy distribution overlaps in the latent spacesof
+coGN and coNGN are very high. We can hardly separate different colored
+regions in their latent spaces, whereas the same separation is much
+smootherinCGCNN,ALIGNN,andDeeperGATGNN.Thismightexplain
+the better OOD performances of CGCNN, ALIGNN, and Dee-
+perGATGNN, and substandard OOD performances of coGN and coNGN
+for all categories of OOD targets on average on the perovskites dataset.
+Discussion
+Our benchmark study aimed to systematically evaluate the performance of
+eight GNN models in the challenging task of structure-based OOD mate-
+rials property prediction and identify models that exhibit superior OOD
+prediction performance while understanding the factors contributing to
+their efﬁcacy. The motivation behind this work stems from the fact that
+material researchers are typically drawn to exploring novel materials with
+exceptional properties and unconventional compositions or structures,
+which presents a common difﬁcultyin current ML techniques known as the
+OOD prediction problem. Through rigorous experimentation, we found
+that no single algorithm achievedSOTA performance for all OODtarget set
+generation methods for a given dataset, let alone on all datasets.
+First, to ensure a fair and comprehensive evaluation, we subjected each
+of the three chosen datasets from the MatBench study to a systematic
+divisioninto50folds.Thisdivisionprocesswasconductedusingﬁvedistinct
+target set generation methods, resulting in a total of 250 folds across the
+three datasets. Notably, within each fold, the test samples were methodically
+drawn to be OOD from the remaining dataset using a strategic approach
+based on predeﬁned criteria. These posed a strong challenge for the GNNs
+chosen in this study as they were not only tasked with performing effectively
+on the challenging OOD test samples but also with demonstrating effec-
+tiveness across the entirety of the 50-fold cross-validation setup, under-
+scoring the robustness and adaptability required for this comprehensive
+assessment. In total, we trained a total of 6000 deep learning GNN models,
+analyzed the results and drew important conclusions from them. So, with
+respect to the amount of work done, our conclusions and remarks have a
+high amount of credibility.
+Second, we found that no single algorithm triumphed in all situations
+which indicated their lack of generalization capability across different
+datasets and unreliability in making real-world materials property predic-
+tion. However, CGCNN, ALIGNN, and DeeperGATGNN proved to be
+more robust than other algorithms, and coGN and coNGN only for the
+dielectric targets. CGCNN excelled in certain OOD scenarios due to its
+rudimentary nature. This achievement is particularly signiﬁcant given that
+CGCNN outperformed both coGN and coNGN for most of the OOD
+targets, which currently hold the SOTA performance for the majority of
+tasks in the MatBench leaderboard. While cutting-edge GNNs often strive
+for optimal results on speciﬁc datasets, they risk getting prone to overﬁtting
+to these speciﬁc datasets or types of material data. CGCNN’s simplistic and
+primitivearchitectureovercomesthisproblembyofferingasigniﬁcantlyless
+complex model compared to other SOTA GNNs, such as SchNet. This
+makes CGCNN more challenging to overﬁt, as the likelihood of overﬁtting
+tends to increase with the number of parameters in a deep neural network
+model. But in some cases, having a larger model with more parameters
+might be necessary to capture intricate patterns in complex material data,
+which becomes a trade-off for CGCNN in performance on both the Mat-
+Bench study and our OOD study. As a result, it trailed ALIGNN and
+DeeperGATGNN (which have more training parameters and better
+Fig. 7 | Formation energy distribution of per-
+ovskites materials in the latent space. t-SNE dia-
+grams for (a) CGCNN, (b) ALIGNN, (c)
+DeeperGATGNN, (d) coGN, and (e) coNGN were
+plotted after training with the perovskites dataset
+and retrieving latent representation of the ﬁrst layer
+after the ﬁnal graph convolution layer. Different
+colors indicate different formation energy levels in
+the latent space, where each point represents a
+separate perovskite material. CGCNN, ALIGNN,
+and DeeperGATGNN have much smoother clusters
+compared to coGN and coNGN, where different
+colored clusters are hardly separable.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+10
+
+
+--- PAGE 11 ---
+architectures)withtheincreasingnumberofmaterialsinotherdatasets.The
+key to ALIGNN’s remarkable performance lies in its distinctive line graph
+encoding strategy, which enables the utilization of triplet features that
+effectively capture long-range interactions between atoms. Moreover, the
+incorporation of two levels of edge-gated convolutions in updating both
+node and edge features also plays a pivotal role in its SOTA performance on
+the elasticity dataset on average. However, DeeperGATGNN claimed the
+SOTA performance on average on the largest dataset (perovskites), as both
+ALIGNN and CGCNN suffered from over-smoothing (a phenomenon that
+makes GNN node features almost similar after a certain graph convolution
+layer). DeeperGATGNN evades this issue by incorporating differentiable
+group normalization and residual skip-connections, which allows it to use >
+50 graph convolution layers to extract deeper-level features from the
+encoded materials graphs. Despite all this, no single algorithm dominated
+for all types of OOD targets, which necessitates new methods such as
+domain adaptation, or meta-learning to improve the ML OOD prediction
+performance.
+The best GNN models in the MatBench study, namely coGN and
+coNGN,
+demonstrated
+underperformance
+than
+ALIGNN,
+Dee-
+perGATGNN, and CGCNN on average, but performed better than the rest
+of the GNNs (MEGNet, DimeNet++, and SchNet). However, they
+achieved the SOTA performances on three out of 15 OOD targets (all of
+them on the dielectric clusters). The overall OOD prediction inadequacy of
+these models demonstrates that their SOTA performances in the MatBench
+leaderboard seem to be largely due to the overﬁtting of the speciﬁc datasets’
+folds. It is peculiar that despite leveraging line graphs to utilize angle
+information, the results of coGN and coNGN are not as competitive as
+ALIGNN for OOD prediction. By delving into the physical latent spaces of
+thesemodelsfortheperovskitesdataset,weidentiﬁedthatthet-SNEclusters
+of coGN and coNGN are very overlapping in terms of property ranges (see
+Fig. 7), which indicates their higher MAE on this dataset. Also, the effect of
+nested line graph (coNGN) is almost non-existent as its performance
+compared to coGN differs by only ≈0.002% only among datasets for dif-
+ferent targets, which raisesthe question about the impactof nesting withthe
+non-nested version (coGN) for OOD targets. SchNet and DimeNet++ are
+primarily designed for molecular property prediction which can be
+accounted for their subpar performance on both the MatBench leaderboard
+and our OOD prediction benchmark. Moreover, MEGNet has the most
+number of parameters among all the GNNs selected, making it the most
+prone to overﬁtting.
+Through a thorough examination, we also observed a noteworthy
+trend across all datasets and target generation methods: the performance of
+each algorithm for such OODtest sets is consistently lower than those of the
+baselines established in the MatBench study, except for a few cases (see Fig.
+6). This collective underperformance demonstrated that traditional GNN
+models are not robust enough to handle OOD property prediction yet. This
+empirical evidence necessitates incorporating enhanced robustness meth-
+ods in these algorithms, such as domain adaptation, or federated learning.
+Other methods like adversarial learning or active learning can also be uti-
+lized. Moreover, physics informed GNNs can be another promising direc-
+tion fordevelopinga modelsuitable for OOD prediction. Especially, current
+GNNs’ node and edge embeddings, updated with more physics-based
+information can be used to devise a better model for OOD cases. Surpris-
+ingly, both ALIGNN and DeeperGATGNN performed better than their
+baseline results for the SparseYsingle OOD test sets on all datasets. In fact,
+other GNN algorithms also had the least performance degradation in
+making predictions for this method compared to the other four. In contrast,
+the SparseXsingle targets caused all the algorithms the highest performance
+degradation on average. Moreover, Fig. 3, and Supplementary Fig. 2 and 3
+showed that only a few clusters/samples are extremely difﬁcult to predict,
+which leads to the high variation of the model’s prediction performance. As
+these partitions are done based on the structure x, or property y values of the
+t-SNEof theOFMfeaturespace,thiscanbeagoodresearchdirectiontoﬁnd
+out the opposite physical relation of both directions values to design a more
+robust GNN. Of course, the main research goal of this work is to design
+highly robust GNN algorithms that achieve high-performance predictions
+on unknown outlier materials. The unexpected resilience displayed by
+CGCNN,ALIGNN,andDeeperGATGNNinafewcasescanbeapromising
+research direction to investigate further for this endeavor.
+Methods
+State-of-the-art (SOTA) algorithms for structure-based material
+property prediction
+We have chosen to evaluate the OOD performance for the following top
+structure-based material property algorithms, as reported in the MatBench
+study26. They are all based on graph neural networks (GNNs) with different
+properties.
+CGCNN. CGCNN, proposed by Xie and Grossman1, is the earliest known
+GNN for the materials property prediction problem. After converting the
+crystals into crystal graphs and other preprocessing steps, CGCNN
+serially applies N graph convolutional layers and L1 hidden layers to the
+input crystal graph which results in a new graph with each node repre-
+senting the local environment of each atom. Following the pooling
+operation, a vector representing the entire crystal is linked to L2 hidden
+layers and subsequently connected to the output layer to generate
+predictions.
+The lth convolutional layer updates the node feature of the ith atom vi
+througha processof convolutioninvolvingneighboringatomsandbondsof
+atom i using a nonlinear graph convolution function as given below:
+vðlþ1Þ
+i
+¼ ϕðvðlÞ
+i ; vðlÞ
+j ; eði;jÞkÞ
+ð1Þ
+In Eq. (1), eði;jÞk denotes the edge feature of the kth bond connecting
+atom i and atom j, and ϕ denotes the convolution operator.
+MEGNet.MEGNet (Chenet al.2) ﬁrstperforms the preprocessing steps to
+convert the input into graph embedding consisting of node and edge
+vectors. After that, N MEGNet layers are applied, which include two
+dense layers, followed by the graph convolution operation. Next, a
+readout method is applied to combine sets of atomic and bond vectors
+into a single vector, followed by several size-reducing dense layers to
+ﬁnally produce the single-valued prediction.
+The convolution operator can be deﬁned as follows:
+e0
+i;j ¼ ϕeðvi  vj  ei;jÞ
+ð2Þ
+v0
+i ¼ ϕv
+1
+N ðiÞ
+X
+j2N ðiÞ
+ei;j
+0
+@
+1
+A  vi
+0
+@
+1
+A
+ð3Þ
+In Eq. (2), and Eq. (3), vi denotes the node representation for node i, ei,j
+denotestheedgerepresentationbetweennodei,and j,v0
+i,ande0
+i;j denotesthe
+updated node representation and edge representation, respectively, N i
+denotes nodei’s neighborhood, ϕe, and ϕv denote the edge update function,
+and the node update function, respectively, and ⊕denotes the concatena-
+tion operator.
+SchNet. Schütt et al.65 developed SchNet for molecules which can also be
+applied to crystalline solids. It ﬁrst creates the embeddings for graphs
+from the input materials and then applies N interaction blocksto it, which
+includes the graph convolutions operation. After that, an atom-wise (a
+recurring building block applied separately to the node vectors) layer
+(reduces feature size), and a shifted softplus operation is applied. The
+ﬁnal output is generated after applying another size-reducing atom-wise
+layer and a sum pooling operation.
+The convolution operator can be deﬁned as follows:
+v0
+i ¼
+X
+j2N ðiÞ
+vj°ϕðei;jÞ
+ð4Þ
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+11
+
+
+--- PAGE 12 ---
+In Eq. (4), vi denotes the node representation for node i, ei,j denotes the
+edge representation between node i, and j, v0
+i, N i denotes node i’s neigh-
+borhood, and ϕ denotes the convolution operator.
+DimeNet++. DimeNet++, developed by Gasteiger et al.66 is a faster and
+improved version of the previously proposed DimeNet27 primarily for
+molecular property prediction. DimeNet++ takes a different approach
+than traditional GNNs for this task by embedding and updating the
+messages between atoms (mji). This allows DimeNet++ to incorporate
+directional information, considering bond angles (α(kj, ji)), in addition to
+interatomic distances dji. DimeNet++ goes further by jointly embedding
+distances and angles using a spherical 2D Fourier-Bessel basis. The fol-
+lowing equation updates messages between atoms mji:
+mðlþ1Þ
+ji
+¼ ϕ
+mðlÞ
+ji ;
+X
+k2N jnfig
+f int mðlÞ
+kj ; eðjiÞ
+RBF; aðkj;jiÞ
+SBF
+
+
+0
+@
+1
+A
+ð5Þ
+In Eq. (5), N i denotes node i’s neighborhood, fint denotes the inter-
+action function, eðjiÞ
+RBF denotes the radial basis function representation of dji,
+and aðkj;jiÞ
+SBF
+denotes the spherical basis function representation of dkj
+and α(kj, ji).
+ALIGNN. In the prepossessing step, ALIGNN (Choudhary and DeCost3)
+converts a crystal to a crystal graph as done in CGCNN, and calculates
+node and edge features and other required processing. Moreover, it
+creates a line graph of the original graph to incorporate the angle feature
+between bonds. ALIGNN ﬁrst applies edge-gated graph convolution on
+the line graph, and utilizes the edge representation and triplet repre-
+sentation features concerning the angle between the edge pairs) from
+layer l to update the triplet representation, and bond messages of layer
+l + 1. The updated bond messages from layer l + 1 are passed to the next
+stage where they are incorporated with the original graph and the node
+representation from layer l. Then through a second edge-gated graph
+convolution, the node and the edge representation of layer l + 1 are
+calculated. The equations for updating the node and the edge features are
+given below:
+uðlþ1Þ; tðlþ1Þ ¼ ϕegðLðGÞ; eðlÞ; tðlÞÞ
+ð6Þ
+vðlþ1Þ; eðlþ1Þ ¼ ϕegðG; vðlÞ; uðlþ1ÞÞ
+ð7Þ
+In Eq. (6), and Eq. (7), u(l), t(l), v(l), and e(l) denotes the bond message
+representation, triplet representation, node representation, and edge
+representation, respectively, of layer l, and ϕeg denotes the edge-gated graph
+convolution operator.
+DeeperGATGNN. Omee et al.4 developed the global attention-based
+GNN model DeeperGATGNN which essentially overcame the over-
+smoothing issue of GNNs (where with the increase of graph convolution
+layers, all the node feature vectors of the graph eventually update to the
+same vector) with the inclusion of differentiable group normalization
+(DGN)67 and skip-connections68, and can go beyond >50 layers. The
+process begins with an initial graph-encoded material serving as the
+input. Following this, multiple Augmented Graph Attention (AGAT)
+layers, each containing 64 neurons, and a DGN (Dynamic Graph Net-
+work) are utilized. There is a skip connection from the output of the l-th
+AGAT layer to the output of the (l + 1)-th AGAT layer, implemented
+post-DGN application. Subsequently, a global attention layer is intro-
+duced, where the node feature vectors are merged with the composition
+encoded vector. These are then processed through two fully connected
+layers, resulting in a context vector that encapsulates weights associated
+with the positions of each node. This context vector is then combined
+with the node feature vectors, followed by a global pooling of these
+vectors. The node features undergo further processing through one or
+two hidden layers, and ﬁnally, the output property is generated through
+an additional fully connected layer.
+The local soft-attention αi,j between a node i and its neighbor j can be
+represented by the following rule:
+αi;j ¼
+expðai;jÞ
+P
+k2N i expðai;kÞ
+ð8Þ
+In equation (8), N i denotes the node i’s neighborhood, and ai,j denotes the
+weight coefﬁcient between nodesi and j, indicatingthe signiﬁcance of node j
+concerning node i. The global attention gi, employed just before global
+pooling, computes the overall importance of each node. It can be expressed
+by the following equation:
+gi ¼
+ðxi k EÞ  W
+P
+xc2Xðxc k EÞ  W
+ð9Þ
+In equation (9), x 2 RF denotes a learned embedding, E denotes a com-
+positional vector of the crystal, W 2 R1 × ðFþjEjÞ denotes a parameterized
+matrix, and xc denotes the learned embedding of any atom c within the
+crystal.
+coGN and coNGN. coGN and coNGN (Ruff et al.36) use the basic GNN
+framework of Battaglia et al.69, where a single GNN layer is deﬁned by a
+graph network (GN) block responsible for converting a generic graph
+with edge, node, and global graph attributes using three update functions
+ϕ and three aggregation functions ρ. For the original material encoded
+graph G, a line graph L(G) is constructed, so that there is an edge eLðGÞ
+eij;ejk for
+every two incident edges eij, ejk in G (referring to the angle information
+between those two edges). Each nested GN block (total T such blocks are
+applied) takes the edge features xE, node features xV, graph level features
+xG, and the encoded graph G itself as the input and outputs the updated
+node representation x0
+V, updated edge representation x0
+E, updated graph
+level representation x0
+G, and the graph G. The edge, node, and graph level
+representation update operations of coGN are given below:
+x0
+eij ¼ ϕEðxeij; xvi; xvj; xGÞ
+ð10Þ
+x0
+vi ¼ ϕVðxvi; ^xvi; xGÞ
+ð11Þ
+x0
+G ¼ ϕGðxG; ^xG; ~xGÞ
+ð12Þ
+In Eq. (10), (11), and (12), xeij denotes the edge representation of edge eij
+between node i, and j, xvi denotes the node representation of node i, ^xvi
+denotes the local edge aggregated representation of node i, x0
+vi denotes the
+updated node representation of node i, ^xG denotes the node aggregated
+representation of graph G, and ~xG denotes the global edge aggregated
+representation of graph G. In the nested version (coNGN), the edge update
+is further continued by incorporating the angle information (x∠) from the
+line graph L(G) using the following equation:
+; x0
+E; ;
+¼ GN  Block ðxﬀ; x0
+E; xG; LðGÞÞ
+ð13Þ
+Evaluation criterion
+We use the mean absolute error (MAE) metric, which is a standard eva-
+luation criterion for regression-based materials property prediction pro-
+blems. MAE can be calculated by the following equation:
+MAE ¼ 1
+n
+X
+n
+i¼1
+∣yi  ^yi∣
+ð14Þ
+In Eq. (14), yi denotes the ground true property values, ^yi denotes the
+predicted property values, and n denotes the number of data points in the
+dataset.
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+12
+
+
+--- PAGE 13 ---
+Data availability
+All three datasets are chosen from the MatBench study26. Details about the
+datasets with 50-fold OOD splits can be found at https://github.com/
+sadmanomee/OOD_Materials_Benchmark.
+Code availability
+The source codes of the GNN algorithms and the OOD target generation
+methods’ code can be found at https://github.com/sadmanomee/OOD_
+Materials_Benchmark.
+Received: 19 January 2024; Accepted: 5 June 2024;
+References
+1.
+Xie, T. & Grossman, J. C. Crystal graph convolutional neural networks
+for an accurate and interpretable prediction of material properties.
+Phys. Rev. Lett. 120, 145301 (2018).
+2.
+Chen, C., Ye, W., Zuo, Y., Zheng, C. & Ong, S. P. Graph networks as a
+universal machine learning framework for molecules and crystals.
+Chem. Mater. 31, 3564–3572 (2019).
+3.
+Choudhary, K. & DeCost, B. Atomistic line graph neural network for
+improved materials property predictions. Npj Comput. Mater. 7,
+185 (2021).
+4.
+Omee, S. S. et al. Scalable deeper graph neural networks for high-
+performance materials property prediction. Patterns 3, 100491 (2022).
+5.
+Yan, K., Liu, Y., Lin, Y. & Ji, S. Periodic graph transformers for crystal
+material property prediction. Adv. Neural. Inf. Process. Syst. 35,
+15066–15080 (2022).
+6.
+Wang, A. Y.-T., Kauwe, S. K., Murdock, R. J. & Sparks, T. D.
+Compositionally restricted attention-based network for materials
+property predictions. Npj Comput. Mater. 7, 77 (2021).
+7.
+Goodall, R. E. & Lee, A. A. Predicting materials properties without
+crystal structure: deep representation learning from stoichiometry.
+Nat. Commun. 11, 6280 (2020).
+8.
+Cheng, G., Gong, X.-G. & Yin, W.-J. Crystal structure prediction by
+combining graph network and optimization algorithm. Nat. Commun.
+13, 1492 (2022).
+9.
+Omee, S. S., Wei, L., Hu, M. & Hu, J. Crystal structure prediction using
+neural network potential and age-ﬁtness pareto genetic algorithm. J.
+Mater. Inf. 4, 2 (2024).
+10. Hu, J. et al. Deep learning-based prediction of contact maps and
+crystal structures of inorganic materials. ACS Omega 8,
+26170–26179 (2023).
+11. Qi, H. et al. Latent conservative objective models for ofﬂine data-
+driven crystal structure prediction. In: ICLR 2023 Workshop on
+Machine Learning for Materials (2023).
+12. Wang, J. et al. MAGUS: machine learning and graph theory assisted
+universal structure searcher. Natl. Sci. Rev. 10, nwad128 (2023).
+13. Merchant, A. et al. Scaling deep learning for materials discovery.
+Nature 624, 80–85 (2023).
+14. Yang, S. et al. Scalable diffusion for materials generation. In:
+International Conference on Learning Representations (2024).
+15. Zhao, Y. et al. High-throughput discovery of novel cubic crystal
+materials using deep generative neural networks. Adv. Sci. 8,
+2100566 (2021).
+16. Zhao, Y. et al. Physics guided deep learning for generative design of
+crystal materials with symmetry constraints. Npj Comput. Mater. 9,
+38 (2023).
+17. Fanourgakis, G. S., Gkagkas, K., Tylianakis, E. & Froudakis, G. E. A
+universal machine learning algorithm for large-scale screening of
+materials. J. Am. Chem. Soc. 142, 3814–3822 (2020).
+18. Ojih, J., Rodriguez, A., Hu, J. & Hu, M. Screening outstanding
+mechanical properties and low lattice thermal conductivity using
+global attention graph neural network. Energy AI 14, 100286 (2023).
+19. Zunger, A. Inverse design in search of materials with target
+functionalities. Nat. Rev. Chem. 2, 0121 (2018).
+20. Han, S. et al. Design of new inorganic crystals with the desired
+composition using deep learning. J. Chem. Inf. Model. 63,
+5755–5763 (2023).
+21. Seko, A., Hayashi, H., Nakayama, K., Takahashi, A. & Tanaka, I.
+Representation of compounds for machine-learning prediction of
+physical properties. Phys. Rev. B 95, 144110 (2017).
+22. Ward, L., Agrawal, A., Choudhary, A. & Wolverton, C. A general-
+purpose machine learning framework for predicting properties of
+inorganic materials. Npj Comput. Mater. 2, 1–7 (2016).
+23. Ward, L. et al. Matminer: An open source toolkit for materials data
+mining. Comput. Mater. Sci. 152, 60–69 (2018).
+24. Fung, V., Zhang, J., Juarez, E. & Sumpter, B. G. Benchmarking graph
+neural networks for materials chemistry. Npj Comput. Mater. 7,
+1–8 (2021).
+25. Hu, J. et al. MaterialsAtlas.org: a materials informatics web app
+platform for materials discovery and survey of state-of-the-art. Npj
+Comput. Mater. 8, 65 (2022).
+26. Dunn, A., Wang, Q., Ganose, A., Dopp, D. & Jain, A. Benchmarking
+materials property prediction methods: the Matbench test set and
+Automatminer reference algorithm. Npj Comput. Mater. 6,
+138 (2020).
+27. Gasteiger, J., Groß, J. & Günnemann, S. Directional message passing
+for molecular graphs. In: International Conference on Learning
+Representations (2019).
+28. Gasteiger, J., Becker, F. & Günnemann, S. Gemnet: Universal
+directional graph neural networks for molecules. Adv. Neural. Inf.
+Process. Syst. 34, 6790–6802 (2021).
+29. Reiser, P. et al. Graph neural networks for materials science and
+chemistry. Commun. Mater. 3, 93 (2022).
+30. Louis, S.-Y. et al. Graph convolutional neural networks with global
+attention for improved materials property prediction. Phys. Chem.
+Chem. Phys. 22, 18141–18148 (2020).
+31. Kong, S. et al. Density of states prediction for materials discovery via
+contrastive learning from probabilistic embeddings. Nat. Commun.
+13, 949 (2022).
+32. Cong, G. & Fung, V. Improving materials property predictions for
+graph neural networks with minimal feature engineering. Mach.
+Learn.: Sci. Technol. 4, 035030 (2023).
+33. Xiao, J., Yang, L. & Wang,S. Graphisomorphism networkfor materials
+property prediction along with explainability analysis. Comput. Mater.
+Sci. 233, 112619 (2024).
+34. Xiong, Z. et al. Evaluating explorative prediction power of machine
+learningalgorithmsfor materialsdiscoveryusing k-foldforward cross-
+validation. Comput. Mater. Sci. 171, 109203 (2020).
+35. Varivoda, D., Dong, R., Omee, S. S. & Hu, J. Materials property
+prediction with uncertainty quantiﬁcation: a benchmark study. Appl.
+Phys. Rev. 10 (2023).
+36. Ruff,R., Reiser, P., Stühmer,J. & Friederich, P. Connectivityoptimized
+nested line graph networks for crystal structures. Digit. Discov. 3,
+694–601 (2024).
+37. Matbench leaderboard. https://matbench.materialsproject.
+org/ (2021).
+38. Hu, J., Liu, D., Fu, N. & Dong, R. Realistic material property prediction
+using domain adaptation based machine learning. Digit. Discov. 3,
+300–312 (2024).
+39. Bergerhoff, G., Hundt, R., Sievers, R. & Brown, I. The inorganic crystal
+structure data base. J. Chem. Inf. Comput. Sci. 23, 66–69 (1983).
+40. Jain, A. et al. Commentary: The Materials Project: a materials genome
+approach to accelerating materials innovation. APL Mater.1 (2013).
+41. Kirklin, S. et al. The open quantum materials database (OQMD):
+assessing the accuracy of dft formation energies. Npj Comput. Mater.
+1, 1–15 (2015).
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+13
+
+
+--- PAGE 14 ---
+42. Curtarolo, S. et al. AFLOW: An automatic framework for high-
+throughput materials discovery. Comput. Mater. Sci. 58,
+218–226 (2012).
+43. Li, K. et al. Exploiting redundancy in large materials datasets for
+efﬁcient machine learning with less data. Nat. Commun. 14,
+7283 (2023).
+44. Li,K.,DeCost,B.,Choudhary,K.,Greenwood,M.&Hattrick-Simpers,J.A
+criticalexaminationofrobustnessandgeneralizabilityofmachinelearning
+prediction of materials properties. Npj Comput. Mater. 9, 55 (2023).
+45. Meredig, B. et al. Can machine learning identify the next high-
+temperature superconductor? Examining extrapolation performance
+for materials discovery. Mol. Syst. Des. Eng. 3, 819–825 (2018).
+46. Wenzel, F. et al. Assaying out-of-distribution generalization in transfer
+learning. Adv. Neural. Inf. Process. Syst. 35, 7181–7198 (2022).
+47. Wang, J. et al. Generalizing to unseen domains: a survey on domain
+generalization. IEEE Trans. Knowl. Data Eng. 35, 8052–8072 (2022).
+48. Shen, Z. et al. Towards out-of-distribution generalization: a survey.
+Preprint at https://arxiv.org/abs/2108.13624 (2021).
+49. Schölkopf, B. et al. Toward causal representation learning.
+Proceedings of the IEEE 109, 612–634 (2021).
+50. Wilson, G. & Cook, D. J. A survey of unsupervised deep domain
+adaptation. ACM Trans. Intell. Syst. Technol. (TIST) 11, 1–46 (2020).
+51. Schrier, J., Norquist, A. J., Buonassisi, T. & Brgoch, J. In pursuit of the
+exceptional: Researchdirectionsfor machinelearningin chemical and
+materials science. J. Am. Chem. Soc. 145, 21699–21716 (2023).
+52. Yang, J. et al. OpenOOD: benchmarking generalized out-of-
+distribution detection. Adv. Neural. Inf. Process. Syst. 35,
+32598–32611 (2022).
+53. Gui, S., Li, X., Wang, L. & Ji, S. GOOD: a graph out-of-distribution
+benchmark. Adv. Neural. Inf. Process. Syst. 35, 2059–2073 (2022).
+54. Koh, P. W. et al. WILDS: A benchmark of in-the-wild distribution shifts.
+In: International Conference on Machine Learning, 5637–5664
+(PMLR, 2021).
+55. Shimakawa, H., Kumada, A. & Sato, M. Extrapolative prediction of
+small-data molecular property using quantum mechanics-assisted
+machine learning. Npj Comput. Mater. 10, 11 (2024).
+56. Kauwe, S. K., Graser, J., Murdock, R. & Sparks, T. D. Can machine
+learning ﬁnd extraordinary materials? Comput. Mater. Sci. 174,
+109498 (2020).
+57. Chanussot, L. et al. Open catalyst 2020 (OC20) dataset and
+community challenges. ACS Catal. 11, 6059–6072 (2021).
+58. Tran, R. et al. The open catalyst 2022 (OC22) dataset and challenges
+for oxide electrocatalysts. ACS Catal. 13, 3066–3084 (2023).
+59. Choudhary, K. & Sumpter, B. G. Can a deep-learning model make fast
+predictions of vacancy formation in diverse materials?AIP Adv.
+13 (2023).
+60. Bengio, Y. & Grandvalet, Y. No unbiased estimator of the variance of
+k-fold cross-validation. Adv. Neural. Inf. Process. Syst. 16 (2003).
+61. Lloyd, S. Least squares quantization in PCM. IEEE Trans. Inf. Theory.
+28, 129–137 (1982).
+62. Pham, T. L. et al. Machine learning reveals orbital interaction in
+materials. Sci. Technol. Adv. Mater. 18, 756 (2017).
+63. Karamad, M. et al. Orbital graph convolutional neural network for
+material property prediction. Phys. Rev. Mater. 4, 093801 (2020).
+64. Van der Maaten, L. & Hinton, G. Visualizing data using t-SNE.J. Mach.
+Learn. Res. 9 (2008).
+65. Schütt, K. T., Sauceda, H. E., Kindermans, P.-J., Tkatchenko, A. &
+Müller, K.-R. Schnet–a deep learning architecture for molecules and
+materials. J. Chem. Phys. 148, 241722 (2018).
+66. Gasteiger, J., Giri, S., Margraf, J. T. & Günnemann, S. Fast and
+uncertainty-aware directional message passing for non-equilibrium
+molecules. NeurIPS 2020 ML for Molecules Workshop (2020).
+67. Zhou, K. et al. Towards deeper graph neural networks with
+differentiable group normalization. Adv. Neural. Inf. Process. Syst. 33,
+4917–4928 (2020).
+68. He, K., Zhang, X., Ren, S. & Sun, J. Deep residual learning for image
+recognition. In: Proc. IEEE Conference on Computer Vision and
+Pattern Recognition 770–778 (2016).
+69. Battaglia, P. W. et al. Relational inductive biases, deep learning, and
+graph networks. Preprint at https://arxiv.org/abs/1806.
+01261 (2018).
+70. Petousis, I. et al. High-throughput screening of inorganic compounds
+for the discovery of novel dielectric and optical materials. Sci. Data 4,
+1–12 (2017).
+71. De Breuck, P.-P., Hautier, G. & Rignanese, G.-M. Materials property
+prediction for limited datasets enabled by feature selection and joint
+learning with modnet. Npj Comput. Mater. 7, 83 (2021).
+72. Castelli, I. E. et al. New cubic perovskites for one-and two-photon
+water splitting using the computational materials repository. Energy
+Environ. Sci. 5, 9034–9043 (2012).
+Acknowledgements
+TheresearchreportedinthisworkwassupportedinpartbyNationalScience
+Foundation under the grants 2110033, OAC-2311203, and 2320292. The
+views, perspectives, and content do not necessarily represent the ofﬁcial
+views of the NSF.
+Author contributions
+Conceptualization, J.H.; methodology, S.O., J.H., N.F.; investigation, S.O.,
+J.H., M.H.; software, S.O., N.F.; writing–original draft preparation, S.O., N.F.,
+R.D., J.H.; writing–review and editing, S.O., N.F., R.D., M.H., J.H.;
+visualization, S.O., N.F.; supervision, J.H. and M.H.
+Competing interests
+The authors declare no competing interests.
+Additional information
+Supplementary information The online version contains
+supplementary material available at
+https://doi.org/10.1038/s41524-024-01316-4.
+Correspondence and requests for materials should be addressed to
+Ming Hu or Jianjun Hu.
+Reprints and permissions information is available at
+http://www.nature.com/reprints
+Publisher’s note Springer Nature remains neutral with regard to
+jurisdictional claims in published maps and institutional afﬁliations.
+Open Access This article is licensed under a Creative Commons
+Attribution 4.0 International License, which permits use, sharing,
+adaptation, distribution and reproduction in any medium or format, as long
+as you give appropriate credit to the original author(s) and the source,
+provide a link to the Creative Commons licence, and indicate if changes
+were made. The images or other third party material in this article are
+included in the article’s Creative Commons licence, unless indicated
+otherwise in a credit line to the material. If material is not included in the
+article’s Creative Commons licence and your intended use is not permitted
+by statutory regulation or exceeds the permitted use, you will need to
+obtain permission directly from the copyright holder. To view a copy of this
+licence, visit http://creativecommons.org/licenses/by/4.0/.
+© The Author(s) 2024
+https://doi.org/10.1038/s41524-024-01316-4
+Article
+npj Computational Materials |  (2024) 10:144
+14

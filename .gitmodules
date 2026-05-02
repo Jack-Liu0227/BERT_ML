@@ -1,0 +1,4 @@
+[submodule "_paper_extract/OOD_Materials_Benchmark"]
+	path = _paper_extract/OOD_Materials_Benchmark
+	url = https://github.com/sadmanomee/OOD_Materials_Benchmark.git
+	ignore = untracked
