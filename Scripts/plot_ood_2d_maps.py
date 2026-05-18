@@ -54,9 +54,23 @@ METHOD_DIR_SUFFIX = {
     "sparse_y_cluster": "sparse_y_cluster",
 }
 
+METHOD_RAW_DIR_ALIASES = {
+    "target_extrapolation": ("target_extrapolation", "extrapolation"),
+    "loco": ("loco_k5", "loco"),
+    "sparse_x_single": ("sparse_x_single_k5", "sparse_x_single"),
+    "sparse_y_single": ("sparse_y_single_k5", "sparse_y_single"),
+    "sparse_x_cluster": ("sparse_x_cluster_k5", "sparse_x_cluster"),
+    "sparse_y_cluster": ("sparse_y_cluster_k5", "sparse_y_cluster"),
+}
+
 ALLOY_FAMILY_PATH_ALIASES = {
     "HEA_half": ("HEA_half", "HEA"),
     "HEA": ("HEA", "HEA_half"),
+    "Matbench Steel": ("MatbenchSteels", "Matbench Steel", "MatbenchSteel", "matbench_steels", "matbench_steel"),
+    "MatbenchSteel": ("MatbenchSteels", "MatbenchSteel", "Matbench Steel", "matbench_steels", "matbench_steel"),
+    "MatbenchSteels": ("MatbenchSteels", "MatbenchSteel", "Matbench Steel", "matbench_steels", "matbench_steel"),
+    "matbench_steel": ("MatbenchSteels", "matbench_steel", "matbench_steels", "MatbenchSteel", "Matbench Steel"),
+    "matbench_steels": ("MatbenchSteels", "matbench_steels", "matbench_steel", "MatbenchSteel", "Matbench Steel"),
 }
 
 SINGLE_SPLIT_TEST_FILES = {
@@ -85,7 +99,7 @@ DEFAULT_COLORS = [
     "#BAB0AB",
 ]
 
-PERFORMANCE_COLUMNS = {"El(%)", "UTS(MPa)", "YS(MPa)"}
+PERFORMANCE_COLUMNS = {"El(%)", "UTS(MPa)", "YS(MPa)", "yield strength"}
 EXPLICIT_METADATA_COLUMNS = {"Number"}
 COMPOSITION_SUFFIXES = ("(wt%)", "(at%)")
 PROCESS_REGEXES = (
@@ -265,6 +279,25 @@ def classify_embedding_role(column_name: str) -> str | None:
     return None
 
 
+def x_space_feature_policy_metadata(
+    feature_specs: list[EmbeddingFeatureSpec],
+    target_column: str,
+    available_columns: Iterable[str],
+) -> dict[str, object]:
+    selected_columns = [spec.column_name for spec in feature_specs]
+    selected_set = set(selected_columns)
+    return {
+        "x_space_feature_policy": "composition_plus_numeric_processing",
+        "x_space_feature_columns": selected_columns,
+        "x_space_feature_roles": {spec.column_name: spec.role for spec in feature_specs},
+        "excluded_property_columns": [
+            column
+            for column in available_columns
+            if column in PERFORMANCE_COLUMNS and column != target_column and column not in selected_set
+        ],
+    }
+
+
 def build_embedding_feature_specs(
     df: pd.DataFrame,
     target_column: str,
@@ -310,19 +343,30 @@ def resolve_alloy_family_dir_name(root: Path, alloy_family: str) -> str:
     return alloy_family
 
 
+def raw_method_dir_candidates(method: str) -> tuple[str, ...]:
+    if method == "random_cv_baseline":
+        return ("random_cv_baseline",)
+    return METHOD_RAW_DIR_ALIASES.get(method, (method,))
+
+
 def single_split_root(root: Path, case: CaseSpec, family: str, method: str) -> Path:
-    if method == "target_extrapolation":
-        method_dir = "target_extrapolation"
-    else:
-        method_dir = method
     alloy_dir_name = resolve_alloy_family_dir_name(root, case.alloy_family)
-    return root / alloy_dir_name / case.dataset / case.target / method_dir / family
+    case_root = root / alloy_dir_name / case.dataset / case.target
+    for method_dir in raw_method_dir_candidates(method):
+        candidate = case_root / method_dir / family
+        if candidate.exists():
+            return candidate
+    return case_root / raw_method_dir_candidates(method)[0] / family
 
 
 def fold_split_root(root: Path, case: CaseSpec, family: str, method: str) -> Path:
-    method_dir = "random_cv_baseline" if method == "random_cv_baseline" else "loco"
     alloy_dir_name = resolve_alloy_family_dir_name(root, case.alloy_family)
-    return root / alloy_dir_name / case.dataset / case.target / method_dir / family / "folds"
+    case_root = root / alloy_dir_name / case.dataset / case.target
+    for method_dir in raw_method_dir_candidates(method):
+        candidate = case_root / method_dir / family / "folds"
+        if candidate.exists():
+            return candidate
+    return case_root / raw_method_dir_candidates(method)[0] / family / "folds"
 
 
 def discover_cases(
@@ -348,8 +392,7 @@ def discover_cases(
             for target_dir in sorted(path for path in dataset_dir.iterdir() if path.is_dir()):
                 if target and target_dir.name != target:
                     continue
-                family_dir = target_dir / "target_extrapolation" / family
-                if family_dir.exists():
+                if any((target_dir / method_dir / family).exists() for method_dir in raw_method_dir_candidates("target_extrapolation")):
                     cases.append(
                         CaseSpec(
                             alloy_family=alloy_dir.name,
@@ -483,9 +526,19 @@ def validate_feature_alignment(
         raise ValueError(f"{method}: __row_id__ sequence does not match canonical source.")
 
     if list(canonical_sorted.columns) != list(candidate_sorted.columns):
-        raise ValueError(f"{method}: x_space_features.parquet column layout differs from canonical source.")
+        canonical_only = set(canonical_sorted.columns) - set(candidate_sorted.columns)
+        candidate_only = set(candidate_sorted.columns) - set(canonical_sorted.columns)
+        disallowed_canonical_only = canonical_only - EXPLICIT_METADATA_COLUMNS
+        disallowed_candidate_only = candidate_only - EXPLICIT_METADATA_COLUMNS
+        if disallowed_canonical_only or disallowed_candidate_only:
+            raise ValueError(
+                f"{method}: x_space_features.parquet column layout differs from canonical source. "
+                f"canonical_only={sorted(disallowed_canonical_only)}, "
+                f"candidate_only={sorted(disallowed_candidate_only)}"
+            )
 
-    for column in canonical_sorted.columns:
+    shared_columns = [column for column in canonical_sorted.columns if column in candidate_sorted.columns]
+    for column in shared_columns:
         left = canonical_sorted[column]
         right = candidate_sorted[column]
         if pd.api.types.is_numeric_dtype(left) and pd.api.types.is_numeric_dtype(right):

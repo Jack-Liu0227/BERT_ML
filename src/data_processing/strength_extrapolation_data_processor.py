@@ -23,6 +23,7 @@ class StrengthExtrapolationDataProcessor(StrengthOODProcessorBase):
             test_ratio=float(kwargs.get("test_ratio", kwargs.get("test_size", 0.2))),
             extrapolation_side=str(kwargs.get("extrapolation_side", "low_to_high")),
             random_state=self.random_state,
+            processing_cols=kwargs.get("processing_cols", self.processing_cols),
         )
 
     def split_low_high(

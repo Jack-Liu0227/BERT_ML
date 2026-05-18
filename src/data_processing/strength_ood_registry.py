@@ -23,14 +23,23 @@ PROCESSOR_REGISTRY: Dict[str, Type[StrengthOODProcessorBase]] = {
 }
 
 
-def create_ood_processor(split_strategy: str, input_file: str, random_state: int = 42) -> StrengthOODProcessorBase:
+def create_ood_processor(
+    split_strategy: str,
+    input_file: str,
+    random_state: int = 42,
+    processing_cols: List[str] | None = None,
+) -> StrengthOODProcessorBase:
     if split_strategy not in PROCESSOR_REGISTRY:
         raise ValueError(
             f"Unsupported split_strategy '{split_strategy}'. "
             f"Supported strategies: {', '.join(PROCESSOR_REGISTRY.keys())}"
         )
     processor_cls = PROCESSOR_REGISTRY[split_strategy]
-    return processor_cls(input_file=input_file, random_state=random_state)
+    return processor_cls(
+        input_file=input_file,
+        random_state=random_state,
+        processing_cols=processing_cols,
+    )
 
 
 def get_supported_split_strategies() -> List[str]:

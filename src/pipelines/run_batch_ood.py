@@ -5,10 +5,16 @@ Unified batch runner for OOD experiments.
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import logging
+import os
 import subprocess
 import sys
+import tempfile
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -40,6 +46,8 @@ logger = logging.getLogger(__name__)
 class ProgressManager:
     def __init__(self, progress_file: str = ".batch_progress_ood.json") -> None:
         self.progress_file = Path(progress_file)
+        self.lock_file = self.progress_file.with_name(f"{self.progress_file.name}.lock")
+        self._thread_lock = threading.RLock()
         self.progress_data = self._load_progress()
 
     def _load_progress(self) -> Dict[str, Any]:
@@ -50,30 +58,91 @@ class ProgressManager:
                 logger.warning(f"Failed to load progress file: {exc}")
         return {}
 
-    def _save_progress(self) -> None:
-        self.progress_file.write_text(
-            json.dumps(self.progress_data, indent=2, ensure_ascii=False),
+    @contextlib.contextmanager
+    def _file_lock(self, timeout: float = 120.0, poll_interval: float = 0.1):
+        """Best-effort cross-process lock for progress JSON updates.
+
+        This keeps `--jobs > 1` from corrupting the progress file when multiple
+        worker threads finish at nearly the same time. It also coordinates with
+        any other *new* runner process using the same ProgressManager.
+        """
+        start = time.monotonic()
+        fd: Optional[int] = None
+        while True:
+            try:
+                fd = os.open(str(self.lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR)
+                os.write(fd, f"{os.getpid()} {time.time()}\n".encode("utf-8"))
+                break
+            except FileExistsError:
+                # Recover from a stale lock left by a crashed process.
+                try:
+                    if time.time() - self.lock_file.stat().st_mtime > timeout:
+                        self.lock_file.unlink(missing_ok=True)
+                        continue
+                except OSError:
+                    pass
+                if time.monotonic() - start > timeout:
+                    raise TimeoutError(f"Timed out waiting for progress lock: {self.lock_file}")
+                time.sleep(poll_interval)
+        try:
+            yield
+        finally:
+            if fd is not None:
+                os.close(fd)
+            try:
+                self.lock_file.unlink(missing_ok=True)
+            except OSError:
+                logger.warning("Failed to remove progress lock file: %s", self.lock_file)
+
+    def _save_progress_unlocked(self) -> None:
+        self.progress_file.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps(self.progress_data, indent=2, ensure_ascii=False)
+        with tempfile.NamedTemporaryFile(
+            "w",
             encoding="utf-8",
-        )
+            dir=str(self.progress_file.parent),
+            delete=False,
+            prefix=f".{self.progress_file.name}.",
+            suffix=".tmp",
+        ) as tmp:
+            tmp.write(payload)
+            tmp_path = Path(tmp.name)
+        os.replace(tmp_path, self.progress_file)
+
+    def _save_progress(self) -> None:
+        with self._thread_lock:
+            with self._file_lock():
+                self._save_progress_unlocked()
 
     def get_config_progress(self, config_name: str) -> Dict[str, str]:
-        return self.progress_data.get(config_name, {})
+        with self._thread_lock:
+            return self.progress_data.get(config_name, {}).copy()
 
     def is_task_completed(self, config_name: str, task_key: str) -> bool:
         return self.get_config_progress(config_name).get(task_key) == "success"
 
     def update_task_status(self, config_name: str, task_key: str, status: str) -> None:
-        self.progress_data.setdefault(config_name, {})[task_key] = status
-        self._save_progress()
+        with self._thread_lock:
+            with self._file_lock():
+                # Reload inside the lock so concurrent workers don't overwrite
+                # each other's recently-finished task statuses.
+                self.progress_data = self._load_progress()
+                self.progress_data.setdefault(config_name, {})[task_key] = status
+                self._save_progress_unlocked()
 
     def clear_progress(self, config_name: Optional[str] = None) -> None:
-        if config_name is None:
-            self.progress_data = {}
-        else:
-            self.progress_data.pop(config_name, None)
-        self._save_progress()
+        with self._thread_lock:
+            with self._file_lock():
+                self.progress_data = self._load_progress()
+                if config_name is None:
+                    self.progress_data = {}
+                else:
+                    self.progress_data.pop(config_name, None)
+                self._save_progress_unlocked()
 
     def show_progress(self, config_name: Optional[str] = None) -> None:
+        with self._thread_lock:
+            self.progress_data = self._load_progress()
         items = self.progress_data if config_name is None else {config_name: self.progress_data.get(config_name, {})}
         if not items or all(not value for value in items.values()):
             logger.info("No OOD progress records")
@@ -105,6 +174,27 @@ def _dataset_name_from_config(raw_data: str) -> str:
     return dataset_name
 
 
+def build_result_dir(
+    config_name: str,
+    alloy_type: str,
+    alloy_config: Dict[str, Any],
+    args: Any,
+    method_meta: Dict[str, Any],
+) -> Path:
+    dataset_name = _dataset_name_from_config(alloy_config["raw_data"])
+    target_column = alloy_config["target_column"]
+    return (
+        Path("output")
+        / "ood_results"
+        / config_name
+        / alloy_type
+        / dataset_name
+        / target_column
+        / method_meta["result_dir_suffix"]
+        / args.embedding_type
+    )
+
+
 def _append_method_specific_args(cmd: List[str], args: Any, method_meta: Dict[str, Any]) -> None:
     cli_args = set(method_meta.get("cli_args", []))
     if "extrapolation_side" in cli_args:
@@ -133,18 +223,8 @@ def build_command(
     method_meta: Dict[str, Any],
     model_name: Optional[str] = None,
 ) -> List[str]:
-    dataset_name = _dataset_name_from_config(alloy_config["raw_data"])
     target_column = alloy_config["target_column"]
-    result_dir = (
-        Path("output")
-        / "ood_results"
-        / config_name
-        / alloy_type
-        / dataset_name
-        / target_column
-        / method_meta["result_dir_suffix"]
-        / args.embedding_type
-    )
+    result_dir = build_result_dir(config_name, alloy_type, alloy_config, args, method_meta)
 
     cmd = [
         sys.executable,
@@ -171,6 +251,10 @@ def build_command(
     processing_cols = alloy_config.get("processing_cols") or []
     if processing_cols:
         cmd.extend(["--processing_cols", *processing_cols])
+    else:
+        fallback_processing_cols = getattr(args, "processing_cols", None) or []
+        if fallback_processing_cols:
+            cmd.extend(["--processing_cols", *fallback_processing_cols])
 
     processing_text_column = alloy_config.get("processing_text_column")
     if processing_text_column:
@@ -214,6 +298,137 @@ def format_command_for_display(cmd: List[str]) -> str:
     return " ".join(parts)
 
 
+def _json_manifest_matches(path: Path, target_column: str) -> bool:
+    """Return True when a completion manifest exists and matches the target.
+
+    The batch progress file is the authoritative resume state, but older runs
+    may have generated full outputs before they were recorded there.  In that
+    case we use the per-task OOD manifest as a conservative completion marker:
+    it is written at the end of training/evaluation, after predictions/metrics
+    have been emitted.
+    """
+    if not path.exists() or path.stat().st_size == 0:
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    recorded_target = payload.get("target_column")
+    return recorded_target in (None, target_column)
+
+
+def _ml_model_artifacts_complete(run_root: Path, target_column: str, model_name: str) -> bool:
+    model_dir = run_root / "model_comparison" / f"{model_name}_results"
+    if not _json_manifest_matches(model_dir / "ood_manifest.json", target_column):
+        return False
+    # Evaluation metrics are produced before the OOD manifest.  Keep the check
+    # lenient because older runs used slightly different metric filenames.
+    metric_candidates = [
+        model_dir / "final_model_evaluation_metrics.json",
+        model_dir / "final_evaluation_metrics.json",
+        model_dir / "cv_avg_metrics.json",
+    ]
+    return any(path.exists() and path.stat().st_size > 0 for path in metric_candidates)
+
+
+def _nn_artifacts_complete(run_root: Path, target_column: str) -> bool:
+    if not _json_manifest_matches(run_root / "ood_manifest.json", target_column):
+        return False
+    checkpoint_candidates = [
+        run_root / "checkpoints" / "best_model.pt",
+        run_root / "checkpoints" / "best_model_best.pt",
+    ]
+    if not any(path.exists() and path.stat().st_size > 0 for path in checkpoint_candidates):
+        return False
+    metric_candidates = [
+        run_root / "best_model_best_model_evaluation_evaluation_summary.json",
+        run_root / "cv_avg_metrics.json",
+    ]
+    return any(path.exists() and path.stat().st_size > 0 for path in metric_candidates)
+
+
+def _load_fold_roots(result_dir: Path, method_meta: Dict[str, Any]) -> List[Path]:
+    manifest_path = result_dir / str(method_meta.get("summary_file_name", ""))
+    if not manifest_path.exists() or manifest_path.stat().st_size == 0:
+        return []
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+
+    fold_entries = payload.get("folds") or []
+    fold_roots: List[Path] = []
+    for entry in fold_entries:
+        run_root = entry.get("run_root")
+        if run_root:
+            fold_roots.append(Path(run_root))
+        elif "fold_index" in entry:
+            fold_roots.append(result_dir / "folds" / f"fold_{entry['fold_index']}")
+
+    if fold_roots:
+        return fold_roots
+
+    fold_count = payload.get("fold_count")
+    if isinstance(fold_count, int) and fold_count > 0:
+        return [result_dir / "folds" / f"fold_{idx}" for idx in range(fold_count)]
+    return []
+
+
+def task_artifacts_complete(
+    config_name: str,
+    alloy_type: str,
+    alloy_config: Dict[str, Any],
+    args: Any,
+    method_meta: Dict[str, Any],
+    model_name: Optional[str] = None,
+) -> bool:
+    """Infer completion from existing OOD output files.
+
+    This is intentionally only used when ``--resume`` is enabled.  It lets a
+    resumed batch skip legacy finished tasks whose status was never written to
+    ``.batch_progress_ood.json`` while still allowing a normal run without
+    ``--resume`` to overwrite/recompute outputs.
+    """
+    result_dir = build_result_dir(config_name, alloy_type, alloy_config, args, method_meta)
+    target_column = alloy_config["target_column"]
+    if not result_dir.exists():
+        return False
+
+    if method_meta.get("is_multi_fold"):
+        fold_roots = _load_fold_roots(result_dir, method_meta)
+        if not fold_roots:
+            return False
+        if model_name:
+            return all(_ml_model_artifacts_complete(fold_root, target_column, model_name) for fold_root in fold_roots)
+        return all(_nn_artifacts_complete(fold_root, target_column) for fold_root in fold_roots)
+
+    if model_name:
+        return _ml_model_artifacts_complete(result_dir, target_column, model_name)
+    return _nn_artifacts_complete(result_dir, target_column)
+
+
+def should_skip_completed_task(
+    config_name: str,
+    task_key: str,
+    alloy_type: str,
+    alloy_config: Dict[str, Any],
+    args: Any,
+    method_meta: Dict[str, Any],
+    progress_manager: ProgressManager,
+    dry_run: bool,
+    model_name: Optional[str] = None,
+) -> bool:
+    if progress_manager.is_task_completed(config_name, task_key):
+        logger.info(f"[SKIP] {config_name} / {task_key} (progress=success)")
+        return True
+    if task_artifacts_complete(config_name, alloy_type, alloy_config, args, method_meta, model_name):
+        logger.info(f"[SKIP] {config_name} / {task_key} (existing output artifacts)")
+        if not dry_run:
+            progress_manager.update_task_status(config_name, task_key, "success")
+        return True
+    return False
+
+
 def run_single_task(
     config_name: str,
     alloy_type: str,
@@ -226,7 +441,7 @@ def run_single_task(
 ) -> str:
     task_key = make_task_key(alloy_type, alloy_config["target_column"], model_name)
     cmd = build_command(config_name, alloy_type, alloy_config, args, method_meta, model_name)
-    logger.info(f"[RUN] {task_key}")
+    logger.info(f"[RUN] {config_name} / {task_key}")
     logger.info(format_command_for_display(cmd))
 
     if dry_run:
@@ -253,16 +468,30 @@ def run_batch_config(
     dry_run: bool,
     progress_manager: ProgressManager,
     resume: bool,
+    jobs: int = 1,
 ) -> Dict[str, str]:
     args = argparse.Namespace(**config)
     method_meta = get_ood_method_meta(args.ood_method)
     results: Dict[str, str] = {}
+    pending_tasks: List[Dict[str, Any]] = []
 
     for alloy_type in resolve_alloy_types(config):
         alloy_base_config = get_alloy_config_ood(alloy_type)
         targets = alloy_base_config.get("targets") or []
         if not targets:
             raise ValueError(f"No targets configured for OOD alloy: {alloy_type}")
+        target_filter = config.get("target_columns") or []
+        if target_filter:
+            allowed_targets = set(target_filter)
+            targets = [target for target in targets if target in allowed_targets]
+            if not targets:
+                logger.warning(
+                    "No matching OOD targets for alloy=%s under config=%s; requested targets=%s",
+                    alloy_type,
+                    config_name,
+                    list(target_filter),
+                )
+                continue
 
         for target_column in targets:
             alloy_config = alloy_base_config.copy()
@@ -270,36 +499,84 @@ def run_batch_config(
 
             if args.use_nn:
                 task_key = make_task_key(alloy_type, target_column)
-                if resume and progress_manager.is_task_completed(config_name, task_key):
-                    results[task_key] = "skipped"
-                    continue
-                results[task_key] = run_single_task(
+                if resume and should_skip_completed_task(
                     config_name=config_name,
+                    task_key=task_key,
                     alloy_type=alloy_type,
                     alloy_config=alloy_config,
                     args=args,
+                    method_meta=method_meta,
                     progress_manager=progress_manager,
                     dry_run=dry_run,
-                    method_meta=method_meta,
+                ):
+                    results[task_key] = "skipped"
+                    continue
+                pending_tasks.append(
+                    {
+                        "config_name": config_name,
+                        "alloy_type": alloy_type,
+                        "alloy_config": alloy_config,
+                        "args": args,
+                        "progress_manager": progress_manager,
+                        "dry_run": dry_run,
+                        "method_meta": method_meta,
+                    }
                 )
                 continue
 
             for model_name in args.models:
                 task_key = make_task_key(alloy_type, target_column, model_name)
-                if resume and progress_manager.is_task_completed(config_name, task_key):
-                    results[task_key] = "skipped"
-                    continue
-                results[task_key] = run_single_task(
+                if resume and should_skip_completed_task(
                     config_name=config_name,
+                    task_key=task_key,
                     alloy_type=alloy_type,
                     alloy_config=alloy_config,
                     args=args,
+                    method_meta=method_meta,
                     progress_manager=progress_manager,
                     dry_run=dry_run,
-                    method_meta=method_meta,
                     model_name=model_name,
+                ):
+                    results[task_key] = "skipped"
+                    continue
+                pending_tasks.append(
+                    {
+                        "config_name": config_name,
+                        "alloy_type": alloy_type,
+                        "alloy_config": alloy_config,
+                        "args": args,
+                        "progress_manager": progress_manager,
+                        "dry_run": dry_run,
+                        "method_meta": method_meta,
+                        "model_name": model_name,
+                    }
                 )
 
+    jobs = max(1, int(jobs))
+    if not pending_tasks:
+        return results
+    if jobs == 1:
+        for task in pending_tasks:
+            model_name = task.get("model_name")
+            task_key = make_task_key(task["alloy_type"], task["alloy_config"]["target_column"], model_name)
+            results[task_key] = run_single_task(**task)
+        return results
+
+    logger.info("Running %s pending tasks from %s with jobs=%s", len(pending_tasks), config_name, jobs)
+    with ThreadPoolExecutor(max_workers=jobs) as executor:
+        future_to_task = {}
+        for task in pending_tasks:
+            model_name = task.get("model_name")
+            task_key = make_task_key(task["alloy_type"], task["alloy_config"]["target_column"], model_name)
+            future_to_task[executor.submit(run_single_task, **task)] = task_key
+        for future in as_completed(future_to_task):
+            task_key = future_to_task[future]
+            try:
+                results[task_key] = future.result()
+            except Exception as exc:
+                logger.exception("Task crashed before status update: %s", task_key)
+                progress_manager.update_task_status(config_name, task_key, "failed")
+                results[task_key] = f"failed: {exc}"
     return results
 
 
@@ -333,6 +610,28 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument(
+        "--alloys",
+        nargs="+",
+        help="Optional alloy/dataset names to run, e.g. --alloys MatbenchSteels. Overrides each batch config's alloy_types.",
+    )
+    parser.add_argument(
+        "--processing_cols",
+        nargs="*",
+        default=[],
+        help="Optional numeric processing columns for OOD X-space construction when the alloy config does not define them.",
+    )
+    parser.add_argument(
+        "--targets",
+        nargs="+",
+        help='Optional target columns to run, e.g. --targets "UTS(MPa)" "El(%)". Filters each selected alloy.',
+    )
+    parser.add_argument(
+        "--jobs",
+        type=int,
+        default=1,
+        help="Number of OOD tasks to run in parallel per batch config. Use 1 for sequential execution.",
+    )
     parser.add_argument("--show_progress", action="store_true")
     parser.add_argument("--clear_progress", type=str, nargs="?", const="__all__", metavar="CONFIG")
     return parser
@@ -371,12 +670,19 @@ def main() -> None:
         logger.info(f"Running OOD batch config: {config_name}")
         logger.info("=" * 100)
         config = BATCH_CONFIGS_OOD[config_name]
+        if args.alloys:
+            config = {**config, "alloy_types": args.alloys}
+        if args.processing_cols:
+            config = {**config, "processing_cols": args.processing_cols}
+        if args.targets:
+            config = {**config, "target_columns": args.targets}
         all_results[config_name] = run_batch_config(
             config_name=config_name,
             config=config,
             dry_run=args.dry_run,
             progress_manager=progress_manager,
             resume=args.resume,
+            jobs=args.jobs,
         )
 
     logger.info("=" * 100)

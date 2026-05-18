@@ -92,13 +92,23 @@ def get_ood_output_root(
     return Path(base_path) / "output" / f"ood_results_{model_info['model_run_dirname']}"
 
 
+OOD_METHOD_OUTPUT_SUFFIXES = {
+    "sparse_x_single": "sparse_x_single_k5",
+    "sparse_y_single": "sparse_y_single_k5",
+    "sparse_x_cluster": "sparse_x_cluster_k5",
+    "sparse_y_cluster": "sparse_y_cluster_k5",
+    "loco": "loco_k5",
+}
+
+
 def get_ood_method_output_root(
     base_path: str | Path,
     model_info: Dict[str, str],
     split_strategy: str,
     output_root: str | None = None,
 ) -> Path:
-    return get_ood_output_root(base_path, model_info, output_root) / split_strategy
+    method_dir = OOD_METHOD_OUTPUT_SUFFIXES.get(split_strategy, split_strategy)
+    return get_ood_output_root(base_path, model_info, output_root) / method_dir
 
 
 class TabPFNOODTrainer:
@@ -113,7 +123,7 @@ class TabPFNOODTrainer:
         split_strategy: str = "target_extrapolation",
         extrapolation_side: Optional[str] = None,
         sparse_candidate_pool_size: int = 500,
-        sparse_cluster_count: int = 50,
+        sparse_cluster_count: int = 5,
         sparse_samples_per_cluster: int = 1,
         sparse_kde_bandwidth: float | None = None,
         sparse_neighbors_per_seed: int = 5,
@@ -782,7 +792,7 @@ def run_single_ood_experiment(
     split_strategy: str = "target_extrapolation",
     extrapolation_side: Optional[str] = None,
     sparse_candidate_pool_size: int = 500,
-    sparse_cluster_count: int = 50,
+    sparse_cluster_count: int = 5,
     sparse_samples_per_cluster: int = 1,
     sparse_kde_bandwidth: float | None = None,
     sparse_neighbors_per_seed: int = 5,
@@ -824,7 +834,7 @@ def run_all_ood_experiments(
     split_strategy: str = "target_extrapolation",
     extrapolation_side: Optional[str] = None,
     sparse_candidate_pool_size: int = 500,
-    sparse_cluster_count: int = 50,
+    sparse_cluster_count: int = 5,
     sparse_samples_per_cluster: int = 1,
     sparse_kde_bandwidth: float | None = None,
     sparse_neighbors_per_seed: int = 5,
@@ -1001,7 +1011,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--split_strategy", default="target_extrapolation", type=str)
     parser.add_argument("--extrapolation_side", default=None, type=str)
     parser.add_argument("--sparse_candidate_pool_size", default=500, type=int)
-    parser.add_argument("--sparse_cluster_count", default=50, type=int)
+    parser.add_argument("--sparse_cluster_count", default=5, type=int)
     parser.add_argument("--sparse_samples_per_cluster", default=1, type=int)
     parser.add_argument("--sparse_kde_bandwidth", default=None, type=float)
     parser.add_argument("--sparse_neighbors_per_seed", default=5, type=int)

@@ -12,7 +12,11 @@ import numpy as np
 import pandas as pd
 from sklearn.preprocessing import StandardScaler
 
-from src.data_processing.strength_ood_common import PreparedFold, PreparedSplit, save_prepared_split
+from src.data_processing.strength_ood_common import (
+    PreparedFold,
+    PreparedSplit,
+    save_prepared_split,
+)
 from src.data_processing.strength_ood_registry import create_ood_processor
 
 
@@ -50,11 +54,26 @@ class TabPFNOODDataProcessor:
             )
         return X_clean
 
+    def _processing_cols_for_x_space(self) -> List[str]:
+        """Return numeric processing columns for shared OOD X-space construction.
+
+        Text-mode TabPFN can train on processing text, but the sparse/LOCO split
+        must still be comparable to traditional ML.  The shared OOD splitter only
+        uses numeric composition + numeric processing columns, so pass the
+        backend-independent numeric processing metadata when it is available.
+        """
+        return [
+            str(col)
+            for col in self.config.get("numeric_process_feature_cols", [])
+            if str(col).strip()
+        ]
+
     def _fill_missing_feature_values(self, X: pd.DataFrame) -> pd.DataFrame:
         X_filled = X.copy()
         self._set_feature_type_metadata(X_filled)
         if self.numeric_feature_cols:
-            X_filled.loc[:, self.numeric_feature_cols] = X_filled[self.numeric_feature_cols].fillna(0)
+            numeric_values = X_filled[self.numeric_feature_cols].apply(pd.to_numeric, errors="coerce")
+            X_filled.loc[:, self.numeric_feature_cols] = numeric_values.fillna(0)
         if self.non_numeric_feature_cols:
             X_filled.loc[:, self.non_numeric_feature_cols] = (
                 X_filled[self.non_numeric_feature_cols].fillna("").astype(str)
@@ -77,7 +96,12 @@ class TabPFNOODDataProcessor:
             raise ValueError("No configured feature columns are present in the dataset")
         self.available_feature_cols = available_features
 
-        frame = self.data[available_features].copy()
+        split_only_numeric_cols = [
+            col
+            for col in self._processing_cols_for_x_space()
+            if col in self.data.columns and col not in available_features
+        ]
+        frame = self.data[available_features + split_only_numeric_cols].copy()
         frame[target_col] = pd.to_numeric(self.data[target_col], errors="coerce")
         if "ID" in self.data.columns:
             frame["ID"] = self.data["ID"].copy()
@@ -85,9 +109,11 @@ class TabPFNOODDataProcessor:
             frame["ID"] = pd.Series(range(1, len(self.data) + 1), name="ID")
 
         if drop_na:
-            frame = frame.dropna(subset=available_features + [target_col]).copy()
+            # Keep OOD split membership aligned with traditional ML: only the
+            # target controls row eligibility.  Feature missingness is handled
+            # later when TabPFN model inputs are built.
+            frame = frame.dropna(subset=[target_col]).copy()
         else:
-            frame[available_features] = self._fill_missing_feature_values(frame[available_features])
             frame[target_col] = frame[target_col].fillna(frame[target_col].mean())
 
         if frame.empty:
@@ -95,9 +121,10 @@ class TabPFNOODDataProcessor:
 
         frame = frame.sort_values("ID").reset_index(drop=True)
         self._set_feature_type_metadata(frame[self.available_feature_cols])
-        frame.loc[:, self.available_feature_cols] = self._sanitize_non_numeric_columns(
-            frame[self.available_feature_cols]
-        )
+        if self.non_numeric_feature_cols:
+            frame.loc[:, self.non_numeric_feature_cols] = (
+                frame[self.non_numeric_feature_cols].fillna("").astype(str)
+            )
         return frame
 
     def prepare_ood_result(
@@ -119,6 +146,7 @@ class TabPFNOODDataProcessor:
             split_strategy=split_strategy,
             input_file=str(self.base_path / self.config["raw_data"]),
             random_state=int(self.config.get("random_state", 42)),
+            processing_cols=self._processing_cols_for_x_space(),
         )
         prepared_result = processor.prepare(
             df=feature_frame,
@@ -132,6 +160,7 @@ class TabPFNOODDataProcessor:
             sparse_neighbors_per_seed=sparse_neighbors_per_seed,
             loco_cluster_count=loco_cluster_count,
             baseline_num_folds=baseline_num_folds,
+            processing_cols=self._processing_cols_for_x_space(),
         )
         self.prepared_result = prepared_result
         return prepared_result
@@ -192,8 +221,8 @@ class TabPFNOODDataProcessor:
         ids_test = test_df["ID"].to_numpy()
 
         self._set_feature_type_metadata(X_train)
-        X_train = self._sanitize_non_numeric_columns(X_train)
-        X_test = self._sanitize_non_numeric_columns(X_test)
+        X_train = self._fill_missing_feature_values(X_train)
+        X_test = self._fill_missing_feature_values(X_test)
 
         if scale and self.numeric_feature_cols:
             X_train_numeric = pd.DataFrame(

@@ -22,6 +22,27 @@ from sklearn.preprocessing import StandardScaler
 
 ID_LIKE_PATTERN = re.compile(r"^(id|__row_id__|.*_id)$", re.IGNORECASE)
 HELPER_COLUMNS = {"__row_id__", "__original_order__", "__source_index__"}
+METADATA_COLUMNS = {"reference_id", "references", "number", "dois"}
+PERFORMANCE_COLUMNS = {"El(%)", "UTS(MPa)", "YS(MPa)", "yield strength"}
+COMPOSITION_SUFFIXES = ("(wt%)", "(at%)")
+PROCESS_REGEXES = (
+    re.compile(r"^st\d+$", re.IGNORECASE),
+    re.compile(r"^time\d+$", re.IGNORECASE),
+)
+PROCESS_KEYWORDS = (
+    "temp",
+    "temperature",
+    "time",
+    "aging",
+    "ageing",
+    "anneal",
+    "solution",
+    "deformation",
+    "recrystalize",
+    "recrystallize",
+    "thermo-mechanical",
+)
+X_SPACE_FEATURE_POLICY = "composition_plus_numeric_processing"
 
 
 @dataclass
@@ -62,6 +83,9 @@ class PreparedFold:
 @dataclass
 class XSpaceContext:
     feature_names: List[str]
+    feature_roles: Dict[str, str]
+    excluded_property_columns: List[str]
+    feature_policy: str
     scaled_features: pd.DataFrame
     matrix: np.ndarray
     projection: pd.DataFrame
@@ -85,9 +109,15 @@ class StrengthOODProcessorBase:
     train_label = "train"
     test_label = "test"
 
-    def __init__(self, input_file: str, random_state: int = 42) -> None:
+    def __init__(
+        self,
+        input_file: str,
+        random_state: int = 42,
+        processing_cols: Sequence[str] | None = None,
+    ) -> None:
         self.input_file = input_file
         self.random_state = random_state
+        self.processing_cols = list(processing_cols or [])
 
     def load_data(self) -> pd.DataFrame:
         return pd.read_csv(self.input_file)
@@ -249,6 +279,13 @@ def make_prepared_split(
 
     train_df = drop_helper_columns(_ordered_subset(work_df, train_row_ids)).reset_index(drop=True)
     test_df = drop_helper_columns(_ordered_subset(work_df, test_row_ids)).reset_index(drop=True)
+    x_space_summary = {
+        "x_space_feature_policy": trace.metadata.get("x_space_feature_policy"),
+        "x_space_feature_columns": trace.metadata.get("x_space_feature_columns"),
+        "x_space_feature_roles": trace.metadata.get("x_space_feature_roles"),
+        "excluded_property_columns": trace.metadata.get("excluded_property_columns"),
+    }
+    merged_extra = {**x_space_summary, **(extra_summary or {})}
     summary = _build_summary(
         train_df=train_df,
         test_df=test_df,
@@ -256,7 +293,7 @@ def make_prepared_split(
         split_strategy=split_strategy,
         train_label=final_train_label,
         test_label=final_test_label,
-        extra=extra_summary,
+        extra=merged_extra,
     )
     return PreparedSplit(
         split_strategy=split_strategy,
@@ -274,22 +311,86 @@ def _is_id_like_column(column_name: str) -> bool:
     return bool(ID_LIKE_PATTERN.match(column_name))
 
 
-def build_numeric_x_space(work_df: pd.DataFrame, target_col: str, random_state: int) -> XSpaceContext:
-    numeric_frame = work_df.select_dtypes(include=[np.number, "bool"]).copy()
+def _is_metadata_column(column_name: str) -> bool:
+    return column_name.strip().lower() in METADATA_COLUMNS
+
+
+def _is_property_column(column_name: str, target_col: str) -> bool:
+    raw = str(column_name).strip()
+    return raw == target_col or raw in PERFORMANCE_COLUMNS
+
+
+def _is_composition_column(column_name: str) -> bool:
+    return str(column_name).strip().endswith(COMPOSITION_SUFFIXES)
+
+
+def _is_processing_column(column_name: str, explicit_processing_cols: set[str] | None = None) -> bool:
+    raw = str(column_name).strip()
+    normalized = raw.lower()
+    if explicit_processing_cols and raw in explicit_processing_cols:
+        return True
+    if normalized == "cr(%)":
+        return True
+    if any(pattern.match(raw) for pattern in PROCESS_REGEXES):
+        return True
+    return any(keyword in normalized for keyword in PROCESS_KEYWORDS)
+
+
+def select_numeric_x_space_columns(
+    work_df: pd.DataFrame,
+    target_col: str,
+    processing_cols: Sequence[str] | None = None,
+) -> tuple[List[str], Dict[str, str], List[str]]:
+    numeric_columns = work_df.select_dtypes(include=[np.number, "bool"]).columns.tolist()
     excluded = {target_col, *HELPER_COLUMNS}
-    candidate_cols = [
-        col
-        for col in numeric_frame.columns
-        if col not in excluded and not _is_id_like_column(col)
-    ]
+    explicit_processing_cols = {str(col).strip() for col in (processing_cols or []) if str(col).strip()}
+
+    selected: List[str] = []
+    roles: Dict[str, str] = {}
+    excluded_property_columns: List[str] = []
+    for column in numeric_columns:
+        if column in excluded or _is_id_like_column(column) or _is_metadata_column(column):
+            continue
+        if _is_property_column(column, target_col):
+            excluded_property_columns.append(column)
+            continue
+        if _is_composition_column(column):
+            selected.append(column)
+            roles[column] = "composition"
+        elif _is_processing_column(column, explicit_processing_cols):
+            selected.append(column)
+            roles[column] = "process"
+
+    return selected, roles, excluded_property_columns
+
+
+def build_numeric_x_space(
+    work_df: pd.DataFrame,
+    target_col: str,
+    random_state: int,
+    processing_cols: Sequence[str] | None = None,
+) -> XSpaceContext:
+    numeric_frame = work_df.select_dtypes(include=[np.number, "bool"]).copy()
+    candidate_cols, feature_roles, excluded_property_columns = select_numeric_x_space_columns(
+        work_df,
+        target_col=target_col,
+        processing_cols=processing_cols,
+    )
     if not candidate_cols:
-        raise ValueError("No numeric non-target non-id-like columns are available for X-space construction")
+        raise ValueError(
+            "No numeric composition or processing columns are available for OOD X-space "
+            f"construction with policy '{X_SPACE_FEATURE_POLICY}'"
+        )
 
     usable = numeric_frame[candidate_cols].apply(pd.to_numeric, errors="coerce")
     usable = usable.dropna(axis=1, how="all")
     usable = usable.loc[:, usable.nunique(dropna=True) > 1]
+    feature_roles = {column: feature_roles[column] for column in usable.columns}
     if usable.empty:
-        raise ValueError("No usable numeric columns remain after dropping empty/constant X-space columns")
+        raise ValueError(
+            "No usable numeric composition or processing columns remain after dropping "
+            "empty/constant OOD X-space columns"
+        )
 
     usable = usable.fillna(usable.median())
     scaler = StandardScaler()
@@ -312,6 +413,9 @@ def build_numeric_x_space(work_df: pd.DataFrame, target_col: str, random_state: 
     )
     return XSpaceContext(
         feature_names=list(usable.columns),
+        feature_roles=feature_roles,
+        excluded_property_columns=excluded_property_columns,
+        feature_policy=X_SPACE_FEATURE_POLICY,
         scaled_features=scaled_features,
         matrix=matrix,
         projection=projection_df,
@@ -384,11 +488,17 @@ def build_density_context(
     selection_space: str,
     kde_bandwidth: float | None = None,
     include_y_curve: bool = False,
+    processing_cols: Sequence[str] | None = None,
 ) -> DensityContext:
     if selection_space not in {"x", "y"}:
         raise ValueError("selection_space must be 'x' or 'y'")
 
-    x_space = build_numeric_x_space(work_df, target_col=target_col, random_state=random_state)
+    x_space = build_numeric_x_space(
+        work_df,
+        target_col=target_col,
+        random_state=random_state,
+        processing_cols=processing_cols,
+    )
     x_density, x_bandwidth = compute_kde_density(
         x_space.projection[["projection_x", "projection_y"]].to_numpy(),
         bandwidth=kde_bandwidth if selection_space == "x" else None,
@@ -567,6 +677,10 @@ def build_trace_artifacts(
         metadata={
             "split_strategy": split_strategy,
             "selection_space": density_context.selection_space,
+            "x_space_feature_policy": density_context.x_space.feature_policy,
+            "x_space_feature_columns": list(density_context.x_space.feature_names),
+            "x_space_feature_roles": dict(density_context.x_space.feature_roles),
+            "excluded_property_columns": list(density_context.x_space.excluded_property_columns),
             **(metadata or {}),
         },
     )
@@ -578,6 +692,7 @@ def prepare_target_extrapolation_split(
     test_ratio: float,
     extrapolation_side: str,
     random_state: int,
+    processing_cols: Sequence[str] | None = None,
 ) -> PreparedSplit:
     if extrapolation_side not in {"low_to_high", "high_to_low"}:
         raise ValueError("extrapolation_side must be one of ['low_to_high', 'high_to_low']")
@@ -589,6 +704,7 @@ def prepare_target_extrapolation_split(
         random_state=random_state,
         selection_space="y",
         include_y_curve=False,
+        processing_cols=processing_cols,
     )
     ascending = extrapolation_side == "low_to_high"
     ordered = work_df.sort_values(by=target_col, ascending=ascending, kind="stable").reset_index(drop=True)
@@ -638,6 +754,7 @@ def prepare_sparse_single_split(
     samples_per_cluster: int,
     random_state: int,
     kde_bandwidth: float | None = None,
+    processing_cols: Sequence[str] | None = None,
 ) -> PreparedSplit:
     work_df = prepare_work_dataframe(df, target_col)
     samples_per_cluster = ensure_positive_int("sparse_samples_per_cluster", samples_per_cluster)
@@ -648,6 +765,7 @@ def prepare_sparse_single_split(
         selection_space=density_space,
         kde_bandwidth=kde_bandwidth,
         include_y_curve=density_space == "y",
+        processing_cols=processing_cols,
     )
     candidate_pool, actual_candidate_pool_size = select_low_density_candidates(
         work_df=work_df,
@@ -742,6 +860,7 @@ def prepare_sparse_cluster_split(
     cluster_count: int,
     neighbors_per_seed: int,
     random_state: int,
+    processing_cols: Sequence[str] | None = None,
 ) -> PreparedSplit:
     work_df = prepare_work_dataframe(df, target_col)
     neighbors_per_seed = ensure_positive_int("sparse_neighbors_per_seed", neighbors_per_seed)
@@ -751,6 +870,7 @@ def prepare_sparse_cluster_split(
         random_state=random_state,
         selection_space=density_space,
         include_y_curve=density_space == "y",
+        processing_cols=processing_cols,
     )
     candidate_pool, actual_candidate_pool_size = select_low_density_candidates(
         work_df=work_df,
@@ -879,6 +999,7 @@ def prepare_loco_folds(
     target_col: str,
     cluster_count: int,
     random_state: int,
+    processing_cols: Sequence[str] | None = None,
 ) -> List[PreparedFold]:
     work_df = prepare_work_dataframe(df, target_col)
     cluster_count = ensure_positive_int("loco_cluster_count", cluster_count)
@@ -888,6 +1009,7 @@ def prepare_loco_folds(
         random_state=random_state,
         selection_space="x",
         include_y_curve=False,
+        processing_cols=processing_cols,
     )
     projection_matrix = density_context.x_space.matrix
     effective_cluster_count = min(cluster_count, len(work_df))
@@ -970,6 +1092,7 @@ def prepare_random_cv_baseline_folds(
     target_col: str,
     num_folds: int,
     random_state: int,
+    processing_cols: Sequence[str] | None = None,
 ) -> List[PreparedFold]:
     work_df = prepare_work_dataframe(df, target_col)
     num_folds = ensure_positive_int("baseline_num_folds", num_folds)
@@ -984,6 +1107,7 @@ def prepare_random_cv_baseline_folds(
         random_state=random_state,
         selection_space="x",
         include_y_curve=False,
+        processing_cols=processing_cols,
     )
 
     folds: List[PreparedFold] = []

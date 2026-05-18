@@ -26,4 +26,5 @@ class StrengthSparseYSingleDataProcessor(StrengthOODProcessorBase):
             samples_per_cluster=int(kwargs.get("sparse_samples_per_cluster", 1)),
             random_state=self.random_state,
             kde_bandwidth=kwargs.get("sparse_kde_bandwidth"),
+            processing_cols=kwargs.get("processing_cols", self.processing_cols),
         )

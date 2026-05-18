@@ -30,7 +30,13 @@ def _match_case_metadata(case_name: str, case_map: dict[str, dict[str, Any]]) ->
 
 def _metric_triplet_from_metrics_json(metrics_path: Path, property_name: str) -> tuple[float, float, float]:
     payload = _read_json(metrics_path)
-    metric_block = payload.get(property_name, payload)
+    metric_block = payload.get(property_name)
+    if metric_block is None and len(payload) == 1:
+        only_value = next(iter(payload.values()))
+        if isinstance(only_value, dict) and {"mae", "rmse", "r2"}.issubset(only_value):
+            metric_block = only_value
+    if metric_block is None:
+        metric_block = payload
     mae = float(metric_block["mae"])
     rmse = float(metric_block["rmse"])
     r2 = float(metric_block["r2"])
@@ -48,10 +54,11 @@ def _build_single_run_row(
     source_root: Path,
 ) -> dict[str, Any]:
     property_name = str(case_metadata["property"])
+    metric_property_name = str(case_metadata.get("metric_property", property_name))
     metrics_path = model_dir / "metrics.json"
     predictions_path = model_dir / "predictions.csv"
     test_set_path = model_dir / "test_set.csv"
-    r2, mae, rmse = _metric_triplet_from_metrics_json(metrics_path, property_name)
+    r2, mae, rmse = _metric_triplet_from_metrics_json(metrics_path, metric_property_name)
     return {
         "alloy_family": case_metadata["alloy_family"],
         "dataset_name": case_metadata["dataset_name"],
@@ -77,8 +84,8 @@ def _build_single_run_row(
         "representative_test_mae": mae,
         "representative_test_rmse": rmse,
         "representative_predictions_file": str(predictions_path.resolve()) if predictions_path.exists() else pd.NA,
-        "representative_plot_file": str((model_dir / f"diagonal_{property_name}.png").resolve())
-        if (model_dir / f"diagonal_{property_name}.png").exists()
+        "representative_plot_file": str((model_dir / f"diagonal_{metric_property_name}.png").resolve())
+        if (model_dir / f"diagonal_{metric_property_name}.png").exists()
         else pd.NA,
         "artifact_selection_mode": "external_single_run",
         "artifact_predictions_file": str(predictions_path.resolve()) if predictions_path.exists() else pd.NA,
@@ -111,13 +118,14 @@ def _build_fold_aggregated_row(
     source_root: Path,
 ) -> dict[str, Any] | None:
     property_name = str(case_metadata["property"])
+    metric_property_name = str(case_metadata.get("metric_property", property_name))
     fold_records: list[dict[str, Any]] = []
     for fold_dir in sorted(case_dir.glob("fold_*")):
         model_dir = fold_dir / provider_name / model_dir_name
         metrics_path = model_dir / "metrics.json"
         if not metrics_path.exists():
             continue
-        r2, mae, rmse = _metric_triplet_from_metrics_json(metrics_path, property_name)
+        r2, mae, rmse = _metric_triplet_from_metrics_json(metrics_path, metric_property_name)
         fold_index = pd.to_numeric(pd.Series([fold_dir.name.replace("fold_", "")]), errors="coerce").iloc[0]
         fold_records.append(
             {
@@ -129,7 +137,7 @@ def _build_fold_aggregated_row(
                 "rmse": rmse,
                 "predictions_file": model_dir / "predictions.csv",
                 "test_set_file": model_dir / "test_set.csv",
-                "plot_file": model_dir / f"diagonal_{property_name}.png",
+                "plot_file": model_dir / f"diagonal_{metric_property_name}.png",
             }
         )
 

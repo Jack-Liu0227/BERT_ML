@@ -25,4 +25,5 @@ class StrengthSparseYClusterDataProcessor(StrengthOODProcessorBase):
             cluster_count=int(kwargs.get("sparse_cluster_count", 50)),
             neighbors_per_seed=int(kwargs.get("sparse_neighbors_per_seed", 5)),
             random_state=self.random_state,
+            processing_cols=kwargs.get("processing_cols", self.processing_cols),
         )

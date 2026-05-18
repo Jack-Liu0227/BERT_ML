@@ -17,7 +17,7 @@ from _ood_summary_common import (
     reset_output_dir,
 )
 from _raw_prediction_stats import (
-    summarize_outer_fold_final_test_metrics,
+    load_case_level_test_metrics,
     summarize_optuna_model_trials,
     summarize_optuna_model_trials_from_dirs,
 )
@@ -30,6 +30,22 @@ MODEL_MAP = {
     "sklearn_rf_results": "RF",
     "xgboost_results": "XGB",
 }
+
+CANONICAL_RAW_METHOD_BY_EXPERIMENT_SUFFIX = {
+    "random_cv_baseline": {"random_cv_baseline"},
+    "extrapolation": {"target_extrapolation"},
+    "loco": {"loco_k5", "loco"},
+    "sparse_x_cluster": {"sparse_x_cluster_k5", "sparse_x_cluster"},
+    "sparse_x_single": {"sparse_x_single_k5", "sparse_x_single"},
+    "sparse_y_cluster": {"sparse_y_cluster_k5", "sparse_y_cluster"},
+    "sparse_y_single": {"sparse_y_single_k5", "sparse_y_single"},
+}
+
+
+def expected_raw_methods_for_experiment(experiment_name: str) -> set[str]:
+    prefix = "experiment1_all_ml_models_"
+    suffix = experiment_name[len(prefix):] if experiment_name.startswith(prefix) else experiment_name
+    return CANONICAL_RAW_METHOD_BY_EXPERIMENT_SUFFIX.get(suffix, set())
 
 
 def build_summary_row(
@@ -75,15 +91,132 @@ def build_summary_row(
     }
 
 
+def _outer_fold_index(path: Path) -> int | None:
+    for candidate in (path, *path.parents):
+        name = str(candidate.name)
+        if not name.startswith("fold_"):
+            continue
+        suffix = name.split("_", 1)[1]
+        if suffix.isdigit():
+            return int(suffix)
+    return None
+
+
+def _std_or_zero(series: pd.Series) -> float:
+    numeric = pd.to_numeric(series, errors="coerce").dropna()
+    if numeric.empty:
+        return 0.0
+    value = numeric.std()
+    return 0.0 if pd.isna(value) else float(value)
+
+
+def summarize_outer_fold_case_level_metrics(
+    outer_model_dirs: list[Path],
+    *,
+    property_name: str,
+) -> dict[str, dict[str, object]]:
+    """Summarize RandomCV/LOCO outer folds from final OOD-test artifacts.
+
+    The older path used ``summarize_outer_fold_final_test_metrics`` which also
+    scans every inner Optuna trial/fold only to record selected-trial details.
+    For publication figures we need the final outer-fold OOD metrics, and those
+    are already present in each fold's final prediction artifact. Reading only
+    those files keeps the full OOD refresh tractable and avoids missing folded
+    RandomCV/LOCO rows.
+    """
+
+    fold_rows: list[dict[str, object]] = []
+    for model_dir in sorted(outer_model_dirs, key=lambda path: (_outer_fold_index(path) is None, _outer_fold_index(path) or 0, str(path))):
+        metrics = load_case_level_test_metrics(model_dir, property_name)
+        if metrics is None:
+            continue
+        fold_rows.append(
+            {
+                "outer_fold_index": _outer_fold_index(model_dir),
+                "model_dir": str(model_dir),
+                "selected_trial_id": None,
+                "selected_trial_num": None,
+                "selected_trial_fold_count": None,
+                "selected_mean_test_r2": None,
+                "selected_std_test_r2": None,
+                "selected_mean_test_mae": None,
+                "selected_std_test_mae": None,
+                "selected_mean_test_rmse": None,
+                "selected_std_test_rmse": None,
+                "selected_inner_predictions_file": None,
+                "outer_predictions_file": metrics["predictions_file"],
+                "outer_test_r2": float(metrics["test_r2"]),
+                "outer_test_mae": float(metrics["test_mae"]),
+                "outer_test_rmse": float(metrics["test_rmse"]),
+                "outer_test_row_count": int(metrics["test_row_count"]),
+            }
+        )
+
+    if not fold_rows:
+        return {}
+
+    fold_df = pd.DataFrame(fold_rows)
+    for metric in ["outer_test_r2", "outer_test_mae", "outer_test_rmse"]:
+        fold_df[metric] = pd.to_numeric(fold_df[metric], errors="coerce")
+    fold_df = fold_df.dropna(subset=["outer_test_r2", "outer_test_mae", "outer_test_rmse"]).reset_index(drop=True)
+    if fold_df.empty:
+        return {}
+
+    summary_test_mae = float(fold_df["outer_test_mae"].mean())
+    representative_df = fold_df.assign(
+        _distance_to_summary_test_mae=(fold_df["outer_test_mae"] - summary_test_mae).abs(),
+        _sort_outer_fold=pd.to_numeric(fold_df["outer_fold_index"], errors="coerce").fillna(float("inf")),
+    ).sort_values(
+        ["_distance_to_summary_test_mae", "outer_test_mae", "outer_test_r2", "_sort_outer_fold"],
+        ascending=[True, True, False, True],
+        na_position="last",
+        kind="mergesort",
+    )
+    representative_row = representative_df.iloc[0]
+    representative_fold = representative_row["outer_fold_index"]
+    representative_fold = int(representative_fold) if pd.notna(representative_fold) else pd.NA
+
+    return {
+        property_name: {
+            "trial_count": int(len(fold_df)),
+            "fold_count": int(len(fold_df)),
+            "summary_test_r2": float(fold_df["outer_test_r2"].mean()),
+            "summary_test_r2_std": _std_or_zero(fold_df["outer_test_r2"]),
+            "summary_test_mae": summary_test_mae,
+            "summary_test_mae_std": _std_or_zero(fold_df["outer_test_mae"]),
+            "summary_test_rmse": float(fold_df["outer_test_rmse"].mean()),
+            "summary_test_rmse_std": _std_or_zero(fold_df["outer_test_rmse"]),
+            "representative_selection_mode": "closest_summary_test_mae_outer_fold_oodtest_fast",
+            "representative_trial_id": pd.NA,
+            "representative_fold": representative_fold,
+            "representative_test_r2": float(representative_row["outer_test_r2"]),
+            "representative_test_mae": float(representative_row["outer_test_mae"]),
+            "representative_test_rmse": float(representative_row["outer_test_rmse"]),
+            "representative_predictions_file": representative_row["outer_predictions_file"],
+            "representative_model_dir": str(representative_row["model_dir"]),
+            "loco_outer_fold_best_details": fold_rows,
+        }
+    }
+
+
 def collect_rows(base_dir: Path) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     loco_case_models: dict[tuple[str, str, str, str, str, Path], list[Path]] = {}
 
     for experiment_dir in iter_experiment_dirs(base_dir, "experiment1_all_ml_models_"):
-        for model_comparison_dir in experiment_dir.rglob("model_comparison"):
+        expected_raw_methods = expected_raw_methods_for_experiment(experiment_dir.name)
+        # The output layout is fixed; scanning the exact Traditional depth is
+        # much faster than a recursive walk over every trial artifact.
+        model_comparison_dirs = [
+            *experiment_dir.glob("*/*/*/*/tradition/model_comparison"),
+            *experiment_dir.glob("*/*/*/*/tradition/folds/fold_*/model_comparison"),
+        ]
+        for model_comparison_dir in sorted(set(model_comparison_dirs)):
             relative_parts = model_comparison_dir.relative_to(experiment_dir).parts
             if len(relative_parts) == 6 and relative_parts[4] == "tradition":
                 alloy_family, dataset_name, property_name, raw_ood_method, _, _ = relative_parts
+                if expected_raw_methods and raw_ood_method not in expected_raw_methods:
+                    continue
                 ood_method = normalize_ood_method(raw_ood_method)
 
                 for model_dir in sorted(model_comparison_dir.iterdir()):
@@ -117,6 +250,8 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
 
             if len(relative_parts) == 8 and relative_parts[4] == "tradition" and relative_parts[5] == "folds":
                 alloy_family, dataset_name, property_name, raw_ood_method, _, _, _, _ = relative_parts
+                if expected_raw_methods and raw_ood_method not in expected_raw_methods:
+                    continue
                 for model_dir in sorted(model_comparison_dir.iterdir()):
                     if not model_dir.is_dir():
                         continue
@@ -135,7 +270,7 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
 
     for (alloy_family, dataset_name, property_name, ood_method, model_label, experiment_dir), model_dirs in sorted(loco_case_models.items()):
         if str(ood_method) in {"LOCO", "RandomCV"}:
-            summaries = summarize_outer_fold_final_test_metrics(
+            summaries = summarize_outer_fold_case_level_metrics(
                 model_dirs,
                 property_name=property_name,
             )

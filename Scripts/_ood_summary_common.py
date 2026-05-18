@@ -5,6 +5,10 @@ import shutil
 from pathlib import Path
 from typing import Iterable
 
+import matplotlib
+
+matplotlib.use("Agg")
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -30,10 +34,15 @@ OOD_METHOD_MAP = {
     "random_cv_baseline": "RandomCV",
     "target_extrapolation": "Extrapolation",
     "loco": "LOCO",
+    "loco_k5": "LOCO",
     "sparse_x_cluster": "SparseXcluster",
+    "sparse_x_cluster_k5": "SparseXcluster",
     "sparse_x_single": "SparseXsingle",
+    "sparse_x_single_k5": "SparseXsingle",
     "sparse_y_cluster": "SparseYcluster",
+    "sparse_y_cluster_k5": "SparseYcluster",
     "sparse_y_single": "SparseYsingle",
+    "sparse_y_single_k5": "SparseYsingle",
 }
 OOD_METHOD_ORDER = [
     "RandomCV",
@@ -89,6 +98,8 @@ def normalize_alloy_family_name(text: str) -> str:
     normalized = str(text).strip()
     if normalized == "HEA_half":
         return "HEA"
+    if normalized in {"MatbenchSteels", "Matbench Steel", "matbench_steels", "matbench_steel"}:
+        return "Matbench Steel"
     return normalized
 
 

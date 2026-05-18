@@ -7,6 +7,24 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+MATBENCH_STEELS_AT_PERCENT_COLS: List[str] = [
+    "Al(at%)",
+    "C(at%)",
+    "Co(at%)",
+    "Cr(at%)",
+    "Fe(at%)",
+    "Mn(at%)",
+    "Mo(at%)",
+    "N(at%)",
+    "Nb(at%)",
+    "Ni(at%)",
+    "Si(at%)",
+    "Ti(at%)",
+    "V(at%)",
+    "W(at%)",
+]
+
+
 ALLOY_CONFIGS_OOD: Dict[str, Dict[str, Any]] = {
     "Ti": {
         "raw_data": "datasets/Ti_alloys/titanium.csv",
@@ -51,6 +69,15 @@ ALLOY_CONFIGS_OOD: Dict[str, Dict[str, Any]] = {
         "processing_text_column": "Processing_Description",
         "description": "Steel OOD dataset",
     },
+    "MatbenchSteels": {
+        "raw_data": "datasets/matbench_convert/matbench_steels_ood.csv",
+        "targets": ["yield strength"],
+        "processing_cols": [],
+        "processing_text_column": "composition",
+        "description": "Matbench steels OOD dataset",
+        "source_data": "datasets/matbench_convert/matbench_steels.csv",
+        "element_cols": MATBENCH_STEELS_AT_PERCENT_COLS,
+    },
     # "HEA_corrosion": {
     #     "raw_data": "datasets/HEA_data/Pitting_potential_data_xiongjie.csv",
     #     "targets": ["Ep(mV)"],
@@ -64,6 +91,7 @@ ALLOY_CONFIGS_OOD: Dict[str, Dict[str, Any]] = {
 COMMON_OOD_DEFAULTS: Dict[str, Any] = {
     "alloy_types": None,
     "exclude_alloys": ["HEA_corrosion"],
+    "processing_cols": [],
     "cross_validate": True,
     "num_folds": 9,
     "use_optuna": True,
@@ -91,13 +119,13 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
     "sparse_x_single": {
         "display_name": "sparse X single",
         "config_suffix": "sparse_x_single",
-        "result_dir_suffix": "sparse_x_single",
+        "result_dir_suffix": "sparse_x_single_k5",
         "summary_file_name": "split_summary.json",
         "is_multi_fold": False,
         "default_params": {
             "split_strategy": "sparse_x_single",
             "sparse_candidate_pool_size": 500,
-            "sparse_cluster_count": 50,
+            "sparse_cluster_count": 5,
             "sparse_samples_per_cluster": 1,
             "sparse_kde_bandwidth": None,
         },
@@ -113,13 +141,13 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
     "sparse_y_single": {
         "display_name": "sparse Y single",
         "config_suffix": "sparse_y_single",
-        "result_dir_suffix": "sparse_y_single",
+        "result_dir_suffix": "sparse_y_single_k5",
         "summary_file_name": "split_summary.json",
         "is_multi_fold": False,
         "default_params": {
             "split_strategy": "sparse_y_single",
             "sparse_candidate_pool_size": 500,
-            "sparse_cluster_count": 50,
+            "sparse_cluster_count": 5,
             "sparse_samples_per_cluster": 1,
             "sparse_kde_bandwidth": None,
         },
@@ -135,13 +163,13 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
     "sparse_x_cluster": {
         "display_name": "sparse X cluster",
         "config_suffix": "sparse_x_cluster",
-        "result_dir_suffix": "sparse_x_cluster",
+        "result_dir_suffix": "sparse_x_cluster_k5",
         "summary_file_name": "split_summary.json",
         "is_multi_fold": False,
         "default_params": {
             "split_strategy": "sparse_x_cluster",
             "sparse_candidate_pool_size": 500,
-            "sparse_cluster_count": 50,
+            "sparse_cluster_count": 5,
             "sparse_neighbors_per_seed": 5,
         },
         "cli_args": [
@@ -155,13 +183,13 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
     "sparse_y_cluster": {
         "display_name": "sparse Y cluster",
         "config_suffix": "sparse_y_cluster",
-        "result_dir_suffix": "sparse_y_cluster",
+        "result_dir_suffix": "sparse_y_cluster_k5",
         "summary_file_name": "split_summary.json",
         "is_multi_fold": False,
         "default_params": {
             "split_strategy": "sparse_y_cluster",
             "sparse_candidate_pool_size": 500,
-            "sparse_cluster_count": 50,
+            "sparse_cluster_count": 5,
             "sparse_neighbors_per_seed": 5,
         },
         "cli_args": [
@@ -175,7 +203,7 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
     "loco": {
         "display_name": "LOCO",
         "config_suffix": "loco",
-        "result_dir_suffix": "loco",
+        "result_dir_suffix": "loco_k5",
         "summary_file_name": "loco_manifest.json",
         "is_multi_fold": True,
         "default_params": {

@@ -52,14 +52,23 @@ def infer_case_context(base_dir: Path, metrics_path: Path, payload: dict) -> tup
 
     raw_ood_method = extract_raw_ood_method(payload)
     fold_index = payload.get("fold_index")
+    method_dir_aliases = {
+        "loco_k5": "loco",
+        "sparse_x_cluster_k5": "sparse_x_cluster",
+        "sparse_x_single_k5": "sparse_x_single",
+        "sparse_y_cluster_k5": "sparse_y_cluster",
+        "sparse_y_single_k5": "sparse_y_single",
+    }
+    first_part = str(relative_parts[0]).strip().lower()
+    first_part_method = method_dir_aliases.get(first_part, first_part)
 
     if raw_ood_method not in VALID_METHODS:
-        candidate = str(relative_parts[0]).strip().lower()
+        candidate = first_part_method
         if candidate not in VALID_METHODS or len(relative_parts) < 6:
             raise ValueError(f"Unsupported or missing OOD method for: {metrics_path}")
         raw_ood_method = candidate
 
-    if str(relative_parts[0]).strip().lower() in VALID_METHODS and len(relative_parts) >= 6:
+    if first_part_method in VALID_METHODS and len(relative_parts) >= 6:
         alloy_family, dataset_name, property_name = relative_parts[1:4]
     else:
         alloy_family, dataset_name, property_name = relative_parts[0:3]

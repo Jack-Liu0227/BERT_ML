@@ -20,4 +20,5 @@ class StrengthLocoDataProcessor(StrengthOODProcessorBase):
             target_col=target_col,
             cluster_count=int(kwargs.get("loco_cluster_count", 5)),
             random_state=self.random_state,
+            processing_cols=kwargs.get("processing_cols", self.processing_cols),
         )

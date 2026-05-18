@@ -2,7 +2,7 @@
 # output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv
 #
 # Current use case:
-# - fewshot-guided No_analysis LLM runs
+# - fewshot-guided k5 No_analysis LLM runs
 # - keep gpt-5.4 as a standalone model/legend entry
 # - reserve a simple interface for future external models by adding
 #   another item under `models`
@@ -11,18 +11,20 @@ sources:
   - type: fewshot_guided_no_analysis
     enabled: true
     family_name: "LLM"
-    root_dir: "D:/XJTU/ImportantFile/auto-design-alloy/fewshot-guided/output/ood"
+    root_dir: "D:/XJTU/ImportantFile/auto-design-alloy/fewshot-guided/output/ood/k5"
     default_provider: "kilig"
 
     # Map external result folders to the OOD method labels used in BERT_ML.
+    # k5 folders are included here. RandomCV is copied into the same k5
+    # staging root so the LLM RandomCV baseline is available to combined plots.
     method_map:
       strength_ood_random_cv_baseline_no_analysis: "RandomCV"
       strength_ood_extrapolation_no_analysis: "Extrapolation"
-      strength_ood_loco_no_analysis: "LOCO"
-      strength_ood_sparse_x_cluster_no_analysis: "SparseXcluster"
-      strength_ood_sparse_x_single_no_analysis: "SparseXsingle"
-      strength_ood_sparse_y_cluster_no_analysis: "SparseYcluster"
-      strength_ood_sparse_y_single_no_analysis: "SparseYsingle"
+      strength_ood_loco_k5_no_analysis: "LOCO"
+      strength_ood_sparse_x_cluster_k5_no_analysis: "SparseXcluster"
+      strength_ood_sparse_x_single_k5_no_analysis: "SparseXsingle"
+      strength_ood_sparse_y_cluster_k5_no_analysis: "SparseYcluster"
+      strength_ood_sparse_y_single_k5_no_analysis: "SparseYsingle"
 
     # Map case-name prefixes to the task metadata expected by the summary pipeline.
     case_map:
@@ -62,6 +64,11 @@ sources:
         alloy_family: "Steel"
         dataset_name: "steel"
         property: "El(%)"
+      matbench_steel_ys:
+        alloy_family: "Matbench Steel"
+        dataset_name: "matbench_steels_ood"
+        property: "yield strength"
+        metric_property: "YS(MPa)"
 
     # Future models can be added here without changing Python code.
     models:

@@ -99,7 +99,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
         choices=["low_to_high", "high_to_low"],
     )
     parser.add_argument("--sparse_candidate_pool_size", type=int, default=500)
-    parser.add_argument("--sparse_cluster_count", type=int, default=50)
+    parser.add_argument("--sparse_cluster_count", type=int, default=5)
     parser.add_argument("--sparse_samples_per_cluster", type=int, default=1)
     parser.add_argument("--sparse_kde_bandwidth", type=float, default=None)
     parser.add_argument("--sparse_neighbors_per_seed", type=int, default=5)
@@ -322,7 +322,12 @@ def main() -> None:
     validate_arguments(args)
     set_seed(args.random_state)
 
-    processor = create_ood_processor(args.split_strategy, args.data_file, random_state=args.random_state)
+    processor = create_ood_processor(
+        args.split_strategy,
+        args.data_file,
+        random_state=args.random_state,
+        processing_cols=args.processing_cols,
+    )
     raw_df = processor.load_data()
     prepared_result = processor.prepare(
         df=raw_df,
@@ -335,6 +340,7 @@ def main() -> None:
         sparse_kde_bandwidth=args.sparse_kde_bandwidth,
         sparse_neighbors_per_seed=args.sparse_neighbors_per_seed,
         loco_cluster_count=args.loco_cluster_count,
+        processing_cols=args.processing_cols,
     )
 
     result_root = Path(args.result_dir)

@@ -12,6 +12,7 @@ from typing import Any, Dict, List
 
 
 PROCESSING_TEXT_COLUMN = "Processing_Description"
+MATBENCH_STEELS_TEXT_COLUMN = "composition"
 
 
 COMMON_DATASET_CONFIGS: Dict[str, Dict[str, Any]] = {
@@ -46,6 +47,15 @@ COMMON_DATASET_CONFIGS: Dict[str, Dict[str, Any]] = {
         "description": "钢铁力学性能数据集 / Steel mechanical properties dataset",
         "test_size": 0.2,
         "random_state": 42,
+    },
+    "MatbenchSteels": {
+        "raw_data": "datasets/matbench_convert/matbench_steels_ood.csv",
+        "targets": ["yield strength"],
+        "description": "Matbench steels yield-strength dataset",
+        "test_size": 0.2,
+        "random_state": 42,
+        "source_data": "datasets/matbench_convert/matbench_steels.csv",
+        "text_feature_cols": [MATBENCH_STEELS_TEXT_COLUMN],
     },
 }
 
@@ -136,6 +146,22 @@ ELEMENT_FEATURE_COLS: Dict[str, List[str]] = {
         "Zn(wt%)",
         "Zr(wt%)",
     ],
+    "MatbenchSteels": [
+        "Al(at%)",
+        "C(at%)",
+        "Co(at%)",
+        "Cr(at%)",
+        "Fe(at%)",
+        "Mn(at%)",
+        "Mo(at%)",
+        "N(at%)",
+        "Nb(at%)",
+        "Ni(at%)",
+        "Si(at%)",
+        "Ti(at%)",
+        "V(at%)",
+        "W(at%)",
+    ],
 }
 
 
@@ -174,6 +200,7 @@ LOCAL_PROCESS_FEATURE_COLS: Dict[str, List[str]] = {
         "aging time/hours",
     ],
     "Steel": [],
+    "MatbenchSteels": [],
 }
 
 
@@ -187,8 +214,8 @@ def build_tabpfn_configs(feature_mode: str) -> Dict[str, Dict[str, Any]]:
         numeric_process_feature_cols = list(LOCAL_PROCESS_FEATURE_COLS.get(alloy_type, []))
 
         if feature_mode == "text":
-            processing_feature_cols = [PROCESSING_TEXT_COLUMN]
-            text_feature_cols = [PROCESSING_TEXT_COLUMN]
+            text_feature_cols = list(shared_config.get("text_feature_cols", [PROCESSING_TEXT_COLUMN]))
+            processing_feature_cols = text_feature_cols
         else:
             processing_feature_cols = numeric_process_feature_cols
             text_feature_cols = []

@@ -38,7 +38,7 @@ def read_prediction_csv(file_path: Path) -> Optional[pd.DataFrame]:
             header_columns = pd.read_csv(file_path, nrows=0, encoding=encoding).columns.tolist()
             header_encoding = encoding
             break
-        except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as exc:
+        except (UnicodeDecodeError, pd.errors.ParserError, ValueError, OSError) as exc:
             last_error = exc
 
     if header_columns is None:
@@ -61,7 +61,7 @@ def read_prediction_csv(file_path: Path) -> Optional[pd.DataFrame]:
     for encoding in ordered_encodings:
         try:
             return pd.read_csv(file_path, encoding=encoding, usecols=usecols, low_memory=False)
-        except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as exc:
+        except (UnicodeDecodeError, pd.errors.ParserError, ValueError, OSError) as exc:
             last_error = exc
 
         try:
@@ -72,7 +72,7 @@ def read_prediction_csv(file_path: Path) -> Optional[pd.DataFrame]:
                 engine="python",
                 on_bad_lines="skip",
             )
-        except (UnicodeDecodeError, pd.errors.ParserError, ValueError) as exc:
+        except (UnicodeDecodeError, pd.errors.ParserError, ValueError, OSError) as exc:
             last_error = exc
 
     print(f"[WARN] Failed to parse {file_path}: {last_error}")
@@ -679,6 +679,7 @@ def _property_tokens(property_name: str) -> List[str]:
             tokens.append(token)
 
     add(raw)
+    add(raw.replace(" ", "_"))
     add(raw.replace("(", "").replace(")", "").replace("/", "").replace("\\", "").replace(" ", ""))
     add(
         raw.replace("%", "percent")
