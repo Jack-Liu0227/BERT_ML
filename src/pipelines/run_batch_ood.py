@@ -167,6 +167,10 @@ def make_task_key(alloy_type: str, target_column: str, model_name: Optional[str]
     return f"{alloy_type}_{target_column}"
 
 
+def is_llmprop_config(args: Any) -> bool:
+    return bool(getattr(args, "use_llmprop", False))
+
+
 def _dataset_name_from_config(raw_data: str) -> str:
     dataset_name = Path(raw_data).stem
     for suffix in ["_Processed_cleaned", "_with_ID", "_withID", "_cleaned", "_processed", "_Processed"]:
@@ -183,6 +187,7 @@ def build_result_dir(
 ) -> Path:
     dataset_name = _dataset_name_from_config(alloy_config["raw_data"])
     target_column = alloy_config["target_column"]
+    terminal_dir = "llmprop" if is_llmprop_config(args) else args.embedding_type
     return (
         Path("output")
         / "ood_results"
@@ -191,7 +196,7 @@ def build_result_dir(
         / dataset_name
         / target_column
         / method_meta["result_dir_suffix"]
-        / args.embedding_type
+        / terminal_dir
     )
 
 
@@ -236,6 +241,8 @@ def build_command(
         str(result_dir),
         "--target_column",
         target_column,
+        "--alloy_type",
+        alloy_type,
         "--embedding_type",
         args.embedding_type,
         "--split_strategy",
@@ -244,6 +251,8 @@ def build_command(
         str(args.test_size),
         "--random_state",
         str(args.random_state),
+        "--split_cache_dir",
+        str(getattr(args, "split_cache_dir", "output/ood_splits")),
     ]
 
     _append_method_specific_args(cmd, args, method_meta)
@@ -259,6 +268,34 @@ def build_command(
     processing_text_column = alloy_config.get("processing_text_column")
     if processing_text_column:
         cmd.extend(["--processing_text_column", processing_text_column])
+
+    if is_llmprop_config(args):
+        cmd.append("--use_llmprop")
+        cmd.extend(
+            [
+                "--llmprop_epochs",
+                str(args.llmprop_epochs),
+                "--llmprop_batch_size",
+                str(args.llmprop_batch_size),
+                "--llmprop_lr",
+                str(args.llmprop_lr),
+                "--llmprop_max_len",
+                str(args.llmprop_max_len),
+                "--llmprop_dropout",
+                str(args.llmprop_dropout),
+                "--llmprop_pooling",
+                str(args.llmprop_pooling),
+                "--llmprop_tokenizer",
+                str(args.llmprop_tokenizer),
+                "--llmprop_base_model",
+                str(args.llmprop_base_model),
+                "--llmprop_valid_ratio",
+                str(args.llmprop_valid_ratio),
+            ]
+        )
+        if args.use_optuna:
+            cmd.extend(["--use_optuna", "--n_trials", str(args.n_trials)])
+        return cmd
 
     if args.use_composition_feature:
         cmd.extend(["--use_composition_feature", "True"])
@@ -347,6 +384,20 @@ def _nn_artifacts_complete(run_root: Path, target_column: str) -> bool:
     return any(path.exists() and path.stat().st_size > 0 for path in metric_candidates)
 
 
+def _llmprop_artifacts_complete(run_root: Path, target_column: str) -> bool:
+    manifest_path = run_root / "llmprop_manifest.json"
+    metrics_path = run_root / "final_evaluation_metrics.json"
+    checkpoint_path = run_root / "checkpoints" / "best_model.pt"
+    predictions_path = run_root / "predictions" / "test_predictions.csv"
+    if not all(path.exists() and path.stat().st_size > 0 for path in [manifest_path, metrics_path, checkpoint_path, predictions_path]):
+        return False
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return payload.get("target_column") == target_column
+
+
 def _load_fold_roots(result_dir: Path, method_meta: Dict[str, Any]) -> List[Path]:
     manifest_path = result_dir / str(method_meta.get("summary_file_name", ""))
     if not manifest_path.exists() or manifest_path.stat().st_size == 0:
@@ -398,10 +449,14 @@ def task_artifacts_complete(
         fold_roots = _load_fold_roots(result_dir, method_meta)
         if not fold_roots:
             return False
+        if is_llmprop_config(args):
+            return all(_llmprop_artifacts_complete(fold_root, target_column) for fold_root in fold_roots)
         if model_name:
             return all(_ml_model_artifacts_complete(fold_root, target_column, model_name) for fold_root in fold_roots)
         return all(_nn_artifacts_complete(fold_root, target_column) for fold_root in fold_roots)
 
+    if is_llmprop_config(args):
+        return _llmprop_artifacts_complete(result_dir, target_column)
     if model_name:
         return _ml_model_artifacts_complete(result_dir, target_column, model_name)
     return _nn_artifacts_complete(result_dir, target_column)
@@ -439,7 +494,8 @@ def run_single_task(
     method_meta: Dict[str, Any],
     model_name: Optional[str] = None,
 ) -> str:
-    task_key = make_task_key(alloy_type, alloy_config["target_column"], model_name)
+    effective_model_name = "llmprop" if is_llmprop_config(args) else model_name
+    task_key = make_task_key(alloy_type, alloy_config["target_column"], effective_model_name)
     cmd = build_command(config_name, alloy_type, alloy_config, args, method_meta, model_name)
     logger.info(f"[RUN] {config_name} / {task_key}")
     logger.info(format_command_for_display(cmd))
@@ -496,6 +552,33 @@ def run_batch_config(
         for target_column in targets:
             alloy_config = alloy_base_config.copy()
             alloy_config["target_column"] = target_column
+
+            if is_llmprop_config(args):
+                task_key = make_task_key(alloy_type, target_column, "llmprop")
+                if resume and should_skip_completed_task(
+                    config_name=config_name,
+                    task_key=task_key,
+                    alloy_type=alloy_type,
+                    alloy_config=alloy_config,
+                    args=args,
+                    method_meta=method_meta,
+                    progress_manager=progress_manager,
+                    dry_run=dry_run,
+                ):
+                    results[task_key] = "skipped"
+                    continue
+                pending_tasks.append(
+                    {
+                        "config_name": config_name,
+                        "alloy_type": alloy_type,
+                        "alloy_config": alloy_config,
+                        "args": args,
+                        "progress_manager": progress_manager,
+                        "dry_run": dry_run,
+                        "method_meta": method_meta,
+                    }
+                )
+                continue
 
             if args.use_nn:
                 task_key = make_task_key(alloy_type, target_column)
@@ -557,7 +640,7 @@ def run_batch_config(
         return results
     if jobs == 1:
         for task in pending_tasks:
-            model_name = task.get("model_name")
+            model_name = "llmprop" if is_llmprop_config(task["args"]) else task.get("model_name")
             task_key = make_task_key(task["alloy_type"], task["alloy_config"]["target_column"], model_name)
             results[task_key] = run_single_task(**task)
         return results
@@ -566,7 +649,7 @@ def run_batch_config(
     with ThreadPoolExecutor(max_workers=jobs) as executor:
         future_to_task = {}
         for task in pending_tasks:
-            model_name = task.get("model_name")
+            model_name = "llmprop" if is_llmprop_config(task["args"]) else task.get("model_name")
             task_key = make_task_key(task["alloy_type"], task["alloy_config"]["target_column"], model_name)
             future_to_task[executor.submit(run_single_task, **task)] = task_key
         for future in as_completed(future_to_task):
@@ -632,6 +715,23 @@ def create_argument_parser() -> argparse.ArgumentParser:
         default=1,
         help="Number of OOD tasks to run in parallel per batch config. Use 1 for sequential execution.",
     )
+    parser.add_argument(
+        "--use_optuna",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="Override selected configs to enable/disable Optuna. Defaults to each config value.",
+    )
+    parser.add_argument("--n_trials", type=int, default=None, help="Override Optuna trial count.")
+    parser.add_argument("--llmprop_epochs", type=int, default=None)
+    parser.add_argument("--llmprop_batch_size", type=int, default=None)
+    parser.add_argument("--llmprop_lr", type=float, default=None)
+    parser.add_argument("--llmprop_max_len", type=int, default=None)
+    parser.add_argument("--llmprop_dropout", type=float, default=None)
+    parser.add_argument("--llmprop_pooling", choices=["cls", "mean"], default=None)
+    parser.add_argument("--llmprop_tokenizer", type=str, default=None)
+    parser.add_argument("--llmprop_base_model", type=str, default=None)
+    parser.add_argument("--llmprop_valid_ratio", type=float, default=None)
+    parser.add_argument("--split_cache_dir", type=str, default=None)
     parser.add_argument("--show_progress", action="store_true")
     parser.add_argument("--clear_progress", type=str, nargs="?", const="__all__", metavar="CONFIG")
     return parser
@@ -676,6 +776,23 @@ def main() -> None:
             config = {**config, "processing_cols": args.processing_cols}
         if args.targets:
             config = {**config, "target_columns": args.targets}
+        override_keys = [
+            "use_optuna",
+            "n_trials",
+            "llmprop_epochs",
+            "llmprop_batch_size",
+            "llmprop_lr",
+            "llmprop_max_len",
+            "llmprop_dropout",
+            "llmprop_pooling",
+            "llmprop_tokenizer",
+            "llmprop_base_model",
+            "llmprop_valid_ratio",
+            "split_cache_dir",
+        ]
+        overrides = {key: getattr(args, key) for key in override_keys if getattr(args, key) is not None}
+        if overrides:
+            config = {**config, **overrides}
         all_results[config_name] = run_batch_config(
             config_name=config_name,
             config=config,

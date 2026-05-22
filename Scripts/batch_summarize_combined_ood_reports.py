@@ -22,6 +22,7 @@ SUMMARY_FILES = {
     "Traditional": "all_traditional_ood_model_summary.csv",
     "BERT": "all_bert_ood_model_summary.csv",
     "TabPFN": "all_tabpfn_ood_model_summary.csv",
+    "LLMProp": "all_llmprop_ood_model_summary.csv",
 }
 
 TASK_KEYS = ["alloy_family", "dataset_name", "property"]

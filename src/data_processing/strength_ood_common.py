@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from dataclasses import dataclass, field
@@ -164,6 +165,38 @@ def save_json(path: str | Path, payload: Dict[str, Any]) -> None:
         json.dumps(json_ready(payload), indent=2, ensure_ascii=False),
         encoding="utf-8",
     )
+
+
+def stable_json_dumps(payload: Any) -> str:
+    return json.dumps(json_ready(payload), sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
+def stable_hash(payload: Any, length: int | None = None) -> str:
+    digest = hashlib.sha256(stable_json_dumps(payload).encode("utf-8")).hexdigest()
+    return digest if length is None else digest[:length]
+
+
+def canonical_row_hash(frame: pd.DataFrame) -> str:
+    """Hash a split CSV payload in a stable row/column-sensitive way."""
+    records = frame.where(pd.notna(frame), None).to_dict(orient="records")
+    return stable_hash(records)
+
+
+def extract_split_identity(frame: pd.DataFrame) -> Dict[str, Any]:
+    identity: Dict[str, Any] = {
+        "row_count": int(len(frame)),
+        "row_hash": canonical_row_hash(frame),
+    }
+    if "ID" in frame.columns:
+        identity["ids"] = json_ready(frame["ID"].tolist())
+    if "__source_index__" in frame.columns:
+        identity["source_indices"] = [int(v) for v in frame["__source_index__"].tolist()]
+    return identity
+
+
+def split_identity_matches(left: Dict[str, Any], right: Dict[str, Any]) -> bool:
+    keys = {"row_count", "row_hash", "ids", "source_indices"}
+    return all(left.get(key) == right.get(key) for key in keys if key in left or key in right)
 
 
 def ensure_positive_int(name: str, value: int) -> int:
@@ -1445,18 +1478,3 @@ def save_prepared_split(prepared_split: PreparedSplit, output_dir: str | Path) -
         artifacts["trace_dir"] = str(output_path / "trace")
         artifacts["trace_manifest"] = trace_files["split_manifest"]
     return artifacts
-
-    perplexity = min(30, row_count - 1, max(2, row_count // 3))
-    try:
-        tsne = TSNE(
-            n_components=2,
-            perplexity=perplexity,
-            init="pca",
-            learning_rate="auto",
-            random_state=random_state,
-        )
-        return tsne.fit_transform(matrix)
-    except Exception:
-        first = matrix[:, 0] if feature_count >= 1 else np.arange(row_count, dtype=float)
-        second = matrix[:, 1] if feature_count >= 2 else np.zeros(row_count, dtype=float)
-        return np.column_stack([first, second])

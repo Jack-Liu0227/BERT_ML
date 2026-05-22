@@ -49,6 +49,7 @@ node_modules/
 models/matscibert/
 models/scibert/
 models/steelbert/
+models/llmprop/
 
 datasets/matbench
 
@@ -98,3 +99,8 @@ Thumbs.db
 # Specific exclusions requested
 batch_run_20260115_123810.log
 catboost_info
+logs/
+_paper_extract/
+ppt_ood_wasserstein/
+element_embeddings/
+*.backup

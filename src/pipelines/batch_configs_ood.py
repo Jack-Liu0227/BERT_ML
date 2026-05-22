@@ -100,6 +100,8 @@ COMMON_OOD_DEFAULTS: Dict[str, Any] = {
     "test_size": 0.2,
     "random_state": 42,
     "baseline_num_folds": 5,
+    "split_cache_dir": "output/ood_splits",
+    "use_llmprop": False,
 }
 
 
@@ -280,6 +282,27 @@ EXPERIMENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
         "epochs": 200,
         "patience": 30,
         "batch_size": 256,
+        "run_shap_analysis": False,
+    },
+    "experiment3_llmprop": {
+        "description_prefix": "Alloy OOD experiment with LLM-Prop",
+        "embedding_type": "tradition",
+        "use_composition_feature": False,
+        "use_element_embedding": False,
+        "use_process_embedding": False,
+        "use_temperature": False,
+        "models": None,
+        "use_nn": False,
+        "use_llmprop": True,
+        "llmprop_epochs": 200,
+        "llmprop_batch_size": 16,
+        "llmprop_lr": 0.001,
+        "llmprop_max_len": 512,
+        "llmprop_dropout": 0.2,
+        "llmprop_pooling": "cls",
+        "llmprop_tokenizer": "models/llmprop/tokenizers/t5_tokenizer_trained_on_modified_part_of_C4_and_textedge",
+        "llmprop_base_model": "models/llmprop/google_t5_v1_1_small",
+        "llmprop_valid_ratio": 0.2,
         "run_shap_analysis": False,
     },
 }
