@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
-ROOT = Path(r'D:\XJTU\ImportantFile\auto-design-alloy\BERT_ML')
+ROOT = Path(__file__).resolve().parents[2]
 OOD_RESULTS = ROOT / 'output' / 'ood_results'
 REPORTS_ROOT = ROOT / 'output' / 'ood_summary_reports'
 BACKUP_ROOT = REPORTS_ROOT / '_backups'

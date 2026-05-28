@@ -1,124 +1,113 @@
-# BERT-Based Material Property Prediction
+# BERT_ML: Alloy Property Prediction Experiments
 
 [中文说明](./README.zh-CN.md)
 
-This repository contains code and resources for predicting material properties using advanced language models such as MatSciBERT, SciBERT, and SteelBERT. The project focuses on multiple alloy systems, including Titanium, Aluminum, Steel, and High-Entropy Alloys (HEAs).
+This repository contains Python workflows for alloy property prediction with traditional ML, BERT-based embeddings, TabPFN, and LLMProp. The project is organized for full experiment reproducibility: all runnable experiment entrypoints are Python modules or Python scripts, model assets live under `models/`, and historical repair utilities are archived separately.
 
-## Introduction
+## Quick Start
 
-This project uses pretrained BERT models adapted for materials science to predict key mechanical properties such as Yield Strength (`YS`), Ultimate Tensile Strength (`UTS`), and Elongation (`EL`). It provides a full workflow from data preprocessing and feature engineering to model training, evaluation, and visualization.
-
-## Environment Setup
-
-To reproduce the project environment, use either Conda or pip.
-
-### Prerequisites
-
-- Anaconda or Miniconda is recommended
-- Python version should match [`environment.yml`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/environment.yml)
-
-### Option 1: Conda
+Create the environment from the project root:
 
 ```bash
 conda env create -f environment.yml
 conda activate llm
 ```
 
-### Option 2: pip
+or install with pip:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## Model Preparation
-
-Before running training or prediction scripts, download the required pretrained BERT models:
+Download model assets when they are not already present:
 
 ```bash
 python models/download_bert_models.py
+python models/download_llmprop_models.py
 ```
 
-`SteelBERT` is a gated Hugging Face repository. You need to:
+`SteelBERT` is a gated Hugging Face model. Log in with `huggingface-cli login` and request access at [MGE-LLMs/SteelBERT](https://huggingface.co/MGE-LLMs/SteelBERT).
 
-1. Run `huggingface-cli login`
-2. Request access at [MGE-LLMs/SteelBERT](https://huggingface.co/MGE-LLMs/SteelBERT)
+## Python-Only Entrypoints
 
-## TabPFN
-
-This repository also includes a dedicated TabPFN workflow for alloy property prediction.
-
-- Overview and usage: [`src/TabPFN/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/README.md)
-- Direct regression script: `python src/TabPFN/train_tabpfn.py`
-- Fine-tuning script: `python src/TabPFN/finetune_tabpfn.py`
-- Result directories:
-  - `output/TabPFN_results/`
-  - `output/TabPFN_finetune_results/`
-
-## Project Structure
-
-- `models/`: pretrained models such as MatSciBERT, SciBERT, and SteelBERT
-- `datasets/`: raw and processed datasets for alloy systems
-- `src/`: source code for training and prediction logic
-- `src/pipelines/`: batch experiment configuration and execution scripts
-- `src/TabPFN/`: TabPFN regression and fine-tuning workflow
-- `Scripts/`: utility scripts for plotting and batch processing
-- `output/`: generated results and logs
-
-## Usage
-
-The main experiment entry point is [`src.pipelines.run_batch`](./src/pipelines/README.md). It supports predefined configurations, custom runs, resume mode, and progress tracking.
-
-### Basic Commands
+Shell wrappers are intentionally not used. Run experiments with Python only:
 
 ```bash
 python -m src.pipelines.run_batch --list
 python -m src.pipelines.run_batch --config experiment1_all_ml_models
-python -m src.pipelines.run_batch --config experiment1_all_ml_models experiment2a_all_nn_scibert
-```
-
-### Complete Experiment Sets
-
-```bash
-python -m src.pipelines.run_batch --all
-python -m src.pipelines.run_batch --experiment1
-python -m src.pipelines.run_batch --experiment2
-```
-
-### Custom Runs
-
-```bash
-python -m src.pipelines.run_batch --custom \
-    --embedding_type steelbert \
-    --use_nn \
-    --epochs 100
-
-python -m src.pipelines.run_batch --custom \
-    --embedding_type tradition \
-    --models xgboost lightgbm \
-    --use_composition_feature
-```
-
-### Advanced Features
-
-```bash
 python -m src.pipelines.run_batch --all --dry_run
-python -m src.pipelines.run_batch --all --resume
-python -m src.pipelines.run_batch --show_progress
-python -m src.pipelines.run_batch --clear_progress
 ```
 
-## Configuration Files
+OOD experiments:
 
-- [`src/pipelines/batch_configs.py`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/pipelines/batch_configs.py)
-  - `ALLOY_CONFIGS`: dataset paths, targets, and processing parameters for each alloy
-  - `BATCH_CONFIGS`: experiment-level model and training settings
+```bash
+python -m src.pipelines.run_batch_ood --list
+python -m src.pipelines.run_batch_ood --config experiment1_all_ml_models_extrapolation --dry_run
+python -m src.pipelines.run_cv_k_sweep --dry_run
+```
+
+TabPFN experiments:
+
+```bash
+python -m src.TabPFN.train_tabpfn --all --backend local --feature_mode numeric
+python -m src.TabPFN.train_tabpfn_ood --all --backend local --feature_mode numeric
+python -m src.TabPFN.run_tabpfn_ood_batch --list
+```
+
+LLMProp OOD single-run entrypoint:
+
+```bash
+python -m src.LLMProp.run_llmprop_ood --help
+```
+
+## Model Assets
+
+Model assets are centralized under `models/`:
+
+- `models/matscibert/`
+- `models/scibert/`
+- `models/steelbert/`
+- `models/llmprop/`
+- `models/tabpfn/tabpfn-v2-regressor.ckpt`
+
+Generated training checkpoints stay under `output/**/checkpoints/` because they are experiment outputs, not reusable base assets.
+
+## Data And Outputs
+
+Tracked input datasets are under `datasets/`. The active configuration files reference these normalized CSV paths:
+
+- `datasets/Ti_alloys/titanium.csv`
+- `datasets/Al_Alloys/aluminum.csv`
+- `datasets/HEA_data/hea.csv`
+- `datasets/Steel/steel.csv`
+- `datasets/HEA_data/Pitting_potential_data_xiongjie.csv`
+- `datasets/matbench_convert/matbench_steels.csv`
+- `datasets/matbench_convert/matbench_steels_ood.csv`
+
+Generated features, logs, figures, and model outputs are written to ignored directories such as `Features/`, `Features_extrapolation/`, `output/`, and `logs/`.
+
+## Reporting Scripts
+
+Active analysis and figure scripts remain in `Scripts/`. Examples:
+
+```bash
+python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results
+python Scripts/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
+python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
+python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+```
+
+Optional external OOD sources are configured in `Scripts/external_ood_model_sources.yaml`. Set `EXTERNAL_OOD_ROOT` before running combined summaries if external LLM results should be merged.
 
 ## Documentation
 
-- Chinese project overview: [README.zh-CN.md](./README.zh-CN.md)
-- Model suite details: [`src/models/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/models/README.md)
-- Pipeline details: [`src/pipelines/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/pipelines/README.md)
-- TabPFN details: [`src/TabPFN/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/README.md)
-## Contact
+- [English reproducibility guide](./docs/reproducibility.md)
+- [中文复现指南](./docs/reproducibility.zh-CN.md)
+- [Script inventory](./docs/script_inventory.md)
+- [脚本清单](./docs/script_inventory.zh-CN.md)
+- [Batch run guide](./src/pipelines/BATCH_RUN_GUIDE.md)
+- [TabPFN guide](./src/TabPFN/README.md)
 
-- Email: `liu_yujie@stu.xjtu.edu.cn`
+Historical local repair and migration utilities are preserved in `archive/legacy_scripts/`. They are not recommended reproduction entrypoints.

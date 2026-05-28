@@ -149,10 +149,7 @@ DEFAULT_TRIPTYCH_CONFIG: dict[str, Any] = {
 
 
 def default_config_path() -> Path:
-    yaml_path = Path(__file__).with_name("build_bestplus_tabpfn_triptych.config.yaml")
-    if yaml_path.exists():
-        return yaml_path
-    return Path(__file__).with_name("build_bestplus_tabpfn_triptych.config.json")
+    return Path(__file__).with_name("build_bestplus_tabpfn_triptych.config.yaml")
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:

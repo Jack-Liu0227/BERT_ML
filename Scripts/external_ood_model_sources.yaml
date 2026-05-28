@@ -11,7 +11,10 @@ sources:
   - type: fewshot_guided_no_analysis
     enabled: true
     family_name: "LLM"
-    root_dir: "D:/XJTU/ImportantFile/auto-design-alloy/fewshot-guided/output/ood/k5"
+    # Set EXTERNAL_OOD_ROOT to the external result directory before running
+    # Scripts/batch_summarize_combined_ood_reports.py. If it is unset, this
+    # optional source is skipped because the path will not exist.
+    root_dir: "${EXTERNAL_OOD_ROOT}"
     default_provider: "kilig"
 
     # Map external result folders to the OOD method labels used in BERT_ML.

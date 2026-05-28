@@ -510,12 +510,14 @@ def export_combined_case_outputs(combined_df: pd.DataFrame, output_root: Path) -
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Combine Traditional, BERT, and TabPFN OOD summaries into one report.")
+    parser = argparse.ArgumentParser(
+        description="Combine Traditional, BERT, TabPFN, LLMProp, and optional external OOD summaries into one report."
+    )
     parser.add_argument(
         "--reports-root",
         type=Path,
         default=Path("output/ood_summary_reports"),
-        help="Root directory containing Traditional, BERT, and TabPFN summary folders.",
+        help="Root directory containing Traditional, BERT, TabPFN, and LLMProp summary folders.",
     )
     parser.add_argument(
         "--output-dir",

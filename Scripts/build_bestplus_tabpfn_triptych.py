@@ -440,7 +440,7 @@ def main() -> None:
         "--config",
         type=Path,
         default=default_config_path(),
-        help="Triptych JSON config file.",
+        help="Triptych YAML or JSON config file.",
     )
     parser.add_argument(
         "--output-dir",
@@ -467,16 +467,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-
-# python Scripts\build_bestplus_tabpfn_triptych.py --config Scripts\build_bestplus_tabpfn_triptych.paper.config.json --output-dir output\ood_summary_reports\Combined\figure\per_task_bestplus_tabpfn_paper
-
-# python Scripts\batch_summarize_extrapolation_results.py
-# python Scripts\batch_summarize_bert_extrapolation_results.py
-# python Scripts\batch_summarize_tabpfn_extrapolation_results.py
-# python Scripts\batch_summarize_combined_ood_reports.py
-# python Scripts\build_bestplus_tabpfn_triptych.py --output-dir output\ood_summary_reports\Combined\figure\per_task_bestplus_tabpfn
-# batch_summarize_extrapolation_results.py	否，只管 Traditional
-# batch_summarize_bert_extrapolation_results.py	否，只管 BERT
-# batch_summarize_tabpfn_extrapolation_results.py	否，只管 TabPFN
-# batch_summarize_combined_ood_reports.py	是，把 fewshot/LLM 合并进 Combined
-# build_bestplus_tabpfn_triptych.py	不读取原始 fewshot，只使用 Combined 里的结果画图

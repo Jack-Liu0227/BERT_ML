@@ -35,7 +35,7 @@ import time
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 BACKUP_ROOT = REPO_ROOT / "output" / "ood_repair_backups"
 
 

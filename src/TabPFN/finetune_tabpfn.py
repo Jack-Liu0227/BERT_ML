@@ -55,9 +55,13 @@ DEFAULT_FINETUNE_PARAMS: Dict[str, Any] = {
 }
 
 
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+TABPFN_MODEL_FILENAME = "tabpfn-v2-regressor.ckpt"
+
+
 def resolve_regressor_model_path() -> str:
     """
-    Prefer a local open v2 regressor checkpoint to avoid gated v2.5 downloads.
+    Prefer the repo-local open v2 regressor checkpoint to avoid gated v2.5 downloads.
     """
     user_set_raw = os.environ.get("TABPFN_REGRESSOR_MODEL_PATH", "").strip()
     if user_set_raw:
@@ -68,14 +72,16 @@ def resolve_regressor_model_path() -> str:
         return str(user_set)
 
     candidates = [
-        Path.home() / "AppData" / "Roaming" / "tabpfn" / "tabpfn-v2-regressor.ckpt",
-        Path.home() / ".cache" / "tabpfn" / "tabpfn-v2-regressor.ckpt",
+        PROJECT_ROOT / "models" / "tabpfn" / TABPFN_MODEL_FILENAME,
+        Path.home() / "AppData" / "Roaming" / "tabpfn" / TABPFN_MODEL_FILENAME,
+        Path.home() / ".cache" / "tabpfn" / TABPFN_MODEL_FILENAME,
+        PROJECT_ROOT / TABPFN_MODEL_FILENAME,
     ]
     for c in candidates:
         if c.exists():
             return str(c)
 
-    return "tabpfn-v2-regressor.ckpt"
+    return str(PROJECT_ROOT / "models" / "tabpfn" / TABPFN_MODEL_FILENAME)
 
 
 def safe_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:

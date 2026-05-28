@@ -1,70 +1,166 @@
 # Scripts
 
-这个目录放项目里的批处理脚本和使用说明，便于统一管理和直接调用。
+`Scripts/` only keeps the core OOD reporting and final-figure pipeline. Historical repair, export, Optuna, 2D-map, and one-off utilities were removed from this active directory; archived utilities live under `archive/legacy_scripts/`.
 
-## 当前脚本
+Run every command from the repository root.
 
-| 文件 | 用途 |
-| --- | --- |
-| `merge_references.py` | 按 `ID` 将原始数据集里的参考文献信息补回到目标 CSV。 |
-| `select_best_model_and_plot.py` | 从常规模型结果中筛选最佳模型，生成代表性结果和汇总图。 |
-| `batch_calculate_bert_global_mean.py` | 批量处理 BERT 模型 Optuna 结果，选择最接近全局均值的代表 fold。 |
-| `batch_summarize_extrapolation_results.py` | 批量汇总 `output\extrapolation_results`，比较各模型的外推测试表现并导出最佳模型结果。 |
-| `optuna_plotting_scripts_usage.md` | 旧有 Optuna 绘图与分析脚本的详细说明。 |
+## Core Workflow
 
-## 使用方式
-
-建议在项目根目录 `D:\XJTU\ImportantFile\auto-design-alloy\BERT_ML` 下执行。
+1. Summarize each model family into the canonical OOD schema.
+2. Merge family summaries into one combined report.
+3. Build final per-task triptych figures from the combined report.
 
 ```bash
-python Scripts/select_best_model_and_plot.py
-python Scripts/batch_calculate_bert_global_mean.py --base_dir "output\new_results_withuncertainty"
-python Scripts/batch_summarize_extrapolation_results.py --base-dir "output\extrapolation_results"
+python Scripts/batch_summarize_extrapolation_results.py
+python Scripts/batch_summarize_bert_extrapolation_results.py
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/batch_summarize_llmprop_ood_results.py
+python Scripts/batch_summarize_combined_ood_reports.py
+python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
 ```
 
-## 外推结果汇总脚本
+## Retained CLI Scripts
 
-`batch_summarize_extrapolation_results.py` 会自动递归查找：
+### `batch_summarize_extrapolation_results.py`
+
+Summarizes Traditional-ML OOD results into the canonical schema.
+
+Default inputs and outputs:
+
+- input: `output/ood_results`
+- output: `output/ood_summary_reports/Traditional`
+
+Common usage:
+
+```bash
+python Scripts/batch_summarize_extrapolation_results.py
+python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results --output-dir output/ood_summary_reports/Traditional
+```
+
+### `batch_summarize_bert_extrapolation_results.py`
+
+Summarizes BERT/NN OOD results into the canonical schema.
+
+Default inputs and outputs:
+
+- input: `output/ood_results`
+- output: `output/ood_summary_reports/BERT`
+- optional progress filter: `.batch_progress_ood.json`
+
+Common usage:
+
+```bash
+python Scripts/batch_summarize_bert_extrapolation_results.py
+python Scripts/batch_summarize_bert_extrapolation_results.py --success-only
+python Scripts/batch_summarize_bert_extrapolation_results.py --tracked-config experiment2a_all_nn_scibert_extrapolation
+```
+
+### `batch_summarize_tabpfn_extrapolation_results.py`
+
+Summarizes TabPFN OOD results into the canonical schema.
+
+Default inputs and outputs:
+
+- input: `output/ood_results_TabPFN-2.5-Plus-Numeric` and `output/ood_results_TabPFN-2.5-Plus-Text`
+- output: `output/ood_summary_reports/TabPFN`
+
+Common usage:
+
+```bash
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dir output/ood_results_TabPFN-2.5-Plus-Numeric
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dirs output/ood_results_TabPFN-2.5-Plus-Numeric output/ood_results_TabPFN-2.5-Plus-Text
+```
+
+### `batch_summarize_llmprop_ood_results.py`
+
+Summarizes LLMProp OOD results into the canonical schema.
+
+Default inputs and outputs:
+
+- input: `output/ood_results`
+- output: `output/ood_summary_reports/LLMProp`
+
+Common usage:
+
+```bash
+python Scripts/batch_summarize_llmprop_ood_results.py
+python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results --output-dir output/ood_summary_reports/LLMProp
+```
+
+### `batch_summarize_combined_ood_reports.py`
+
+Merges Traditional, BERT, TabPFN, LLMProp, and optional external OOD summaries into one report.
+
+Default inputs and outputs:
+
+- input root: `output/ood_summary_reports`
+- output: `output/ood_summary_reports/Combined`
+- optional external config: `Scripts/external_ood_model_sources.yaml`
+
+Common usage:
+
+```bash
+python Scripts/batch_summarize_combined_ood_reports.py
+python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports --output-dir output/ood_summary_reports/Combined
+```
+
+Optional external LLM results are loaded only when their configured root exists. To use the default external config:
+
+```bash
+EXTERNAL_OOD_ROOT=/path/to/external/ood/results python Scripts/batch_summarize_combined_ood_reports.py
+```
+
+On Windows PowerShell, set the environment variable before running Python:
 
 ```text
-output\extrapolation_results\<alloy_family>\<dataset>\<target>\<feature_mode>\model_comparison
+$env:EXTERNAL_OOD_ROOT="D:\path\to\external\ood\results"
+python Scripts/batch_summarize_combined_ood_reports.py
 ```
 
-对每个 case，它会：
+### `build_bestplus_tabpfn_triptych.py`
 
-- 读取每个模型的 `final_model_evaluation_metrics.json`
-- 读取 `closest_to_global_mean_trial_fold\closest_to_global_mean_trial_fold_metrics.json`
-- 生成单个 case 的模型对比图
-- 选择 `final_test_r2` 最好的模型
-- 复制最佳模型的最终预测、代表性外推测试结果和对应图片
-- 在 `output\extrapolation_results\all_extrapolation_summary` 下输出总汇总 CSV
+Builds final per-task triptych figures from the combined summary. It does not read raw model outputs; it reads the combined canonical summary.
 
-主要输出包括：
+Default inputs and outputs:
 
-- `ALL_EXTRAPOLATION_MODEL_SUMMARY.csv`
-- `ALL_BEST_EXTRAPOLATION_MODELS.csv`
-- `BEST_MODEL_FINAL_TEST_R2_PIVOT.csv`
-- 每个 case 下的 `extrapolation_model_summary.csv`
-- 每个 case 下的 `best_extrapolation_model_<target>.csv`
+- input: `output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv`
+- default config: `Scripts/build_bestplus_tabpfn_triptych.config.yaml`
+- paper config: `Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml`
+- output: `output/ood_summary_reports/Combined/figure/per_task_bestplus_tabpfn`
 
-## 说明
+Common usage:
 
-- 这些脚本原先在 `src` 下，现已迁移到 `Scripts`。
-- `optuna_plotting_scripts_usage.md` 仍然可作为历史脚本说明参考，但命令路径请改为 `python Scripts/...`。
-## Additional Script
-
-- `batch_summarize_tabpfn_extrapolation_results.py`
-  Summarize `output\extrapolation_results_tabpfn`, export train/test CSV summaries,
-  group results by target, and generate interactive overview HTML plots.
-
-Example:
 ```bash
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dir "output\extrapolation_results_tabpfn"
+python Scripts/build_bestplus_tabpfn_triptych.py
+python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+python Scripts/build_bestplus_tabpfn_triptych.py --summary-csv output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv --output-dir output/ood_summary_reports/Combined/figure/per_task_bestplus_tabpfn_paper
 ```
 
-Main outputs:
-- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\TABPFN_EXTRAPOLATION_TRAIN_SUMMARY.csv`
-- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\TABPFN_EXTRAPOLATION_TEST_SUMMARY.csv`
-- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\by_target\*.csv`
-- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\plots\overview\*.html`
-- `output\extrapolation_results_tabpfn\all_tabpfn_extrapolation_summary\plots\overview\overview_dashboard.html`
+## Helper And Configuration Files
+
+The following files are required by the retained CLI scripts:
+
+- `_raw_prediction_stats.py`: prediction and Optuna trial metric readers.
+- `_ood_summary_common.py`: canonical OOD schema, exports, ranking, and plotting helpers.
+- `_external_ood_sources.py`: optional external result loader for combined reports.
+- `_bestplus_tabpfn_triptych_config.py`: triptych config loader and defaults.
+- `_bestplus_tabpfn_triptych_plotting.py`: triptych plotting implementation.
+- `OOD_SUMMARY_SCHEMA.md`: canonical schema description.
+- `external_ood_model_sources.yaml`: optional external LLM source mapping.
+- `build_bestplus_tabpfn_triptych.config.yaml`: default figure config.
+- `build_bestplus_tabpfn_triptych.paper.config.yaml`: paper-oriented figure config.
+
+Do not run helper modules directly.
+
+## Removed From Active Scripts
+
+The active directory no longer contains:
+
+- shell wrappers: `.ps1`, `.bat`, `.sh`, `.cmd`
+- historical Optuna-only scripts
+- one-off export scripts
+- 2D-map rendering and split-trace refresh scripts
+- local repair or rerun utilities
+
+Use the Python module entrypoints in `src/` to generate experiments, then use the retained scripts here to summarize and plot results.

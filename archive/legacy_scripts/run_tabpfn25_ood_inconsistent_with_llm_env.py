@@ -33,7 +33,7 @@ from pathlib import Path
 from typing import Any
 
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_LLM_PYTHON = Path(r"C:\Users\HK\miniconda3\envs\llm\python.exe")
 DEFAULT_REPORT = REPO_ROOT / "output" / "ood_repair_backups" / "repair_20260516_215409" / "repair_manifest.json"
 

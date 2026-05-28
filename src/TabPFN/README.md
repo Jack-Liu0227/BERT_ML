@@ -18,7 +18,7 @@ This directory contains the TabPFN-based workflow used in this project for alloy
 - 输入 `1` 运行全部实验
 - 输入 `2` 选择单个合金和目标列
 
-如果需要本地 checkpoint 微调，仓库根目录已包含 `tabpfn-v2-regressor.ckpt`，也可以通过环境变量 `TABPFN_REGRESSOR_MODEL_PATH` 指定自定义路径。
+如果需要本地 checkpoint 微调，仓库已在 `models/tabpfn/tabpfn-v2-regressor.ckpt` 中保留开放版 v2 regressor checkpoint，也可以通过环境变量 `TABPFN_REGRESSOR_MODEL_PATH` 指定自定义路径。
 
 ## 1. What is TabPFN
 
@@ -39,7 +39,7 @@ This implementation uses `TabPFNRegressor` for direct regression. The default op
 - `HEA`: `YS(MPa)`, `UTS(MPa)`, `El(%)`
 - `Steel`: `YS(MPa)`, `UTS(MPa)`, `El(%)`
 
-Dataset paths, feature columns, target columns, and reference prediction CSV paths are defined in [`tabpfn_configs.py`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/tabpfn_configs.py).
+Dataset paths, feature columns, target columns, and reference prediction CSV paths are defined in [`tabpfn_configs.py`](./tabpfn_configs.py).
 
 ## 3. File layout
 
@@ -121,7 +121,7 @@ This script is also interactive:
 - `1`: run all fine-tune experiments
 - `2`: run one alloy-target fine-tune experiment
 
-Default fine-tune parameters are defined in [`finetune_tabpfn.py`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/finetune_tabpfn.py):
+Default fine-tune parameters are defined in [`finetune_tabpfn.py`](./finetune_tabpfn.py):
 
 - `device="cuda"`
 - `epochs=300`
@@ -136,20 +136,20 @@ If CUDA is unavailable, the script automatically falls back to CPU.
 
 This repository already includes a local checkpoint file at:
 
-- [`tabpfn-v2-regressor.ckpt`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/tabpfn-v2-regressor.ckpt)
+- [`../../models/tabpfn/tabpfn-v2-regressor.ckpt`](../../models/tabpfn/tabpfn-v2-regressor.ckpt)
 
 `finetune_tabpfn.py` prefers a local open `v2` regressor checkpoint to avoid gated model downloads. It resolves the checkpoint in this order:
 
 1. `TABPFN_REGRESSOR_MODEL_PATH` environment variable
-2. `%APPDATA%\\tabpfn\\tabpfn-v2-regressor.ckpt`
-3. `~/.cache/tabpfn/tabpfn-v2-regressor.ckpt`
-4. `tabpfn-v2-regressor.ckpt` in the current project
+2. `models/tabpfn/tabpfn-v2-regressor.ckpt`
+3. `%APPDATA%/tabpfn/tabpfn-v2-regressor.ckpt`
+4. `~/.cache/tabpfn/tabpfn-v2-regressor.ckpt`
+5. legacy project-root `tabpfn-v2-regressor.ckpt`, only for compatibility
 
 If you want to force a custom checkpoint path:
 
-```powershell
-$env:TABPFN_REGRESSOR_MODEL_PATH="D:\path\to\tabpfn-v2-regressor.ckpt"
-python src\TabPFN\finetune_tabpfn.py
+```bash
+TABPFN_REGRESSOR_MODEL_PATH=/path/to/tabpfn-v2-regressor.ckpt python -m src.TabPFN.finetune_tabpfn
 ```
 
 ## 8. Output files
@@ -234,11 +234,10 @@ The installed `tabpfn` version may not include `tabpfn.finetuning`. Upgrade the 
 
 Use CPU instead:
 
-```powershell
-$env:CUDA_VISIBLE_DEVICES="-1"
-python src\TabPFN\finetune_tabpfn.py
+```bash
+CUDA_VISIBLE_DEVICES=-1 python -m src.TabPFN.finetune_tabpfn
 ```
 
 ### Checkpoint not found
 
-Make sure [`tabpfn-v2-regressor.ckpt`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/tabpfn-v2-regressor.ckpt) exists in the project root, or set `TABPFN_REGRESSOR_MODEL_PATH` to the correct file.
+Make sure [`../../models/tabpfn/tabpfn-v2-regressor.ckpt`](../../models/tabpfn/tabpfn-v2-regressor.ckpt) exists, or set `TABPFN_REGRESSOR_MODEL_PATH` to the correct file.

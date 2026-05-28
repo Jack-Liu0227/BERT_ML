@@ -45,11 +45,29 @@ node_modules/
 .ipynb_checkpoints
 *.ipynb_checkpoints/
 
-# Model Files (预训练模型)
+# Model assets
+# Downloaded BERT/LLMProp folders are ignored by default. Reusable assets that
+# should be versioned can be explicitly unignored below.
 models/matscibert/
 models/scibert/
 models/steelbert/
 models/llmprop/
+models/tabpfn/*
+!models/tabpfn/
+!models/tabpfn/tabpfn-v2-regressor.ckpt
+
+# Keep base model assets out of the repository root.
+/tabpfn-v2-regressor.ckpt
+/*.ckpt
+/*.pt
+/*.pth
+/*.bin
+/*.safetensors
+/*.onnx
+/*.joblib
+/*.pkl
+/*.pickle
+/*.model
 
 datasets/matbench
 
@@ -82,6 +100,11 @@ batch_run_*.log
 *.temp
 .batch_progress.json
 .batch_progress*.json
+
+# Local legacy backups
+archive/*
+!archive/legacy_scripts/
+!archive/legacy_scripts/**
 
 # CatBoost
 catboost_info/

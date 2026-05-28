@@ -1,124 +1,113 @@
-# 基于 BERT 的材料性能预测
+# BERT_ML：合金性能预测实验
 
 [English](./README.md)
 
-本仓库包含基于材料领域预训练语言模型的材料性能预测代码与资源，覆盖钛合金、铝合金、钢铁材料和高熵合金等多类数据集。
+本仓库包含面向合金性能预测的 Python 工作流，覆盖传统机器学习、BERT 嵌入、TabPFN 和 LLMProp。项目按“全部实验可复现”整理：所有可运行入口均为 Python 模块或 Python 脚本，基础模型资产统一放在 `models/`，历史修复脚本单独归档。
 
-## 项目简介
+## 快速开始
 
-项目使用面向材料科学的预训练 BERT 模型，例如 MatSciBERT、SciBERT 和 SteelBERT，预测关键力学性能，包括屈服强度 `YS`、抗拉强度 `UTS` 和延伸率 `EL`。仓库提供从数据预处理、特征工程到模型训练、评估和可视化的完整流程。
-
-## 环境安装
-
-建议使用 Conda 或 pip 进行环境配置。
-
-### 前置要求
-
-- 推荐安装 Anaconda 或 Miniconda
-- Python 版本以 [`environment.yml`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/environment.yml) 为准
-
-### 方式一：Conda
+在项目根目录创建环境：
 
 ```bash
 conda env create -f environment.yml
 conda activate llm
 ```
 
-### 方式二：pip
+或使用 pip：
 
 ```bash
 pip install -r requirements.txt
 ```
 
-## 模型准备
-
-运行训练或预测脚本前，需要先下载所需的预训练 BERT 模型：
+如果本地没有模型资产，先下载：
 
 ```bash
 python models/download_bert_models.py
+python models/download_llmprop_models.py
 ```
 
-其中 `SteelBERT` 是 Hugging Face 上的受限仓库，需要先完成：
+`SteelBERT` 是 Hugging Face 受限模型，需要先运行 `huggingface-cli login`，并在 [MGE-LLMs/SteelBERT](https://huggingface.co/MGE-LLMs/SteelBERT) 申请访问权限。
 
-1. 执行 `huggingface-cli login`
-2. 在 [MGE-LLMs/SteelBERT](https://huggingface.co/MGE-LLMs/SteelBERT) 申请访问权限
+## 仅使用 Python 入口
 
-## TabPFN
-
-仓库中还包含面向合金性能预测的 TabPFN 工作流。
-
-- 总览与使用说明：[`src/TabPFN/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/README.md)
-- 基础回归脚本：`python src/TabPFN/train_tabpfn.py`
-- 微调脚本：`python src/TabPFN/finetune_tabpfn.py`
-- 输出目录：
-  - `output/TabPFN_results/`
-  - `output/TabPFN_finetune_results/`
-
-## 项目结构
-
-- `models/`：预训练模型目录，例如 MatSciBERT、SciBERT、SteelBERT
-- `datasets/`：各类合金体系的原始与处理后数据
-- `src/`：训练与预测核心代码
-- `src/pipelines/`：批量实验配置与执行脚本
-- `src/TabPFN/`：TabPFN 回归与微调流程
-- `Scripts/`：绘图和批处理工具脚本
-- `output/`：结果与日志输出目录
-
-## 使用说明
-
-主实验入口为 [`src.pipelines.run_batch`](./src/pipelines/README.md)，支持预定义配置、自定义运行、断点续跑和进度管理。
-
-### 基础命令
+项目不使用 PowerShell、bat、sh 或 cmd 包装脚本。批量实验统一用 Python 命令：
 
 ```bash
 python -m src.pipelines.run_batch --list
 python -m src.pipelines.run_batch --config experiment1_all_ml_models
-python -m src.pipelines.run_batch --config experiment1_all_ml_models experiment2a_all_nn_scibert
-```
-
-### 完整实验
-
-```bash
-python -m src.pipelines.run_batch --all
-python -m src.pipelines.run_batch --experiment1
-python -m src.pipelines.run_batch --experiment2
-```
-
-### 自定义运行
-
-```bash
-python -m src.pipelines.run_batch --custom \
-    --embedding_type steelbert \
-    --use_nn \
-    --epochs 100
-
-python -m src.pipelines.run_batch --custom \
-    --embedding_type tradition \
-    --models xgboost lightgbm \
-    --use_composition_feature
-```
-
-### 高级功能
-
-```bash
 python -m src.pipelines.run_batch --all --dry_run
-python -m src.pipelines.run_batch --all --resume
-python -m src.pipelines.run_batch --show_progress
-python -m src.pipelines.run_batch --clear_progress
 ```
 
-## 配置文件
+OOD 实验：
 
-- [`src/pipelines/batch_configs.py`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/pipelines/batch_configs.py)
-  - `ALLOY_CONFIGS`：定义各合金的数据路径、目标列和处理参数
-  - `BATCH_CONFIGS`：定义实验级别的模型和训练参数
+```bash
+python -m src.pipelines.run_batch_ood --list
+python -m src.pipelines.run_batch_ood --config experiment1_all_ml_models_extrapolation --dry_run
+python -m src.pipelines.run_cv_k_sweep --dry_run
+```
 
-## 相关文档
+TabPFN 实验：
 
-- 英文首页： [README.md](./README.md)
-- 模型说明：[`src/models/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/models/README.md)
-- 流水线说明：[`src/pipelines/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/pipelines/README.md)
-- TabPFN 说明：[`src/TabPFN/README.md`](/D:/XJTU/ImportantFile/auto-design-alloy/BERT_ML/src/TabPFN/README.md)
-## 联系方式
+```bash
+python -m src.TabPFN.train_tabpfn --all --backend local --feature_mode numeric
+python -m src.TabPFN.train_tabpfn_ood --all --backend local --feature_mode numeric
+python -m src.TabPFN.run_tabpfn_ood_batch --list
+```
 
-- Email: `liu_yujie@stu.xjtu.edu.cn`
+LLMProp OOD 单任务入口：
+
+```bash
+python -m src.LLMProp.run_llmprop_ood --help
+```
+
+## 模型资产
+
+模型资产统一放在 `models/`：
+
+- `models/matscibert/`
+- `models/scibert/`
+- `models/steelbert/`
+- `models/llmprop/`
+- `models/tabpfn/tabpfn-v2-regressor.ckpt`
+
+训练过程中生成的 checkpoint 仍保存在 `output/**/checkpoints/`，因为它们是实验输出，不是基础模型资产。
+
+## 数据与输出
+
+已跟踪输入数据位于 `datasets/`。当前配置实际引用的标准化 CSV 包括：
+
+- `datasets/Ti_alloys/titanium.csv`
+- `datasets/Al_Alloys/aluminum.csv`
+- `datasets/HEA_data/hea.csv`
+- `datasets/Steel/steel.csv`
+- `datasets/HEA_data/Pitting_potential_data_xiongjie.csv`
+- `datasets/matbench_convert/matbench_steels.csv`
+- `datasets/matbench_convert/matbench_steels_ood.csv`
+
+生成特征、日志、图和模型输出写入被忽略的目录，例如 `Features/`、`Features_extrapolation/`、`output/` 和 `logs/`。
+
+## 汇总与绘图脚本
+
+当前仍在使用的分析和绘图脚本保留在 `Scripts/`。示例：
+
+```bash
+python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results
+python Scripts/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
+python Scripts/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
+python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
+python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+```
+
+外部 OOD 结果源由 `Scripts/external_ood_model_sources.yaml` 配置。如需合并外部 LLM 结果，运行 combined summary 前设置 `EXTERNAL_OOD_ROOT`。
+
+## 文档
+
+- [英文复现指南](./docs/reproducibility.md)
+- [中文复现指南](./docs/reproducibility.zh-CN.md)
+- [英文脚本清单](./docs/script_inventory.md)
+- [中文脚本清单](./docs/script_inventory.zh-CN.md)
+- [批量运行指南](./src/pipelines/BATCH_RUN_GUIDE.md)
+- [TabPFN 指南](./src/TabPFN/README.md)
+
+历史本机修复和迁移工具保存在 `archive/legacy_scripts/`。它们不是推荐复现入口。

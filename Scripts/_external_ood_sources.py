@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -206,7 +207,7 @@ def _build_fold_aggregated_row(
 
 
 def _load_fewshot_guided_source(source_cfg: dict[str, Any]) -> pd.DataFrame:
-    root_dir = Path(str(source_cfg["root_dir"]))
+    root_dir = Path(os.path.expandvars(str(source_cfg["root_dir"]))).expanduser()
     if not root_dir.exists():
         return pd.DataFrame()
 
