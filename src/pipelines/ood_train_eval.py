@@ -9,6 +9,7 @@ import joblib
 import numpy as np
 import pandas as pd
 import torch
+from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 
@@ -209,6 +210,24 @@ def _split_inner_train_val(
     )
 
 
+def _feature_frame_to_split_data(
+    df: pd.DataFrame,
+    selected_cols: List[str],
+    target_columns: List[str],
+) -> Dict[str, np.ndarray]:
+    missing = [col for col in selected_cols if col not in df.columns]
+    if missing:
+        raise ValueError(f"Feature file is missing selected columns: {missing}")
+    split_data: Dict[str, np.ndarray] = {
+        "X": df[selected_cols].fillna(0).values.astype("float32"),
+        "y": df[target_columns].values.astype("float32"),
+        "feature_names": selected_cols,
+    }
+    if "ID" in df.columns:
+        split_data["ids"] = df["ID"].values
+    return split_data
+
+
 def load_ood_feature_split(
     train_feature_file: str,
     test_feature_file: str,
@@ -233,27 +252,66 @@ def load_ood_feature_split(
     else:
         raise ValueError(f"Unsupported pipeline kind: {pipeline_kind}")
 
-    missing_in_test = [col for col in selected_cols if col not in test_df.columns]
-    if missing_in_test:
-        raise ValueError(f"Test feature file is missing selected columns: {missing_in_test}")
-
-    train_val_data: Dict[str, np.ndarray] = {
-        "X": train_df[selected_cols].fillna(0).values.astype("float32"),
-        "y": train_df[target_columns].values.astype("float32"),
-        "feature_names": selected_cols,
-    }
-    test_data: Dict[str, np.ndarray] = {
-        "X": test_df[selected_cols].fillna(0).values.astype("float32"),
-        "y": test_df[target_columns].values.astype("float32"),
-        "feature_names": selected_cols,
-    }
-
-    if "ID" in train_df.columns:
-        train_val_data["ids"] = train_df["ID"].values
-    if "ID" in test_df.columns:
-        test_data["ids"] = test_df["ID"].values
-
+    train_val_data = _feature_frame_to_split_data(train_df, selected_cols, target_columns)
+    test_data = _feature_frame_to_split_data(test_df, selected_cols, target_columns)
     return train_val_data, test_data, selected_cols
+
+
+def load_ood_test_set_feature_splits(
+    test_set_feature_files: Dict[str, str] | None,
+    target_columns: List[str],
+    selected_cols: List[str],
+) -> Dict[str, Dict[str, np.ndarray]]:
+    result: Dict[str, Dict[str, np.ndarray]] = {}
+    for test_set_name, feature_file in (test_set_feature_files or {}).items():
+        test_set_df = _load_feature_dataframe(feature_file)
+        result[str(test_set_name)] = _feature_frame_to_split_data(test_set_df, selected_cols, target_columns)
+    return result
+
+
+def _safe_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
+    denom = np.where(np.abs(y_true) < 1e-12, np.nan, np.abs(y_true))
+    values = np.abs((y_true - y_pred) / denom)
+    finite = values[np.isfinite(values)]
+    if finite.size == 0:
+        return float("nan")
+    return float(np.mean(finite) * 100.0)
+
+
+def _plain_regression_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
+    y_true_2d = y_true.reshape(-1, 1) if y_true.ndim == 1 else y_true
+    y_pred_2d = y_pred.reshape(-1, 1) if y_pred.ndim == 1 else y_pred
+    return {
+        "mae": float(mean_absolute_error(y_true_2d, y_pred_2d)),
+        "rmse": float(np.sqrt(mean_squared_error(y_true_2d, y_pred_2d))),
+        "r2": float(r2_score(y_true_2d, y_pred_2d)),
+        "mape": _safe_mape(y_true_2d, y_pred_2d),
+        "n_samples": int(len(y_true_2d)),
+    }
+
+
+def _save_test_set_predictions(
+    result_dir: str,
+    test_set_name: str,
+    data: Dict[str, Any],
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_columns: List[str],
+) -> str:
+    y_true_2d = y_true.reshape(-1, 1) if y_true.ndim == 1 else y_true
+    y_pred_2d = y_pred.reshape(-1, 1) if y_pred.ndim == 1 else y_pred
+    out = pd.DataFrame()
+    if "ids" in data:
+        out["ID"] = data["ids"]
+    out["Dataset"] = test_set_name
+    for i, target_name in enumerate(target_columns):
+        out[f"{target_name}_Actual"] = y_true_2d[:, i]
+        out[f"{target_name}_Predicted"] = y_pred_2d[:, i]
+    predictions_dir = Path(result_dir) / "predictions" / "test_sets"
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+    output_path = predictions_dir / f"{test_set_name}_predictions.csv"
+    out.to_csv(output_path, index=False)
+    return str(output_path)
 
 
 def _rewrite_prediction_labels(result_dir: str) -> None:
@@ -286,10 +344,13 @@ def _write_ood_manifest(
     train_feature_file: str,
     test_feature_file: str,
     target_column: str,
+    test_set_feature_files: Dict[str, str] | None = None,
 ) -> None:
     manifest = {
         "train_feature_file": train_feature_file,
         "test_feature_file": test_feature_file,
+        "combined_test_feature_file": test_feature_file,
+        "test_set_feature_files": dict(test_set_feature_files or {}),
         "target_column": target_column,
         "test_dataset_label": "OODTest",
     }
@@ -298,14 +359,23 @@ def _write_ood_manifest(
 
 
 class OODMLTrainingPipeline(MLTrainingPipeline):
-    def __init__(self, args: Any, train_feature_file: str, test_feature_file: str):
+    def __init__(
+        self,
+        args: Any,
+        train_feature_file: str,
+        test_feature_file: str,
+        test_set_feature_files: Dict[str, str] | None = None,
+    ):
         super().__init__(args)
         self._train_feature_file = train_feature_file
         self._test_feature_file = test_feature_file
+        self._test_set_feature_files = dict(test_set_feature_files or {})
         self.raw_outer_train_data: Dict[str, Any] | None = None
         self.raw_outer_test_data: Dict[str, Any] | None = None
+        self.raw_test_set_data: Dict[str, Dict[str, Any]] = {}
         self.outer_train_data: Dict[str, Any] | None = None
         self.outer_test_data: Dict[str, Any] | None = None
+        self.test_set_data: Dict[str, Dict[str, Any]] = {}
         self.inner_train_data: Dict[str, Any] | None = None
         self.inner_val_data: Dict[str, Any] | None = None
         self._last_model_params: Dict[str, Any] | None = None
@@ -325,12 +395,24 @@ class OODMLTrainingPipeline(MLTrainingPipeline):
         )
         self.raw_outer_train_data = _clone_split_data(raw_outer_train_data)
         self.raw_outer_test_data = _clone_split_data(raw_outer_test_data)
+        self.raw_test_set_data = {
+            name: _clone_split_data(data)
+            for name, data in load_ood_test_set_feature_splits(
+                self._test_set_feature_files,
+                target_columns=target_columns,
+                selected_cols=self.feature_names,
+            ).items()
+        }
 
         self.scaler_X, self.scaler_y = _fit_ood_scalers(raw_inner_train_data)
         self.inner_train_data = _transform_split_data(raw_inner_train_data, self.scaler_X, self.scaler_y)
         self.inner_val_data = _transform_split_data(raw_inner_val_data, self.scaler_X, self.scaler_y)
         self.outer_train_data = _transform_split_data(raw_outer_train_data, self.scaler_X, self.scaler_y)
         self.outer_test_data = _transform_split_data(raw_outer_test_data, self.scaler_X, self.scaler_y)
+        self.test_set_data = {
+            name: _transform_split_data(data, self.scaler_X, self.scaler_y)
+            for name, data in self.raw_test_set_data.items()
+        }
         self.train_val_data = _clone_split_data(self.outer_train_data)
         self.test_data = _clone_split_data(self.outer_test_data)
 
@@ -357,6 +439,10 @@ class OODMLTrainingPipeline(MLTrainingPipeline):
         self.scaler_X, self.scaler_y = _fit_ood_scalers(self.raw_outer_train_data)
         self.outer_train_data = _transform_split_data(self.raw_outer_train_data, self.scaler_X, self.scaler_y)
         self.outer_test_data = _transform_split_data(self.raw_outer_test_data, self.scaler_X, self.scaler_y)
+        self.test_set_data = {
+            name: _transform_split_data(data, self.scaler_X, self.scaler_y)
+            for name, data in self.raw_test_set_data.items()
+        }
         _save_scalers(self.args.result_dir, self.scaler_X, self.scaler_y)
 
     def _retrain_best_model_on_outer_train(self) -> None:
@@ -421,6 +507,19 @@ class OODMLTrainingPipeline(MLTrainingPipeline):
             val_predictions_path.unlink()
         test_df.to_csv(predictions_dir / "test_predictions.csv", index=False)
 
+        for test_set_name, test_set_data in self.test_set_data.items():
+            y_test_set_pred = ensure_2d(self.best_model.predict(test_set_data["X"]))
+            y_test_set_true = self.scaler_y.inverse_transform(ensure_2d(test_set_data["y"]))
+            y_test_set_pred = self.scaler_y.inverse_transform(y_test_set_pred)
+            _save_test_set_predictions(
+                result_dir=self.args.result_dir,
+                test_set_name=test_set_name,
+                data=test_set_data,
+                y_true=y_test_set_true,
+                y_pred=y_test_set_pred,
+                target_columns=self.args.target_columns,
+            )
+
     def _evaluate_best_model(self) -> None:
         if (
             self.best_model is None
@@ -447,6 +546,17 @@ class OODMLTrainingPipeline(MLTrainingPipeline):
             for key, value in metrics.items()
             if "train" not in key
         }
+        test_set_metrics: Dict[str, Any] = {}
+        for test_set_name, test_set_data in self.test_set_data.items():
+            y_pred = self.best_model.predict(test_set_data["X"])
+            if y_pred.ndim == 1:
+                y_pred = y_pred.reshape(-1, 1)
+            y_true = test_set_data["y"].reshape(-1, 1) if test_set_data["y"].ndim == 1 else test_set_data["y"]
+            y_true_unscaled = self.scaler_y.inverse_transform(y_true)
+            y_pred_unscaled = self.scaler_y.inverse_transform(y_pred)
+            test_set_metrics[test_set_name] = _plain_regression_metrics(y_true_unscaled, y_pred_unscaled)
+        if test_set_metrics:
+            final_metrics["test_set_metrics"] = convert_numpy_types(test_set_metrics)
         Path(self.args.result_dir, "final_evaluation_metrics.json").write_text(
             json.dumps(final_metrics, indent=4),
             encoding="utf-8",
@@ -503,19 +613,29 @@ class OODMLTrainingPipeline(MLTrainingPipeline):
             train_feature_file=self._train_feature_file,
             test_feature_file=self._test_feature_file,
             target_column=_resolve_target_columns(self.args)[0],
+            test_set_feature_files=self._test_set_feature_files,
         )
 
 
 class OODNNTrainingPipeline(NNTrainingPipeline):
-    def __init__(self, args: Any, train_feature_file: str, test_feature_file: str):
+    def __init__(
+        self,
+        args: Any,
+        train_feature_file: str,
+        test_feature_file: str,
+        test_set_feature_files: Dict[str, str] | None = None,
+    ):
         super().__init__(args)
         self._train_feature_file = train_feature_file
         self._test_feature_file = test_feature_file
+        self._test_set_feature_files = dict(test_set_feature_files or {})
         self.raw_outer_train_data: Dict[str, Any] | None = None
         self.raw_outer_test_data: Dict[str, Any] | None = None
+        self.raw_test_set_data: Dict[str, Dict[str, Any]] = {}
         self.inner_train_data: Dict[str, Any] | None = None
         self.outer_train_data: Dict[str, Any] | None = None
         self.outer_test_data: Dict[str, Any] | None = None
+        self.test_set_data: Dict[str, Dict[str, Any]] = {}
         self.inner_val_data: Dict[str, Any] | None = None
         self.final_refit_train_data: Dict[str, Any] | None = None
         self.final_refit_val_data: Dict[str, Any] | None = None
@@ -536,12 +656,24 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
         )
         self.raw_outer_train_data = _clone_split_data(raw_outer_train_data)
         self.raw_outer_test_data = _clone_split_data(raw_outer_test_data)
+        self.raw_test_set_data = {
+            name: _clone_split_data(data)
+            for name, data in load_ood_test_set_feature_splits(
+                self._test_set_feature_files,
+                target_columns=target_columns,
+                selected_cols=self.feature_names,
+            ).items()
+        }
 
         self.scaler_X, self.scaler_y = _fit_ood_scalers(raw_inner_train_data)
         self.inner_train_data = _transform_split_data(raw_inner_train_data, self.scaler_X, self.scaler_y)
         self.inner_val_data = _transform_split_data(raw_inner_val_data, self.scaler_X, self.scaler_y)
         self.outer_train_data = _transform_split_data(raw_outer_train_data, self.scaler_X, self.scaler_y)
         self.outer_test_data = _transform_split_data(raw_outer_test_data, self.scaler_X, self.scaler_y)
+        self.test_set_data = {
+            name: _transform_split_data(data, self.scaler_X, self.scaler_y)
+            for name, data in self.raw_test_set_data.items()
+        }
         self.train_val_data = _clone_split_data(self.inner_train_data)
         self.test_data = _clone_split_data(self.outer_test_data)
 
@@ -576,6 +708,10 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
         self.final_refit_val_data = _transform_split_data(raw_final_val_data, self.scaler_X, self.scaler_y)
         self.outer_train_data = _transform_split_data(self.raw_outer_train_data, self.scaler_X, self.scaler_y)
         self.outer_test_data = _transform_split_data(self.raw_outer_test_data, self.scaler_X, self.scaler_y)
+        self.test_set_data = {
+            name: _transform_split_data(data, self.scaler_X, self.scaler_y)
+            for name, data in self.raw_test_set_data.items()
+        }
 
         self.train_val_data = _clone_split_data(self.outer_train_data)
         self.test_data = _clone_split_data(self.outer_test_data)
@@ -666,7 +802,7 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
             target_scaler=self.scaler_y,
         )
         assert isinstance(evaluator, AlloysEvaluator)
-        evaluator.evaluate_model(
+        combined_summary = evaluator.evaluate_model(
             model=eval_model,
             train_data=eval_train_data,
             test_data=self.outer_test_data,
@@ -674,6 +810,26 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
             save_prefix="best_model_",
             feature_names=self.feature_names,
         )
+        final_metrics_path = Path(self.args.result_dir) / "final_evaluation_metrics.json"
+        final_metrics_payload: Dict[str, Any] = {"combined_evaluation_summary": convert_numpy_types(combined_summary)}
+        if self.test_set_data:
+            test_set_metrics: Dict[str, Any] = {}
+            for test_set_name, test_set_data in self.test_set_data.items():
+                y_true, y_pred = evaluator._predict_and_unscale(eval_model, test_set_data, data_is_scaled=True)
+                if y_true is None or y_pred is None:
+                    continue
+                test_set_metrics[test_set_name] = _plain_regression_metrics(y_true, y_pred)
+                _save_test_set_predictions(
+                    result_dir=self.args.result_dir,
+                    test_set_name=test_set_name,
+                    data=test_set_data,
+                    y_true=y_true,
+                    y_pred=y_pred,
+                    target_columns=self.args.target_columns,
+                )
+            if test_set_metrics:
+                final_metrics_payload["test_set_metrics"] = convert_numpy_types(test_set_metrics)
+        final_metrics_path.write_text(json.dumps(final_metrics_payload, indent=4), encoding="utf-8")
 
         model_structure_path = Path(self.args.result_dir) / "model_structure.txt"
         model_structure_path.write_text(str(eval_model), encoding="utf-8")
@@ -717,6 +873,7 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
             train_feature_file=self._train_feature_file,
             test_feature_file=self._test_feature_file,
             target_column=_resolve_target_columns(self.args)[0],
+            test_set_feature_files=self._test_set_feature_files,
         )
 
 
@@ -794,10 +951,11 @@ def run_ood_training(
     base_args: Any,
     train_feature_file: str,
     test_feature_file: str,
+    test_set_feature_files: Dict[str, str] | None = None,
 ) -> None:
     if getattr(base_args, "use_nn", False):
         nn_args = build_nn_args(base_args)
-        OODNNTrainingPipeline(nn_args, train_feature_file, test_feature_file).run()
+        OODNNTrainingPipeline(nn_args, train_feature_file, test_feature_file, test_set_feature_files).run()
         return
 
     if not getattr(base_args, "models", None):
@@ -808,4 +966,4 @@ def run_ood_training(
         ml_args = build_ml_args(base_args)
         ml_args.model_type = model_name
         ml_args.result_dir = model_result_dir
-        OODMLTrainingPipeline(ml_args, train_feature_file, test_feature_file).run()
+        OODMLTrainingPipeline(ml_args, train_feature_file, test_feature_file, test_set_feature_files).run()

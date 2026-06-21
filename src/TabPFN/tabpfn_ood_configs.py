@@ -16,6 +16,7 @@ except ImportError:  # pragma: no cover
 
 DEFAULT_OOD_SETTINGS: Dict[str, Any] = {
     "test_size": 0.2,
+    "outer_test_size": 0.2,
     "random_state": 42,
     "split_strategy": "target_extrapolation",
     "extrapolation_side": "low_to_high",
@@ -120,16 +121,74 @@ OOD_METHOD_BATCH_DEFAULTS: Dict[str, Dict[str, Any]] = {
         "split_strategy": "random_cv_baseline",
         "baseline_num_folds": 5,
     },
+    "hybrid_extrapolation_random_cv": {
+        "description": "Run hybrid high20 + RandomCV OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "hybrid_extrapolation_random_cv",
+        "outer_test_size": 0.2,
+        "baseline_num_folds": 5,
+        "output_root": "output/ood_hybrid_results_{model_run_dirname}",
+    },
+    "hybrid_extrapolation_sparse_x_single": {
+        "description": "Run hybrid high20 + sparse_x_single OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "hybrid_extrapolation_sparse_x_single",
+        "outer_test_size": 0.2,
+        "sparse_candidate_pool_size": 500,
+        "sparse_cluster_count": 5,
+        "sparse_samples_per_cluster": 1,
+        "sparse_kde_bandwidth": None,
+        "output_root": "output/ood_hybrid_results_{model_run_dirname}",
+    },
+    "hybrid_extrapolation_sparse_y_single": {
+        "description": "Run hybrid high20 + sparse_y_single OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "hybrid_extrapolation_sparse_y_single",
+        "outer_test_size": 0.2,
+        "sparse_candidate_pool_size": 500,
+        "sparse_cluster_count": 5,
+        "sparse_samples_per_cluster": 1,
+        "sparse_kde_bandwidth": None,
+        "output_root": "output/ood_hybrid_results_{model_run_dirname}",
+    },
+    "hybrid_extrapolation_sparse_x_cluster": {
+        "description": "Run hybrid high20 + sparse_x_cluster OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "hybrid_extrapolation_sparse_x_cluster",
+        "outer_test_size": 0.2,
+        "sparse_candidate_pool_size": 500,
+        "sparse_cluster_count": 5,
+        "sparse_neighbors_per_seed": 5,
+        "output_root": "output/ood_hybrid_results_{model_run_dirname}",
+    },
+    "hybrid_extrapolation_sparse_y_cluster": {
+        "description": "Run hybrid high20 + sparse_y_cluster OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "hybrid_extrapolation_sparse_y_cluster",
+        "outer_test_size": 0.2,
+        "sparse_candidate_pool_size": 500,
+        "sparse_cluster_count": 5,
+        "sparse_neighbors_per_seed": 5,
+        "output_root": "output/ood_hybrid_results_{model_run_dirname}",
+    },
+    "hybrid_extrapolation_loco": {
+        "description": "Run hybrid high20 + LOCO OOD TabPFN for all supported alloys and targets.",
+        "split_strategy": "hybrid_extrapolation_loco",
+        "outer_test_size": 0.2,
+        "loco_cluster_count": 5,
+        "output_root": "output/ood_hybrid_results_{model_run_dirname}",
+    },
 }
 
 
 def _build_batch_configs() -> Dict[str, Dict[str, Any]]:
     batch_configs: Dict[str, Dict[str, Any]] = {}
     for method_name, method_defaults in OOD_METHOD_BATCH_DEFAULTS.items():
-        batch_configs[f"tabpfn_all_{method_name}"] = {
+        config_name = (
+            f"tabpfn_hybrid_all_{method_name.removeprefix('hybrid_extrapolation_')}"
+            if method_name.startswith("hybrid_extrapolation_")
+            else f"tabpfn_all_{method_name}"
+        )
+        batch_configs[config_name] = {
             "alloy_types": None,
             "exclude_alloys": [],
             "test_size": 0.2,
+            "outer_test_size": 0.2,
             "random_state": 42,
             "output_root": None,
             "align_predictions": True,

@@ -1,0 +1,30 @@
+# High-W sample export configuration.
+#
+# Threshold defaults are current global P99 values from
+# output/ood_xspace_scores/sample_w_reports/three_space_sample_w_values.csv:
+#   Wx = X-space sample_w_contribution P99
+#   Wy = Y-space sample_w_contribution P99
+#   Wz = Z-space sample_w_contribution P99
+
+inputs:
+  sample_w_values: output/ood_xspace_scores/sample_w_reports/three_space_sample_w_values.csv
+  split_summary: output/ood_xspace_scores/ood_split_summary.csv
+
+output:
+  root_dir: output/ood_xspace_scores/sample_w_reports/high_w_samples
+  workbook_name: data.xlsx
+  overwrite: true
+
+selection:
+  top_n: 10
+  include_all_splits: true
+  thresholds:
+    Wx: 19.24407
+    Wy: 4.280241
+    Wz: 3.472107
+
+formatting:
+  highlight_test_rows: true
+  highlight_selected_rows: true
+  freeze_header: true
+  add_filter: true

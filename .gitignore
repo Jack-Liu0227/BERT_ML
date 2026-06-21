@@ -127,3 +127,4 @@ _paper_extract/
 ppt_ood_wasserstein/
 element_embeddings/
 *.backup
+datasets/Ti_alloys/Titanium data (Ti BERT).xlsx

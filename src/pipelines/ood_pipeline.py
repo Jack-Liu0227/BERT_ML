@@ -97,6 +97,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--cross_validate", action="store_true", default=False)
     parser.add_argument("--num_folds", type=int, default=9)
     parser.add_argument("--test_size", type=float, default=0.2)
+    parser.add_argument("--outer_test_size", type=float, default=0.2)
     parser.add_argument("--random_state", type=int, default=42)
 
     parser.add_argument("--epochs", type=int, default=200)
@@ -159,9 +160,12 @@ def validate_arguments(args: argparse.Namespace) -> None:
         if args.sparse_neighbors_per_seed <= 0:
             raise ValueError("sparse_neighbors_per_seed must be a positive integer")
 
-    if args.split_strategy == "loco" and args.loco_cluster_count <= 0:
+    if args.split_strategy.startswith("hybrid_extrapolation_"):
+        if not 0 < args.outer_test_size < 1:
+            raise ValueError("outer_test_size must be between 0 and 1")
+    if args.split_strategy in {"loco", "hybrid_extrapolation_loco"} and args.loco_cluster_count <= 0:
         raise ValueError("loco_cluster_count must be a positive integer")
-    if args.split_strategy == "random_cv_baseline" and args.baseline_num_folds <= 1:
+    if args.split_strategy in {"random_cv_baseline", "hybrid_extrapolation_random_cv"} and args.baseline_num_folds <= 1:
         raise ValueError("baseline_num_folds must be greater than 1")
 
 
@@ -210,6 +214,9 @@ def _build_method_params(args: argparse.Namespace) -> Dict[str, Any]:
     params: Dict[str, Any] = {"split_strategy": args.split_strategy}
     if args.split_strategy != "random_cv_baseline":
         params["test_size"] = args.test_size
+    if args.split_strategy.startswith("hybrid_extrapolation_"):
+        params["outer_test_size"] = args.outer_test_size
+        params["inner_strategy"] = args.split_strategy.removeprefix("hybrid_extrapolation_")
     if args.split_strategy == "target_extrapolation":
         params["extrapolation_side"] = args.extrapolation_side
     if args.split_strategy.endswith("_single"):
@@ -229,9 +236,9 @@ def _build_method_params(args: argparse.Namespace) -> Dict[str, Any]:
                 "sparse_neighbors_per_seed": args.sparse_neighbors_per_seed,
             }
         )
-    if args.split_strategy == "loco":
+    if args.split_strategy in {"loco", "hybrid_extrapolation_loco"}:
         params["loco_cluster_count"] = args.loco_cluster_count
-    if args.split_strategy == "random_cv_baseline":
+    if args.split_strategy in {"random_cv_baseline", "hybrid_extrapolation_random_cv"}:
         params["baseline_num_folds"] = args.baseline_num_folds
     return params
 
@@ -288,7 +295,7 @@ def _get_or_create_split_manifest(
     )
 
 
-def _copy_cached_single_split(cache_entry: Dict[str, Any], run_root: Path) -> Dict[str, str]:
+def _copy_cached_single_split(cache_entry: Dict[str, Any], run_root: Path) -> Dict[str, Any]:
     split_dir = run_root / "split_data"
     split_dir.mkdir(parents=True, exist_ok=True)
     train_src = Path(cache_entry["train_file"])
@@ -303,13 +310,24 @@ def _copy_cached_single_split(cache_entry: Dict[str, Any], run_root: Path) -> Di
     shutil.copy2(test_src, test_dst)
     if summary_src.exists():
         shutil.copy2(summary_src, summary_dst)
+    test_set_files: Dict[str, str] = {}
+    for test_set_name, raw_path in cache_entry.get("test_set_files", {}).items():
+        test_set_src = Path(raw_path)
+        test_sets_dir = split_dir / "test_sets"
+        test_sets_dir.mkdir(parents=True, exist_ok=True)
+        test_set_dst = test_sets_dir / test_set_src.name
+        shutil.copy2(test_set_src, test_set_dst)
+        test_set_files[str(test_set_name)] = str(test_set_dst)
     artifacts = {
         "train_file": str(train_dst),
         "test_file": str(test_dst),
+        "combined_test_file": str(test_dst),
         "summary_file": str(summary_dst),
         "canonical_train_file": str(train_src),
         "canonical_test_file": str(test_src),
     }
+    if test_set_files:
+        artifacts["test_set_files"] = test_set_files
     return artifacts
 
 
@@ -356,11 +374,23 @@ def _run_llmprop_single_split_flow(
         args.target_column,
         processing_text_column=args.processing_text_column or "Processing_Description",
     )
+    test_set_conversions: Dict[str, Any] = {}
+    test_set_llmprop_csvs: Dict[str, str] = {}
+    for test_set_name, test_set_csv in split_artifacts.get("test_set_files", {}).items():
+        output_csv = llmprop_data_dir / "test_sets" / f"{test_set_name}_llmprop.csv"
+        test_set_conversions[test_set_name] = convert_split_to_llmprop_csv(
+            test_set_csv,
+            output_csv,
+            args.target_column,
+            processing_text_column=args.processing_text_column or "Processing_Description",
+        )
+        test_set_llmprop_csvs[test_set_name] = str(output_csv)
     training_manifest = run_llmprop_ood_training(
         LLMPropTrainingConfig(
             result_dir=str(run_root),
             train_csv=str(train_llmprop_csv),
             test_csv=str(test_llmprop_csv),
+            test_set_csvs=test_set_llmprop_csvs,
             target_column=args.target_column,
             base_model_path=args.llmprop_base_model,
             tokenizer_path=args.llmprop_tokenizer,
@@ -383,6 +413,8 @@ def _run_llmprop_single_split_flow(
         "train_llmprop": str(train_llmprop_csv),
         "test_llmprop": str(test_llmprop_csv),
     }
+    for test_set_name, output_csv in test_set_llmprop_csvs.items():
+        feature_files[f"test_set_{test_set_name}_llmprop"] = output_csv
     _write_pipeline_manifest(
         args=args,
         result_dir=run_root,
@@ -392,6 +424,7 @@ def _run_llmprop_single_split_flow(
             "canonical_split_manifest": canonical_manifest,
             "canonical_split_entry": split_entry,
             "llmprop_conversion": {"train": train_conversion, "test": test_conversion},
+            "llmprop_test_set_conversions": test_set_conversions,
             "llmprop_manifest": training_manifest,
             **(extra_manifest or {}),
         },
@@ -485,18 +518,28 @@ def _run_single_split_flow(
         _build_feature_dir(features_root, prepared_split.test_label, args.embedding_type),
         args,
     )
+    test_set_feature_files: Dict[str, str] = {}
+    for test_set_name, test_set_csv in split_artifacts.get("test_set_files", {}).items():
+        test_set_feature_files[test_set_name] = _run_feature_generation(
+            test_set_csv,
+            _build_feature_dir(features_root, test_set_name, args.embedding_type),
+            args,
+        )
 
     training_args = _clone_args_with_result_dir(args, run_root)
     run_ood_training(
         training_args,
         train_feature_file=train_feature_file,
         test_feature_file=test_feature_file,
+        test_set_feature_files=test_set_feature_files,
     )
 
     feature_files = {
         _feature_key(prepared_split.train_label): train_feature_file,
         _feature_key(prepared_split.test_label): test_feature_file,
     }
+    for test_set_name, test_set_feature_file in test_set_feature_files.items():
+        feature_files[f"test_set_{test_set_name}"] = test_set_feature_file
     _write_pipeline_manifest(
         args=args,
         result_dir=run_root,
@@ -578,6 +621,7 @@ def main() -> None:
         df=raw_df,
         target_col=args.target_column,
         test_ratio=args.test_size,
+        outer_test_size=args.outer_test_size,
         extrapolation_side=args.extrapolation_side,
         sparse_candidate_pool_size=args.sparse_candidate_pool_size,
         sparse_cluster_count=args.sparse_cluster_count,
@@ -585,6 +629,7 @@ def main() -> None:
         sparse_kde_bandwidth=args.sparse_kde_bandwidth,
         sparse_neighbors_per_seed=args.sparse_neighbors_per_seed,
         loco_cluster_count=args.loco_cluster_count,
+        baseline_num_folds=args.baseline_num_folds,
         processing_cols=args.processing_cols,
     )
 

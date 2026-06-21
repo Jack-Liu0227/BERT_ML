@@ -8,14 +8,17 @@ import numpy as np
 import pandas as pd
 
 from _ood_summary_common import (
+    HYBRID_TEST_SET_COLUMN_PREFIXES,
     align_summary_metrics_to_artifact,
     annotate_family_ranks,
     create_global_exports,
     export_case_outputs,
+    load_hybrid_prediction_subset_metrics,
     normalize_alloy_family_name,
     normalize_ood_method,
     reset_output_dir,
     resolve_case_level_artifact,
+    save_subset_labeling_audit,
 )
 
 
@@ -27,6 +30,12 @@ VALID_METHODS = {
     "sparse_x_single",
     "sparse_y_cluster",
     "sparse_y_single",
+    "hybrid_extrapolation_loco",
+    "hybrid_extrapolation_random_cv",
+    "hybrid_extrapolation_sparse_x_cluster",
+    "hybrid_extrapolation_sparse_x_single",
+    "hybrid_extrapolation_sparse_y_cluster",
+    "hybrid_extrapolation_sparse_y_single",
 }
 
 
@@ -45,6 +54,35 @@ def extract_raw_ood_method(payload: dict) -> str:
     ).strip().lower()
 
 
+def _metric_missing(value: object) -> bool:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return pd.isna(numeric)
+
+
+def _raw_hybrid_subset_metrics_complete(row: dict[str, object]) -> bool:
+    for summary_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+        raw_prefix = summary_prefix.replace("summary_", "raw_")
+        for metric in ("r2", "mae", "rmse", "n_samples"):
+            if _metric_missing(row.get(f"{raw_prefix}_{metric}", pd.NA)):
+                return False
+    return True
+
+
+def _fill_raw_subset_metrics_from_summary(
+    row: dict[str, object],
+    recovered_metrics: dict[str, object],
+) -> None:
+    for summary_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+        raw_prefix = summary_prefix.replace("summary_", "raw_")
+        for metric in ("r2", "mae", "rmse", "n_samples"):
+            summary_col = f"{summary_prefix}_{metric}"
+            raw_col = f"{raw_prefix}_{metric}"
+            if summary_col not in recovered_metrics:
+                continue
+            if raw_col not in row or _metric_missing(row.get(raw_col, pd.NA)):
+                row[raw_col] = recovered_metrics[summary_col]
+
+
 def infer_case_context(base_dir: Path, metrics_path: Path, payload: dict) -> tuple[str, str, str, str, Path, int | None]:
     relative_parts = metrics_path.relative_to(base_dir).parts
     if len(relative_parts) < 5:
@@ -58,6 +96,12 @@ def infer_case_context(base_dir: Path, metrics_path: Path, payload: dict) -> tup
         "sparse_x_single_k5": "sparse_x_single",
         "sparse_y_cluster_k5": "sparse_y_cluster",
         "sparse_y_single_k5": "sparse_y_single",
+        "hybrid_extrapolation_loco_k5": "hybrid_extrapolation_loco",
+        "hybrid_extrapolation_random_cv_k5": "hybrid_extrapolation_random_cv",
+        "hybrid_extrapolation_sparse_x_cluster_k5": "hybrid_extrapolation_sparse_x_cluster",
+        "hybrid_extrapolation_sparse_x_single_k5": "hybrid_extrapolation_sparse_x_single",
+        "hybrid_extrapolation_sparse_y_cluster_k5": "hybrid_extrapolation_sparse_y_cluster",
+        "hybrid_extrapolation_sparse_y_single_k5": "hybrid_extrapolation_sparse_y_single",
     }
     first_part = str(relative_parts[0]).strip().lower()
     first_part_method = method_dir_aliases.get(first_part, first_part)
@@ -82,8 +126,9 @@ def infer_case_context(base_dir: Path, metrics_path: Path, payload: dict) -> tup
     return alloy_family, dataset_name, property_name, raw_ood_method, model_dir, (None if fold_index is None else int(fold_index))
 
 
-def collect_raw_rows(base_dir: Path) -> list[dict[str, object]]:
+def collect_raw_rows(base_dir: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     rows: list[dict[str, object]] = []
+    subset_audit_rows: list[dict[str, object]] = []
     for metrics_path in sorted(base_dir.rglob("metrics/metrics_summary.json")):
         payload = load_json(metrics_path)
         try:
@@ -97,25 +142,51 @@ def collect_raw_rows(base_dir: Path) -> list[dict[str, object]]:
 
         feature_mode = str(payload.get("feature_mode", "")).strip().capitalize() or "Unknown"
         model_name = f"{payload.get('model_name', 'TabPFN')}-{feature_mode}"
-        rows.append(
-            {
-                "alloy_family": normalize_alloy_family_name(alloy_family),
-                "dataset_name": dataset_name,
-                "property": str(payload.get("target_col", property_name)),
-                "ood_method": normalize_ood_method(raw_ood_method),
-                "model_family": "TabPFN",
-                "model": model_name,
-                "model_dir": str(model_dir),
-                "source_dir": str(base_dir),
-                "fold_index": fold_index,
-                "raw_test_r2": test_metrics.get("r2"),
-                "raw_test_rmse": test_metrics.get("rmse"),
-                "raw_test_mae": test_metrics.get("mae"),
-                "predictions_file": str(metrics_path.parent.parent / "predictions" / "all_predictions.csv"),
-                "plot_file": str(metrics_path.parent.parent / "plots" / f"{property_name.replace('/', '_')}_predictions.png"),
-            }
-        )
-    return rows
+        target_col = str(payload.get("target_col", property_name))
+        ood_method = normalize_ood_method(raw_ood_method)
+        row = {
+            "alloy_family": normalize_alloy_family_name(alloy_family),
+            "dataset_name": dataset_name,
+            "property": target_col,
+            "ood_method": ood_method,
+            "model_family": "TabPFN",
+            "model": model_name,
+            "model_dir": str(model_dir),
+            "source_dir": str(base_dir),
+            "fold_index": fold_index,
+            "raw_test_r2": test_metrics.get("r2"),
+            "raw_test_rmse": test_metrics.get("rmse"),
+            "raw_test_mae": test_metrics.get("mae"),
+            "predictions_file": str(metrics_path.parent.parent / "predictions" / "all_predictions.csv"),
+            "plot_file": str(metrics_path.parent.parent / "plots" / f"{property_name.replace('/', '_')}_predictions.png"),
+        }
+        test_set_metrics = payload.get("test_set_metrics", {})
+        if isinstance(test_set_metrics, dict):
+            for test_set_name, summary_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.items():
+                metrics = test_set_metrics.get(test_set_name)
+                if not isinstance(metrics, dict):
+                    continue
+                raw_prefix = summary_prefix.replace("summary_", "raw_")
+                for metric in ("r2", "mae", "rmse", "n_samples"):
+                    row[f"{raw_prefix}_{metric}"] = metrics.get(metric)
+        if str(row["ood_method"]).startswith("HybridHigh20+") and not _raw_hybrid_subset_metrics_complete(row):
+            recovered_metrics, audit_rows = load_hybrid_prediction_subset_metrics(
+                model_dir,
+                target_col,
+                context={
+                    "alloy_family": normalize_alloy_family_name(alloy_family),
+                    "dataset_name": dataset_name,
+                    "property": target_col,
+                    "ood_method": ood_method,
+                    "model_family": "TabPFN",
+                    "model": model_name,
+                    "source_dir": str(base_dir),
+                },
+            )
+            _fill_raw_subset_metrics_from_summary(row, recovered_metrics)
+            subset_audit_rows.extend(audit_rows)
+        rows.append(row)
+    return rows, subset_audit_rows
 
 
 def _std_or_zero(series: pd.Series) -> float:
@@ -157,7 +228,7 @@ def aggregate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
             selection_mode = "closest_summary_test_r2_fold"
 
         tabpfn_loco_fold_details: list[dict[str, object]] = []
-        if str(group_values[3]) in {"LOCO", "RandomCV"}:
+        if str(group_values[3]) in {"LOCO", "RandomCV", "HybridHigh20+LOCO", "HybridHigh20+RandCV"}:
             detail_df = group_df.assign(
                 _fold_sort=pd.to_numeric(group_df["fold_index"], errors="coerce").fillna(np.inf),
             ).sort_values(
@@ -200,7 +271,7 @@ def aggregate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
         if len(group_df) > 1:
             selection_mode = (
                 "closest_summary_test_r2_outer_fold"
-                if method_label in {"LOCO", "RandomCV"}
+                if method_label in {"LOCO", "RandomCV", "HybridHigh20+LOCO", "HybridHigh20+RandCV"}
                 else "closest_summary_test_r2_fold"
             )
         record.update(
@@ -231,6 +302,22 @@ def aggregate_rows(rows: list[dict[str, object]]) -> list[dict[str, object]]:
                 ),
             }
         )
+        for summary_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+            raw_prefix = summary_prefix.replace("summary_", "raw_")
+            for metric in ("r2", "mae", "rmse"):
+                raw_col = f"{raw_prefix}_{metric}"
+                if raw_col not in group_df.columns:
+                    continue
+                numeric = pd.to_numeric(group_df[raw_col], errors="coerce").dropna()
+                if numeric.empty:
+                    continue
+                record[f"{summary_prefix}_{metric}"] = float(numeric.mean())
+                record[f"{summary_prefix}_{metric}_std"] = _std_or_zero(numeric)
+            raw_count_col = f"{raw_prefix}_n_samples"
+            if raw_count_col in group_df.columns:
+                counts = pd.to_numeric(group_df[raw_count_col], errors="coerce").dropna()
+                if not counts.empty:
+                    record[f"{summary_prefix}_n_samples"] = int(counts.sum())
         aggregated_rows.append(record)
 
     return aggregated_rows
@@ -329,8 +416,11 @@ def main() -> None:
     reset_output_dir(summary_root)
 
     raw_rows: list[dict[str, object]] = []
+    subset_audit_rows: list[dict[str, object]] = []
     for base_dir in base_dirs:
-        raw_rows.extend(collect_raw_rows(base_dir))
+        family_raw_rows, family_subset_audit_rows = collect_raw_rows(base_dir)
+        raw_rows.extend(family_raw_rows)
+        subset_audit_rows.extend(family_subset_audit_rows)
     rows = aggregate_rows(raw_rows)
     if not rows:
         print(f"No TabPFN multi-OOD metrics were collected under: {base_dirs}")
@@ -340,6 +430,7 @@ def main() -> None:
     summary_df = annotate_family_ranks(summary_df)
     summary_df["alloy_family"] = summary_df["alloy_family"].map(normalize_alloy_family_name)
     create_global_exports(summary_df, summary_root, "all_tabpfn_ood_model_summary.csv")
+    save_subset_labeling_audit(subset_audit_rows, summary_root)
     export_case_outputs(summary_df, summary_root)
 
     print(f"TabPFN OOD summary complete: {summary_root}")

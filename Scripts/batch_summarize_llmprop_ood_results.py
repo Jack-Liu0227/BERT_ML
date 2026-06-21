@@ -11,8 +11,10 @@ import pandas as pd
 from _ood_summary_common import (
     align_summary_metrics_to_artifact,
     annotate_family_ranks,
+    aggregate_hybrid_test_set_metrics,
     create_global_exports,
     export_case_outputs,
+    load_hybrid_test_set_metrics,
     normalize_alloy_family_name,
     normalize_ood_method,
     reset_output_dir,
@@ -87,7 +89,7 @@ def _single_run_row(base_dir: Path, model_root: Path) -> dict[str, Any]:
     metrics = _extract_test_metrics(model_root / "final_evaluation_metrics.json", property_name)
     predictions_file = model_root / "predictions" / "all_predictions.csv"
     plot_file = model_root / "predictions" / "test_predictions.csv"
-    return {
+    row = {
         "alloy_family": normalize_alloy_family_name(alloy_family),
         "dataset_name": dataset_name,
         "property": property_name,
@@ -128,6 +130,8 @@ def _single_run_row(base_dir: Path, model_root: Path) -> dict[str, Any]:
         "plot_test_mae": metrics["mae"],
         "plot_test_rmse": metrics["rmse"],
     }
+    row.update(load_hybrid_test_set_metrics(model_root / "final_evaluation_metrics.json"))
+    return row
 
 
 def _count_test_rows(predictions_file: Path) -> int | float:
@@ -153,11 +157,16 @@ def _count_test_rows(predictions_file: Path) -> int | float:
 def _multi_fold_row(base_dir: Path, model_root: Path) -> dict[str, Any] | None:
     alloy_family, dataset_name, property_name, raw_ood_method, experiment_dir = _infer_case_from_model_root(base_dir, model_root)
     fold_records: list[dict[str, Any]] = []
+    hybrid_metric_payloads: list[dict[str, Any]] = []
     for fold_dir in sorted((model_root / "folds").glob("fold_*")):
         metrics_path = fold_dir / "final_evaluation_metrics.json"
         if not metrics_path.exists():
             continue
         metrics = _extract_test_metrics(metrics_path, property_name)
+        try:
+            hybrid_metric_payloads.append(_read_json(metrics_path))
+        except Exception:
+            pass
         predictions_file = fold_dir / "predictions" / "all_predictions.csv"
         fold_records.append(
             {
@@ -197,7 +206,7 @@ def _multi_fold_row(base_dir: Path, model_root: Path) -> dict[str, Any] | None:
     details = fold_df.to_dict(orient="records")
     representative_fold = representative["outer_fold_index"]
     representative_fold = int(representative_fold) if pd.notna(representative_fold) else pd.NA
-    return {
+    row = {
         "alloy_family": normalize_alloy_family_name(alloy_family),
         "dataset_name": dataset_name,
         "property": property_name,
@@ -236,11 +245,17 @@ def _multi_fold_row(base_dir: Path, model_root: Path) -> dict[str, Any] | None:
         "plot_test_mae": summary_mae,
         "plot_test_rmse": float(fold_df["outer_test_rmse"].mean()),
     }
+    row.update(aggregate_hybrid_test_set_metrics(hybrid_metric_payloads))
+    return row
 
 
 def collect_rows(base_dir: Path) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
-    for experiment_dir in sorted(base_dir.glob(f"{EXPERIMENT_PREFIX}*")):
+    experiment_dirs = [
+        *base_dir.glob(f"{EXPERIMENT_PREFIX}*"),
+        *base_dir.glob("experiment_hybrid_llmprop_*"),
+    ]
+    for experiment_dir in sorted(set(experiment_dirs)):
         if not experiment_dir.is_dir():
             continue
         for model_root in sorted(experiment_dir.glob("*/*/*/*/llmprop")):

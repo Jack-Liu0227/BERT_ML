@@ -80,15 +80,23 @@ def _frame_from_artifact(path: str | Path) -> pd.DataFrame:
     return pd.read_csv(path)
 
 
-def _single_entry_from_artifacts(artifacts: Dict[str, str], split: PreparedSplit) -> Dict[str, Any]:
+def _single_entry_from_artifacts(artifacts: Dict[str, Any], split: PreparedSplit) -> Dict[str, Any]:
     train_df = _frame_from_artifact(artifacts["train_file"])
     test_df = _frame_from_artifact(artifacts["test_file"])
+    test_set_files = {str(name): str(path) for name, path in artifacts.get("test_set_files", {}).items()}
+    test_set_identities = {
+        name: extract_split_identity(_frame_from_artifact(path))
+        for name, path in test_set_files.items()
+    }
     return {
         "train_file": artifacts["train_file"],
         "test_file": artifacts["test_file"],
+        "combined_test_file": artifacts.get("combined_test_file", artifacts["test_file"]),
         "summary_file": artifacts["summary_file"],
         "trace_dir": artifacts.get("trace_dir"),
         "trace_manifest": artifacts.get("trace_manifest"),
+        "test_set_files": test_set_files,
+        "test_set_identities": test_set_identities,
         "train_label": split.train_label,
         "test_label": split.test_label,
         "split_summary": split.summary,
@@ -133,6 +141,14 @@ def _validate_split_files(entry: Dict[str, Any]) -> None:
         raise ValueError(f"Cached train split identity mismatch: {train_file}")
     if not split_identity_matches(test_identity, entry.get("test_identity", {})):
         raise ValueError(f"Cached test split identity mismatch: {test_file}")
+    for name, raw_path in entry.get("test_set_files", {}).items():
+        test_set_file = Path(raw_path)
+        if not test_set_file.exists():
+            raise FileNotFoundError(f"Cached test-set split file is missing: {test_set_file}")
+        test_set_identity = extract_split_identity(pd.read_csv(test_set_file))
+        expected_identity = entry.get("test_set_identities", {}).get(name, {})
+        if not split_identity_matches(test_set_identity, expected_identity):
+            raise ValueError(f"Cached test-set split identity mismatch: {test_set_file}")
 
 
 def validate_cached_manifest(

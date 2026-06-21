@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 
 try:
     from .model_factory import get_tabpfn_runtime_config
-    from .train_tabpfn_ood import get_ood_output_root
+    from .train_tabpfn_ood import get_ood_method_output_root, get_ood_output_root
     from .tabpfn_ood_configs import (
         TABPFN_OOD_BATCH_CONFIGS,
         get_all_tabpfn_ood_alloys,
@@ -23,7 +23,7 @@ try:
     )
 except ImportError:  # pragma: no cover
     from model_factory import get_tabpfn_runtime_config
-    from train_tabpfn_ood import get_ood_output_root
+    from train_tabpfn_ood import get_ood_method_output_root, get_ood_output_root
     from tabpfn_ood_configs import (
         TABPFN_OOD_BATCH_CONFIGS,
         get_all_tabpfn_ood_alloys,
@@ -32,6 +32,9 @@ except ImportError:  # pragma: no cover
 
 
 logger = logging.getLogger(__name__)
+
+HYBRID_STRATEGY_PREFIX = "hybrid_extrapolation_"
+HYBRID_REQUIRED_TEST_SET_NAMES = ("test_extrapolation_high20", "test_inner_ood")
 
 
 def configure_logging(log_file: Optional[Path] = None) -> None:
@@ -121,6 +124,109 @@ def format_command(cmd: List[str]) -> str:
     return " ".join(formatted)
 
 
+def is_hybrid_batch_config(batch_config: Dict[str, Any]) -> bool:
+    return str(batch_config.get("split_strategy", "")).startswith(HYBRID_STRATEGY_PREFIX)
+
+
+def resolve_batch_output_root(
+    batch_config: Dict[str, Any],
+    base_path: str,
+    backend: str,
+    model_version: Optional[str],
+    feature_mode: str | None,
+) -> Optional[str]:
+    output_root = batch_config.get("output_root")
+    if not output_root:
+        return None
+    if "{" not in str(output_root):
+        return str(output_root)
+    runtime_info = get_tabpfn_runtime_config(
+        base_path=base_path,
+        backend=backend,
+        preferred_model_version=model_version,
+        feature_mode=feature_mode,
+    )
+    return str(output_root).format(**runtime_info)
+
+
+def _load_json_object(path: Path) -> Dict[str, Any]:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _has_required_hybrid_test_set_metrics(metrics_payload: Dict[str, Any]) -> bool:
+    test_set_metrics = metrics_payload.get("test_set_metrics")
+    if not isinstance(test_set_metrics, dict):
+        return False
+    for test_set_name in HYBRID_REQUIRED_TEST_SET_NAMES:
+        metrics = test_set_metrics.get(test_set_name)
+        if not isinstance(metrics, dict) or not metrics:
+            return False
+        if not {"mae", "rmse", "r2", "n_samples"}.intersection(metrics):
+            return False
+    return True
+
+
+def _metrics_payload_complete(metrics_payload: Dict[str, Any], require_hybrid_test_sets: bool) -> bool:
+    combined_metrics = metrics_payload.get("ood_test") or metrics_payload.get("test")
+    if not isinstance(combined_metrics, dict) or not combined_metrics:
+        return False
+    if require_hybrid_test_sets and not _has_required_hybrid_test_set_metrics(metrics_payload):
+        return False
+    return True
+
+
+def task_artifacts_complete(
+    alloy_type: str,
+    target_col: str,
+    batch_config: Dict[str, Any],
+    base_path: str,
+    backend: str,
+    model_version: Optional[str],
+    feature_mode: str | None,
+) -> bool:
+    split_strategy = str(batch_config["split_strategy"])
+    runtime_info = get_tabpfn_runtime_config(
+        base_path=base_path,
+        backend=backend,
+        preferred_model_version=model_version,
+        feature_mode=feature_mode,
+    )
+    output_root = resolve_batch_output_root(batch_config, base_path, backend, model_version, feature_mode)
+    alloy_config = get_tabpfn_ood_config(
+        alloy_type,
+        backend=backend,
+        feature_mode=feature_mode,
+        base_path=base_path,
+    )
+    result_dir = (
+        get_ood_method_output_root(base_path, runtime_info, split_strategy, output_root)
+        / alloy_type
+        / Path(alloy_config["raw_data"]).stem
+        / target_col
+    )
+    if not result_dir.exists():
+        return False
+    require_hybrid_test_sets = is_hybrid_batch_config(batch_config)
+    if split_strategy in {"loco", "random_cv_baseline", "hybrid_extrapolation_loco", "hybrid_extrapolation_random_cv"}:
+        manifest_name = "loco_manifest.json" if split_strategy == "loco" else f"{split_strategy}_manifest.json"
+        manifest = _load_json_object(result_dir / manifest_name)
+        metrics_payload = manifest.get("aggregated_metrics", {})
+        return isinstance(metrics_payload, dict) and _metrics_payload_complete(
+            metrics_payload,
+            require_hybrid_test_sets,
+        )
+    return _metrics_payload_complete(
+        _load_json_object(result_dir / "metrics" / "metrics_summary.json"),
+        require_hybrid_test_sets,
+    )
+
+
 def resolve_alloy_types(
     config: Dict[str, Any],
     backend: str,
@@ -182,12 +288,15 @@ def build_command(
         command.extend(["--loco_cluster_count", str(batch_config["loco_cluster_count"])])
     if batch_config.get("baseline_num_folds") is not None:
         command.extend(["--baseline_num_folds", str(batch_config["baseline_num_folds"])])
+    if batch_config.get("outer_test_size") is not None:
+        command.extend(["--outer_test_size", str(batch_config["outer_test_size"])])
     if model_version:
         command.extend(["--model_version", model_version])
     if feature_mode:
         command.extend(["--feature_mode", feature_mode])
-    if batch_config.get("output_root"):
-        command.extend(["--output_root", batch_config["output_root"]])
+    output_root = resolve_batch_output_root(batch_config, base_path, backend, model_version, feature_mode)
+    if output_root:
+        command.extend(["--output_root", output_root])
     return command
 
 
@@ -268,8 +377,32 @@ def run_batch_config(
         for target_col in alloy_config["targets"]:
             task_key = make_task_key(alloy_type, target_col)
             if resume and progress_manager.is_task_completed(config_name, task_key):
+                if not is_hybrid_batch_config(batch_config) or task_artifacts_complete(
+                    alloy_type=alloy_type,
+                    target_col=target_col,
+                    batch_config=batch_config,
+                    base_path=base_path,
+                    backend=backend,
+                    model_version=model_version,
+                    feature_mode=feature_mode,
+                ):
+                    results[task_key] = "skipped"
+                    logger.info("[SKIP] %s already completed", task_key)
+                    continue
+                logger.info("[RERUN] %s progress=success but hybrid metrics are incomplete", task_key)
+            if resume and not progress_manager.is_task_completed(config_name, task_key) and task_artifacts_complete(
+                alloy_type=alloy_type,
+                target_col=target_col,
+                batch_config=batch_config,
+                base_path=base_path,
+                backend=backend,
+                model_version=model_version,
+                feature_mode=feature_mode,
+            ):
                 results[task_key] = "skipped"
-                logger.info("[SKIP] %s already completed", task_key)
+                logger.info("[SKIP] %s existing output artifacts", task_key)
+                if not dry_run:
+                    progress_manager.update_task_status(config_name, task_key, "success")
                 continue
             results[task_key] = run_single_task(
                 config_name=config_name,

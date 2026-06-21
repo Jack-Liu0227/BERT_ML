@@ -71,6 +71,7 @@ class PreparedSplit:
     train_label: str = "train"
     test_label: str = "test"
     trace: TraceArtifacts | None = None
+    test_sets: Dict[str, pd.DataFrame] = field(default_factory=dict)
 
 
 @dataclass
@@ -249,6 +250,8 @@ def resolve_split_labels(split_strategy: str, extrapolation_side: str | None = N
         return "train", "test"
     if split_strategy == "random_cv_baseline":
         return "train", "test"
+    if split_strategy.startswith("hybrid_extrapolation_"):
+        return "train", "test_hybrid_combined"
     return "train", "test"
 
 
@@ -300,6 +303,7 @@ def make_prepared_split(
     extrapolation_side: str | None = None,
     train_label: str | None = None,
     test_label: str | None = None,
+    test_set_row_ids: Dict[str, Sequence[int]] | None = None,
 ) -> PreparedSplit:
     if len(test_row_ids) == 0:
         raise ValueError("OOD split produced an empty test set")
@@ -312,6 +316,10 @@ def make_prepared_split(
 
     train_df = drop_helper_columns(_ordered_subset(work_df, train_row_ids)).reset_index(drop=True)
     test_df = drop_helper_columns(_ordered_subset(work_df, test_row_ids)).reset_index(drop=True)
+    test_sets = {
+        str(name): drop_helper_columns(_ordered_subset(work_df, row_ids)).reset_index(drop=True)
+        for name, row_ids in (test_set_row_ids or {}).items()
+    }
     x_space_summary = {
         "x_space_feature_policy": trace.metadata.get("x_space_feature_policy"),
         "x_space_feature_columns": trace.metadata.get("x_space_feature_columns"),
@@ -337,6 +345,7 @@ def make_prepared_split(
         train_label=final_train_label,
         test_label=final_test_label,
         trace=trace,
+        test_sets=test_sets,
     )
 
 
@@ -1206,6 +1215,358 @@ def prepare_random_cv_baseline_folds(
     return folds
 
 
+HYBRID_OUTER_TEST_SET_NAME = "test_extrapolation_high20"
+HYBRID_INNER_TEST_SET_NAME = "test_inner_ood"
+HYBRID_SOURCE_ID_COLUMN = "hybrid_source_id"
+HYBRID_STRATEGY_PREFIX = "hybrid_extrapolation_"
+HYBRID_INNER_STRATEGIES = {
+    "random_cv",
+    "sparse_x_single",
+    "sparse_y_single",
+    "sparse_x_cluster",
+    "sparse_y_cluster",
+    "loco",
+}
+
+
+def is_hybrid_split_strategy(split_strategy: str) -> bool:
+    return split_strategy.startswith(HYBRID_STRATEGY_PREFIX)
+
+
+def inner_strategy_from_hybrid(split_strategy: str) -> str:
+    if not is_hybrid_split_strategy(split_strategy):
+        raise ValueError(f"Not a hybrid split strategy: {split_strategy}")
+    inner_strategy = split_strategy[len(HYBRID_STRATEGY_PREFIX) :]
+    if inner_strategy not in HYBRID_INNER_STRATEGIES:
+        raise ValueError(
+            f"Unsupported hybrid inner strategy '{inner_strategy}'. "
+            f"Supported inner strategies: {', '.join(sorted(HYBRID_INNER_STRATEGIES))}"
+        )
+    return inner_strategy
+
+
+def _select_high_target_outer_ids(work_df: pd.DataFrame, target_col: str, outer_test_ratio: float) -> List[int]:
+    ordered = work_df.sort_values(by=target_col, ascending=True, kind="stable").reset_index(drop=True)
+    outer_count = resolve_test_cap(len(work_df), outer_test_ratio)
+    return [int(row_id) for row_id in ordered.tail(outer_count)["__row_id__"].tolist()]
+
+
+def _hybrid_inner_input(work_df: pd.DataFrame, outer_test_ids: Sequence[int]) -> pd.DataFrame:
+    if HYBRID_SOURCE_ID_COLUMN in work_df.columns:
+        raise ValueError(f"Input data already contains reserved hybrid column '{HYBRID_SOURCE_ID_COLUMN}'")
+    outer_set = {int(row_id) for row_id in outer_test_ids}
+    inner_work = work_df.loc[~work_df["__row_id__"].isin(outer_set)].copy()
+    inner_work = inner_work.sort_values("__original_order__", kind="stable").reset_index(drop=True)
+    inner_input = drop_helper_columns(inner_work).copy()
+    inner_input[HYBRID_SOURCE_ID_COLUMN] = inner_work["__row_id__"].to_numpy(dtype=int)
+    return inner_input
+
+
+def _extract_hybrid_source_ids(frame: pd.DataFrame) -> List[int]:
+    if HYBRID_SOURCE_ID_COLUMN not in frame.columns:
+        raise ValueError(f"Hybrid inner split is missing '{HYBRID_SOURCE_ID_COLUMN}'")
+    values = pd.to_numeric(frame[HYBRID_SOURCE_ID_COLUMN], errors="coerce")
+    if values.isna().any():
+        raise ValueError("Hybrid inner split contains invalid source row ids")
+    return [int(value) for value in values.tolist()]
+
+
+def _prepare_hybrid_inner_split(
+    inner_input: pd.DataFrame,
+    target_col: str,
+    inner_strategy: str,
+    test_ratio: float,
+    candidate_pool_size: int,
+    cluster_count: int,
+    samples_per_cluster: int,
+    neighbors_per_seed: int,
+    random_state: int,
+    kde_bandwidth: float | None,
+    processing_cols: Sequence[str] | None,
+) -> PreparedSplit | List[PreparedFold]:
+    if inner_strategy == "sparse_x_single":
+        return prepare_sparse_single_split(
+            df=inner_input,
+            target_col=target_col,
+            split_strategy=inner_strategy,
+            density_space="x",
+            test_ratio=test_ratio,
+            candidate_pool_size=candidate_pool_size,
+            cluster_count=cluster_count,
+            samples_per_cluster=samples_per_cluster,
+            random_state=random_state,
+            kde_bandwidth=kde_bandwidth,
+            processing_cols=processing_cols,
+        )
+    if inner_strategy == "sparse_y_single":
+        return prepare_sparse_single_split(
+            df=inner_input,
+            target_col=target_col,
+            split_strategy=inner_strategy,
+            density_space="y",
+            test_ratio=test_ratio,
+            candidate_pool_size=candidate_pool_size,
+            cluster_count=cluster_count,
+            samples_per_cluster=samples_per_cluster,
+            random_state=random_state,
+            kde_bandwidth=kde_bandwidth,
+            processing_cols=processing_cols,
+        )
+    if inner_strategy == "sparse_x_cluster":
+        return prepare_sparse_cluster_split(
+            df=inner_input,
+            target_col=target_col,
+            split_strategy=inner_strategy,
+            density_space="x",
+            test_ratio=test_ratio,
+            candidate_pool_size=candidate_pool_size,
+            cluster_count=cluster_count,
+            neighbors_per_seed=neighbors_per_seed,
+            random_state=random_state,
+            processing_cols=processing_cols,
+        )
+    if inner_strategy == "sparse_y_cluster":
+        return prepare_sparse_cluster_split(
+            df=inner_input,
+            target_col=target_col,
+            split_strategy=inner_strategy,
+            density_space="y",
+            test_ratio=test_ratio,
+            candidate_pool_size=candidate_pool_size,
+            cluster_count=cluster_count,
+            neighbors_per_seed=neighbors_per_seed,
+            random_state=random_state,
+            processing_cols=processing_cols,
+        )
+    if inner_strategy == "loco":
+        return prepare_loco_folds(
+            df=inner_input,
+            target_col=target_col,
+            cluster_count=cluster_count,
+            random_state=random_state,
+            processing_cols=processing_cols,
+        )
+    if inner_strategy == "random_cv":
+        return prepare_random_cv_baseline_folds(
+            df=inner_input,
+            target_col=target_col,
+            num_folds=cluster_count,
+            random_state=random_state,
+            processing_cols=processing_cols,
+        )
+    raise ValueError(f"Unsupported hybrid inner strategy: {inner_strategy}")
+
+
+def _hybrid_trace(
+    work_df: pd.DataFrame,
+    target_col: str,
+    split_strategy: str,
+    inner_strategy: str,
+    outer_test_ids: Sequence[int],
+    inner_test_ids: Sequence[int],
+    random_state: int,
+    processing_cols: Sequence[str] | None,
+    fold_metadata: Dict[str, Any] | None = None,
+) -> TraceArtifacts:
+    selection_space = "y" if inner_strategy.startswith("sparse_y") else "x"
+    density_context = build_density_context(
+        work_df=work_df,
+        target_col=target_col,
+        random_state=random_state,
+        selection_space=selection_space,
+        include_y_curve=selection_space == "y",
+        processing_cols=processing_cols,
+    )
+    combined_ids = [int(row_id) for row_id in [*outer_test_ids, *inner_test_ids]]
+    selected_test_rows = enrich_rows_for_trace(work_df, target_col, density_context.density_scores, combined_ids)
+    outer_set = {int(row_id) for row_id in outer_test_ids}
+    selected_test_rows["test_set"] = selected_test_rows["__row_id__"].map(
+        lambda row_id: HYBRID_OUTER_TEST_SET_NAME if int(row_id) in outer_set else HYBRID_INNER_TEST_SET_NAME
+    )
+    metadata = {
+        "outer_strategy": "target_extrapolation_high20",
+        "outer_extrapolation_side": "low_to_high",
+        "inner_strategy": inner_strategy,
+        "outer_test_set_name": HYBRID_OUTER_TEST_SET_NAME,
+        "inner_test_set_name": HYBRID_INNER_TEST_SET_NAME,
+        "outer_test_size": int(len(outer_test_ids)),
+        "inner_test_size": int(len(inner_test_ids)),
+        "combined_test_size": int(len(combined_ids)),
+    }
+    if fold_metadata:
+        metadata.update(fold_metadata)
+    train_label, test_label = resolve_split_labels(split_strategy)
+    return build_trace_artifacts(
+        work_df=work_df,
+        target_col=target_col,
+        density_context=density_context,
+        split_strategy=split_strategy,
+        train_label=train_label,
+        test_label=test_label,
+        test_row_ids=combined_ids,
+        candidate_pool=selected_test_rows,
+        selected_test_rows=selected_test_rows,
+        metadata=metadata,
+    )
+
+
+def _make_hybrid_split(
+    work_df: pd.DataFrame,
+    target_col: str,
+    split_strategy: str,
+    inner_strategy: str,
+    outer_test_ids: Sequence[int],
+    inner_test_ids: Sequence[int],
+    outer_test_ratio: float,
+    inner_test_ratio: float,
+    random_state: int,
+    processing_cols: Sequence[str] | None,
+    fold_metadata: Dict[str, Any] | None = None,
+) -> PreparedSplit:
+    outer_ids = [int(row_id) for row_id in outer_test_ids]
+    inner_ids = [int(row_id) for row_id in inner_test_ids]
+    overlap = sorted(set(outer_ids).intersection(inner_ids))
+    if overlap:
+        raise ValueError(f"Hybrid split produced overlapping outer/inner test ids: {overlap[:10]}")
+    test_ids = [*outer_ids, *inner_ids]
+    test_set = {int(row_id) for row_id in test_ids}
+    train_ids = [int(row_id) for row_id in work_df["__row_id__"].tolist() if int(row_id) not in test_set]
+    trace = _hybrid_trace(
+        work_df=work_df,
+        target_col=target_col,
+        split_strategy=split_strategy,
+        inner_strategy=inner_strategy,
+        outer_test_ids=outer_ids,
+        inner_test_ids=inner_ids,
+        random_state=random_state,
+        processing_cols=processing_cols,
+        fold_metadata=fold_metadata,
+    )
+    extra_summary: Dict[str, Any] = {
+        "outer_strategy": "target_extrapolation_high20",
+        "outer_extrapolation_side": "low_to_high",
+        "inner_strategy": inner_strategy,
+        "outer_test_set_name": HYBRID_OUTER_TEST_SET_NAME,
+        "inner_test_set_name": HYBRID_INNER_TEST_SET_NAME,
+        "outer_test_ratio_requested": float(outer_test_ratio),
+        "inner_test_ratio_requested": float(inner_test_ratio),
+        "outer_test_size": int(len(outer_ids)),
+        "inner_test_size": int(len(inner_ids)),
+        "combined_test_size": int(len(test_ids)),
+        "test_set_names": [HYBRID_OUTER_TEST_SET_NAME, HYBRID_INNER_TEST_SET_NAME],
+    }
+    if fold_metadata:
+        extra_summary.update(fold_metadata)
+    train_label, test_label = resolve_split_labels(split_strategy)
+    return make_prepared_split(
+        work_df=work_df,
+        target_col=target_col,
+        split_strategy=split_strategy,
+        train_row_ids=train_ids,
+        test_row_ids=test_ids,
+        trace=trace,
+        train_label=train_label,
+        test_label=test_label,
+        extra_summary=extra_summary,
+        test_set_row_ids={
+            HYBRID_OUTER_TEST_SET_NAME: outer_ids,
+            HYBRID_INNER_TEST_SET_NAME: inner_ids,
+        },
+    )
+
+
+def prepare_hybrid_extrapolation_split(
+    df: pd.DataFrame,
+    target_col: str,
+    split_strategy: str,
+    inner_strategy: str,
+    outer_test_ratio: float,
+    inner_test_ratio: float,
+    random_state: int,
+    candidate_pool_size: int = 500,
+    cluster_count: int = 5,
+    samples_per_cluster: int = 1,
+    neighbors_per_seed: int = 5,
+    kde_bandwidth: float | None = None,
+    processing_cols: Sequence[str] | None = None,
+) -> PreparedSplit | List[PreparedFold]:
+    if inner_strategy_from_hybrid(split_strategy) != inner_strategy:
+        raise ValueError(f"Hybrid strategy '{split_strategy}' does not match inner strategy '{inner_strategy}'")
+
+    work_df = prepare_work_dataframe(df, target_col)
+    outer_test_ids = _select_high_target_outer_ids(work_df, target_col, outer_test_ratio)
+    inner_input = _hybrid_inner_input(work_df, outer_test_ids)
+    inner_result = _prepare_hybrid_inner_split(
+        inner_input=inner_input,
+        target_col=target_col,
+        inner_strategy=inner_strategy,
+        test_ratio=inner_test_ratio,
+        candidate_pool_size=candidate_pool_size,
+        cluster_count=cluster_count,
+        samples_per_cluster=samples_per_cluster,
+        neighbors_per_seed=neighbors_per_seed,
+        random_state=random_state,
+        kde_bandwidth=kde_bandwidth,
+        processing_cols=processing_cols,
+    )
+
+    if isinstance(inner_result, list):
+        folds: List[PreparedFold] = []
+        for inner_fold in inner_result:
+            inner_test_ids = _extract_hybrid_source_ids(inner_fold.split.test_df)
+            fold_metadata = {
+                "fold_index": int(inner_fold.fold_index),
+                "held_out_cluster_id": int(inner_fold.held_out_cluster_id),
+                "inner_strategy": inner_strategy,
+                "inner_fold_metadata": inner_fold.metadata,
+            }
+            if "outer_fold_index" in inner_fold.metadata:
+                fold_metadata["outer_fold_index"] = int(inner_fold.metadata["outer_fold_index"])
+            if "outer_fold_count" in inner_fold.metadata:
+                fold_metadata["outer_fold_count"] = int(inner_fold.metadata["outer_fold_count"])
+            split = _make_hybrid_split(
+                work_df=work_df,
+                target_col=target_col,
+                split_strategy=split_strategy,
+                inner_strategy=inner_strategy,
+                outer_test_ids=outer_test_ids,
+                inner_test_ids=inner_test_ids,
+                outer_test_ratio=outer_test_ratio,
+                inner_test_ratio=inner_test_ratio,
+                random_state=random_state,
+                processing_cols=processing_cols,
+                fold_metadata=fold_metadata,
+            )
+            folds.append(
+                PreparedFold(
+                    fold_index=int(inner_fold.fold_index),
+                    held_out_cluster_id=int(inner_fold.held_out_cluster_id),
+                    split=split,
+                    metadata={
+                        **fold_metadata,
+                        "outer_test_size": int(len(outer_test_ids)),
+                        "inner_test_size": int(len(inner_test_ids)),
+                        "combined_test_size": int(len(outer_test_ids) + len(inner_test_ids)),
+                    },
+                )
+            )
+        return folds
+
+    inner_test_ids = _extract_hybrid_source_ids(inner_result.test_df)
+    return _make_hybrid_split(
+        work_df=work_df,
+        target_col=target_col,
+        split_strategy=split_strategy,
+        inner_strategy=inner_strategy,
+        outer_test_ids=outer_test_ids,
+        inner_test_ids=inner_test_ids,
+        outer_test_ratio=outer_test_ratio,
+        inner_test_ratio=inner_test_ratio,
+        random_state=random_state,
+        processing_cols=processing_cols,
+    )
+
+
 def _write_table(path: Path, frame: pd.DataFrame) -> None:
     frame.to_csv(path, index=False, encoding="utf-8")
 
@@ -1449,7 +1810,7 @@ def write_trace_artifacts(trace: TraceArtifacts, output_dir: str | Path, target_
     return files
 
 
-def save_prepared_split(prepared_split: PreparedSplit, output_dir: str | Path) -> Dict[str, str]:
+def save_prepared_split(prepared_split: PreparedSplit, output_dir: str | Path) -> Dict[str, Any]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -1459,6 +1820,14 @@ def save_prepared_split(prepared_split: PreparedSplit, output_dir: str | Path) -
 
     prepared_split.train_df.to_csv(train_path, index=False, encoding="utf-8")
     prepared_split.test_df.to_csv(test_path, index=False, encoding="utf-8")
+    test_set_files: Dict[str, str] = {}
+    if prepared_split.test_sets:
+        test_sets_dir = output_path / "test_sets"
+        test_sets_dir.mkdir(parents=True, exist_ok=True)
+        for test_set_name, test_set_df in prepared_split.test_sets.items():
+            test_set_path = test_sets_dir / f"{test_set_name}.csv"
+            test_set_df.to_csv(test_set_path, index=False, encoding="utf-8")
+            test_set_files[str(test_set_name)] = str(test_set_path)
     save_json(summary_path, prepared_split.summary)
 
     trace_files: Dict[str, str] = {}
@@ -1472,8 +1841,11 @@ def save_prepared_split(prepared_split: PreparedSplit, output_dir: str | Path) -
     artifacts = {
         "train_file": str(train_path),
         "test_file": str(test_path),
+        "combined_test_file": str(test_path),
         "summary_file": str(summary_path),
     }
+    if test_set_files:
+        artifacts["test_set_files"] = test_set_files
     if trace_files:
         artifacts["trace_dir"] = str(output_path / "trace")
         artifacts["trace_manifest"] = trace_files["split_manifest"]

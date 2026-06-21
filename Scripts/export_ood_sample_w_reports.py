@@ -14,6 +14,7 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
 
@@ -137,8 +138,35 @@ def style_axes(ax: plt.Axes, grid_axis: str = "y") -> None:
     ax.set_axisbelow(True)
 
 
-def set_nonnegative_symlog_axis(ax: plt.Axes) -> None:
-    ax.set_yscale("symlog", linthresh=1.0)
+def normalized_rank_x(count: int) -> np.ndarray:
+    if count <= 0:
+        return np.asarray([], dtype=float)
+    if count == 1:
+        return np.asarray([0.0], dtype=float)
+    return np.linspace(0.0, 1.0, count)
+
+
+def plain_number_tick(value: float, _pos: int) -> str:
+    if abs(value) < 1e-12:
+        return "0"
+    if abs(value) >= 100:
+        return f"{value:.0f}"
+    if abs(value) >= 10:
+        return f"{value:g}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def set_nonnegative_adaptive_axis(ax: plt.Axes, values: Iterable[float] | None = None) -> None:
+    finite = np.asarray([], dtype=float)
+    if values is not None:
+        finite = np.asarray([float(value) for value in values if pd.notna(value) and math.isfinite(float(value))])
+    max_value = float(np.nanmax(finite)) if finite.size else 1.0
+    if finite.size and max_value > 15:
+        ax.set_yscale("symlog", linthresh=1.0)
+        ax.yaxis.set_major_formatter(FuncFormatter(plain_number_tick))
+        ax.yaxis.set_minor_formatter(NullFormatter())
+    else:
+        ax.set_yscale("linear")
     _, upper = ax.get_ylim()
     ax.set_ylim(bottom=0.0, top=upper)
 
@@ -315,7 +343,8 @@ def plot_case_dashboard(case_table: pd.DataFrame, case_summary: pd.DataFrame, ou
     ax.set_xticklabels(labels, rotation=28, ha="right")
     ax.set_ylabel("Sample W contribution")
     ax.set_title("A. Per-sample W distribution", loc="left", fontweight="bold")
-    set_nonnegative_symlog_axis(ax)
+    all_distribution_values = pd.to_numeric(case_table["sample_w_contribution"], errors="coerce").dropna()
+    set_nonnegative_adaptive_axis(ax, all_distribution_values)
     style_axes(ax)
 
     ax = axes[1]
@@ -328,12 +357,13 @@ def plot_case_dashboard(case_table: pd.DataFrame, case_summary: pd.DataFrame, ou
         )
         if values.empty:
             continue
-        x = (np.arange(len(values)) + 1) / len(values)
+        x = normalized_rank_x(len(values))
         ax.plot(x, values, color=color, linewidth=1.8, label=label)
     ax.set_xlabel("Normalized rank within method")
     ax.set_ylabel("Sample W contribution")
     ax.set_title("B. Ranked W contribution curve", loc="left", fontweight="bold")
-    set_nonnegative_symlog_axis(ax)
+    curve_values = pd.to_numeric(case_table["sample_w_contribution"], errors="coerce").dropna()
+    set_nonnegative_adaptive_axis(ax, curve_values)
     ax.legend(frameon=False, fontsize=8)
     style_axes(ax)
 
@@ -349,7 +379,8 @@ def plot_case_dashboard(case_table: pd.DataFrame, case_summary: pd.DataFrame, ou
     ax.set_xticklabels(labels, rotation=28, ha="right")
     ax.set_ylabel("Sample W contribution")
     ax.set_title("C. Method-level W summary", loc="left", fontweight="bold")
-    set_nonnegative_symlog_axis(ax)
+    summary_values = np.concatenate([medians[np.isfinite(medians)], top_means[np.isfinite(top_means)]])
+    set_nonnegative_adaptive_axis(ax, summary_values)
     ax.legend(frameon=False, fontsize=8)
     style_axes(ax)
 

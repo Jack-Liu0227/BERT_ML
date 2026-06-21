@@ -98,6 +98,12 @@ OOD_METHOD_OUTPUT_SUFFIXES = {
     "sparse_x_cluster": "sparse_x_cluster_k5",
     "sparse_y_cluster": "sparse_y_cluster_k5",
     "loco": "loco_k5",
+    "hybrid_extrapolation_sparse_x_single": "hybrid_extrapolation_sparse_x_single_k5",
+    "hybrid_extrapolation_sparse_y_single": "hybrid_extrapolation_sparse_y_single_k5",
+    "hybrid_extrapolation_sparse_x_cluster": "hybrid_extrapolation_sparse_x_cluster_k5",
+    "hybrid_extrapolation_sparse_y_cluster": "hybrid_extrapolation_sparse_y_cluster_k5",
+    "hybrid_extrapolation_loco": "hybrid_extrapolation_loco_k5",
+    "hybrid_extrapolation_random_cv": "hybrid_extrapolation_random_cv_k5",
 }
 
 
@@ -119,6 +125,7 @@ class TabPFNOODTrainer:
         base_path: str = ".",
         output_root: str | None = None,
         test_size: Optional[float] = None,
+        outer_test_size: Optional[float] = None,
         random_state: Optional[int] = None,
         split_strategy: str = "target_extrapolation",
         extrapolation_side: Optional[str] = None,
@@ -156,6 +163,8 @@ class TabPFNOODTrainer:
         self.resolved_backend = str(self.runtime_info.get("resolved_backend", backend))
         if test_size is not None:
             self.config["test_size"] = test_size
+        if outer_test_size is not None:
+            self.config["outer_test_size"] = outer_test_size
         if random_state is not None:
             self.config["random_state"] = random_state
         self.config["split_strategy"] = split_strategy
@@ -205,6 +214,7 @@ class TabPFNOODTrainer:
             target_col=self.target_col,
             split_strategy=str(self.config["split_strategy"]),
             test_size=float(self.config["test_size"]),
+            outer_test_size=float(self.config.get("outer_test_size", 0.2)),
             extrapolation_side=str(self.config["extrapolation_side"]),
             sparse_candidate_pool_size=int(self.config["sparse_candidate_pool_size"]),
             sparse_cluster_count=int(self.config["sparse_cluster_count"]),
@@ -312,7 +322,7 @@ class TabPFNOODTrainer:
         X_train: pd.DataFrame,
         y_train: np.ndarray,
         X_test: pd.DataFrame,
-    ) -> tuple[Dict[str, Any], np.ndarray, np.ndarray]:
+    ) -> tuple[Any, Dict[str, Any], np.ndarray, np.ndarray]:
         model, model_info = self._create_regressor()
         logger.info("Fitting model on %d training rows", len(y_train))
         try:
@@ -338,7 +348,7 @@ class TabPFNOODTrainer:
         logger.info("Generating predictions for train/test splits")
         y_pred_train = model.predict(X_train)
         y_pred_test = model.predict(X_test)
-        return model_info, np.asarray(y_pred_train), np.asarray(y_pred_test)
+        return model, model_info, np.asarray(y_pred_train), np.asarray(y_pred_test)
 
     def _build_result_payload(
         self,
@@ -370,6 +380,15 @@ class TabPFNOODTrainer:
             },
         }
 
+    def _metrics_payload(self, y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, Any]:
+        return {
+            "mae": float(mean_absolute_error(y_true, y_pred)),
+            "rmse": float(np.sqrt(mean_squared_error(y_true, y_pred))),
+            "r2": float(r2_score(y_true, y_pred)),
+            "mape": safe_mape(y_true, y_pred),
+            "n_samples": int(len(y_true)),
+        }
+
     def _run_prepared_split(
         self,
         prepared_split: PreparedSplit,
@@ -384,12 +403,30 @@ class TabPFNOODTrainer:
             self.target_col,
             scale=True,
         )
-        model_info, y_pred_train, y_pred_test = self._fit_and_predict(X_train, y_train, X_test)
+        model, model_info, y_pred_train, y_pred_test = self._fit_and_predict(X_train, y_train, X_test)
         result = self._build_result_payload(model_info, y_train, y_pred_train, y_test, y_pred_test)
         result["split_summary"] = prepared_split.summary
         result["split_artifacts"] = split_artifacts
         if fold_metadata:
             result.update(fold_metadata)
+
+        test_set_predictions: Dict[str, Dict[str, Any]] = {}
+        test_set_metrics: Dict[str, Dict[str, Any]] = {}
+        for test_set_name, test_set_df in prepared_split.test_sets.items():
+            X_test_set, y_test_set, ids_test_set = self.processor.build_additional_test_inputs(
+                test_set_df,
+                self.target_col,
+                scale=True,
+            )
+            y_pred_test_set = np.asarray(model.predict(X_test_set))
+            test_set_metrics[test_set_name] = self._metrics_payload(y_test_set, y_pred_test_set)
+            test_set_predictions[test_set_name] = {
+                "ids": ids_test_set,
+                "y_true": y_test_set,
+                "y_pred": y_pred_test_set,
+            }
+        if test_set_metrics:
+            result["test_set_metrics"] = test_set_metrics
 
         target_name = sanitize_target_name(self.target_col)
         self._plot_predictions_for_split(
@@ -412,6 +449,14 @@ class TabPFNOODTrainer:
             y_pred_test=y_pred_test,
             align_reference_csv=align_ref,
         )
+        for test_set_name, payload in test_set_predictions.items():
+            self._save_test_set_predictions(
+                save_path=result_dir / "predictions" / "test_sets" / f"{test_set_name}_predictions.csv",
+                test_set_name=test_set_name,
+                ids_test=payload["ids"],
+                y_test=payload["y_true"],
+                y_pred_test=payload["y_pred"],
+            )
         self._save_metrics_payload(
             result=result,
             save_path=result_dir / "metrics" / "metrics_summary.json",
@@ -557,6 +602,29 @@ class TabPFNOODTrainer:
         logger.info("Predictions saved to %s", save_path_obj)
         return all_data
 
+    def _save_test_set_predictions(
+        self,
+        save_path: str | Path,
+        test_set_name: str,
+        ids_test: np.ndarray,
+        y_test: np.ndarray,
+        y_pred_test: np.ndarray,
+    ) -> pd.DataFrame:
+        test_df = pd.DataFrame(
+            {
+                "ID": ids_test,
+                f"{self.target_col}_Actual": y_test,
+                f"{self.target_col}_Predicted": y_pred_test,
+                "Dataset": test_set_name,
+            }
+        )
+        test_df = test_df.sort_values("ID", kind="stable").reset_index(drop=True)
+        save_path_obj = Path(save_path)
+        save_path_obj.parent.mkdir(parents=True, exist_ok=True)
+        test_df.to_csv(save_path_obj, index=False)
+        logger.info("Test-set predictions saved to %s", save_path_obj)
+        return test_df
+
     def save_metrics(self, save_path: str) -> None:
         self._save_metrics_payload(self.results, save_path)
 
@@ -577,6 +645,8 @@ class TabPFNOODTrainer:
             self.test_result_key: result[self.test_result_key],
             "split_summary": result.get("split_summary", self.summary),
         }
+        if result.get("test_set_metrics"):
+            metrics_payload["test_set_metrics"] = result["test_set_metrics"]
         if "fold_index" in result:
             metrics_payload["fold_index"] = result["fold_index"]
         if "held_out_cluster_id" in result:
@@ -609,6 +679,7 @@ class TabPFNOODTrainer:
             "raw_data": self.config["raw_data"],
             "result_dir": str(result_dir),
             "test_size": self.config["test_size"],
+            "outer_test_size": self.config.get("outer_test_size", 0.2),
             "random_state": self.config["random_state"],
             "split_strategy": self.config["split_strategy"],
             "extrapolation_side": self.config["extrapolation_side"],
@@ -649,11 +720,34 @@ class TabPFNOODTrainer:
             metric: float(np.mean([fold[self.test_result_key][metric] for fold in fold_results]))
             for metric in test_metrics
         }
-        return {
+        aggregated: Dict[str, Any] = {
             "fold_count": len(fold_results),
             "train": aggregated_train,
             self.test_result_key: aggregated_test,
         }
+        test_set_names = sorted(
+            {
+                test_set_name
+                for fold in fold_results
+                for test_set_name in fold.get("test_set_metrics", {}).keys()
+            }
+        )
+        if test_set_names:
+            aggregated["test_set_metrics"] = {}
+            for test_set_name in test_set_names:
+                aggregated["test_set_metrics"][test_set_name] = {
+                    metric: float(
+                        np.mean(
+                            [
+                                fold["test_set_metrics"][test_set_name][metric]
+                                for fold in fold_results
+                                if test_set_name in fold.get("test_set_metrics", {})
+                            ]
+                        )
+                    )
+                    for metric in test_metrics
+                }
+        return aggregated
 
     def _run_multi_fold(self, align_predictions: bool, drop_na: bool) -> Dict[str, Any]:
         split_strategy = str(self.config["split_strategy"])
@@ -665,6 +759,7 @@ class TabPFNOODTrainer:
             target_col=self.target_col,
             split_strategy=split_strategy,
             test_size=float(self.config["test_size"]),
+            outer_test_size=float(self.config.get("outer_test_size", 0.2)),
             extrapolation_side=str(self.config["extrapolation_side"]),
             sparse_candidate_pool_size=int(self.config["sparse_candidate_pool_size"]),
             sparse_cluster_count=int(self.config["sparse_cluster_count"]),
@@ -713,12 +808,14 @@ class TabPFNOODTrainer:
                     "split_summary": fold["split_summary"],
                     "train": fold["train"],
                     self.test_result_key: fold[self.test_result_key],
+                    "test_set_metrics": fold.get("test_set_metrics", {}),
                 }
                 for fold in fold_results
             ],
             "aggregated_metrics": {
                 "train": aggregated["train"],
                 self.test_result_key: aggregated[self.test_result_key],
+                "test_set_metrics": aggregated.get("test_set_metrics", {}),
             },
         }
         manifest_name = "loco_manifest.json" if split_strategy == "loco" else f"{split_strategy}_manifest.json"
@@ -730,6 +827,7 @@ class TabPFNOODTrainer:
             "model_info": fold_results[0]["model_info"] if fold_results else self.runtime_info,
             "train": aggregated["train"],
             self.test_result_key: aggregated[self.test_result_key],
+            "test_set_metrics": aggregated.get("test_set_metrics", {}),
             "fold_results": fold_results,
             "split_summary": {
                 "split_strategy": split_strategy,
@@ -755,7 +853,7 @@ class TabPFNOODTrainer:
             self.config["split_strategy"],
         )
         logger.info("Result directory: %s", self.result_dir)
-        if self.config["split_strategy"] in {"loco", "random_cv_baseline"}:
+        if self.config["split_strategy"] in {"loco", "random_cv_baseline", "hybrid_extrapolation_loco", "hybrid_extrapolation_random_cv"}:
             return self._run_multi_fold(align_predictions=align_predictions, drop_na=drop_na)
         self.prepare_data(scale=scale, drop_na=drop_na)
         self.train_regression()
@@ -788,6 +886,7 @@ def run_single_ood_experiment(
     base_path: str = ".",
     output_root: str | None = None,
     test_size: Optional[float] = None,
+    outer_test_size: Optional[float] = None,
     random_state: Optional[int] = None,
     split_strategy: str = "target_extrapolation",
     extrapolation_side: Optional[str] = None,
@@ -809,6 +908,7 @@ def run_single_ood_experiment(
         base_path=base_path,
         output_root=output_root,
         test_size=test_size,
+        outer_test_size=outer_test_size,
         random_state=random_state,
         split_strategy=split_strategy,
         extrapolation_side=extrapolation_side,
@@ -830,6 +930,7 @@ def run_all_ood_experiments(
     base_path: str = ".",
     output_root: str | None = None,
     test_size: Optional[float] = None,
+    outer_test_size: Optional[float] = None,
     random_state: Optional[int] = None,
     split_strategy: str = "target_extrapolation",
     extrapolation_side: Optional[str] = None,
@@ -884,6 +985,7 @@ def run_all_ood_experiments(
                     base_path=base_path,
                     output_root=output_root,
                     test_size=test_size,
+                    outer_test_size=outer_test_size,
                     random_state=random_state,
                     split_strategy=split_strategy,
                     extrapolation_side=extrapolation_side,
@@ -963,6 +1065,30 @@ def save_ood_summary_results(
                     "OOD_Test_RMSE": result["ood_test"]["rmse"],
                     "OOD_Test_R2": result["ood_test"]["r2"],
                     "OOD_Test_MAPE": result["ood_test"]["mape"],
+                    "High20_Test_N": result.get("test_set_metrics", {})
+                    .get("test_extrapolation_high20", {})
+                    .get("n_samples"),
+                    "High20_Test_MAE": result.get("test_set_metrics", {})
+                    .get("test_extrapolation_high20", {})
+                    .get("mae"),
+                    "High20_Test_RMSE": result.get("test_set_metrics", {})
+                    .get("test_extrapolation_high20", {})
+                    .get("rmse"),
+                    "High20_Test_R2": result.get("test_set_metrics", {})
+                    .get("test_extrapolation_high20", {})
+                    .get("r2"),
+                    "Inner_OOD_Test_N": result.get("test_set_metrics", {})
+                    .get("test_inner_ood", {})
+                    .get("n_samples"),
+                    "Inner_OOD_Test_MAE": result.get("test_set_metrics", {})
+                    .get("test_inner_ood", {})
+                    .get("mae"),
+                    "Inner_OOD_Test_RMSE": result.get("test_set_metrics", {})
+                    .get("test_inner_ood", {})
+                    .get("rmse"),
+                    "Inner_OOD_Test_R2": result.get("test_set_metrics", {})
+                    .get("test_inner_ood", {})
+                    .get("r2"),
                 }
             )
 
@@ -1007,6 +1133,7 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base_path", default=str(Path(__file__).resolve().parents[2]), type=str)
     parser.add_argument("--output_root", default=None, type=str)
     parser.add_argument("--test_size", default=None, type=float)
+    parser.add_argument("--outer_test_size", default=None, type=float)
     parser.add_argument("--random_state", default=None, type=int)
     parser.add_argument("--split_strategy", default="target_extrapolation", type=str)
     parser.add_argument("--extrapolation_side", default=None, type=str)
@@ -1078,6 +1205,7 @@ def main() -> None:
                 base_path=args.base_path,
                 output_root=args.output_root,
                 test_size=args.test_size,
+                outer_test_size=args.outer_test_size,
                 random_state=args.random_state,
                 split_strategy=args.split_strategy,
                 extrapolation_side=args.extrapolation_side,
@@ -1123,6 +1251,7 @@ def main() -> None:
                 base_path=args.base_path,
                 output_root=args.output_root,
                 test_size=args.test_size,
+                outer_test_size=args.outer_test_size,
                 random_state=args.random_state,
                 split_strategy=args.split_strategy,
                 extrapolation_side=args.extrapolation_side,

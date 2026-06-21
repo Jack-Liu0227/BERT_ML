@@ -10,8 +10,10 @@ import pandas as pd
 from _ood_summary_common import (
     align_summary_metrics_to_artifact,
     annotate_family_ranks,
+    aggregate_hybrid_test_set_metrics,
     create_global_exports,
     export_case_outputs,
+    load_hybrid_test_set_metrics,
     normalize_alloy_family_name,
     normalize_ood_method,
     reset_output_dir,
@@ -28,6 +30,13 @@ MODEL_MAP = {
     "matscibert": "MatSciBERT",
     "steelbert": "SteelBERT",
 }
+
+PREDICTION_FILE_CANDIDATES = (
+    "predictions/best_model_all_predictions.csv",
+    "predictions/all_predictions.csv",
+    "predictions/best_model_test_predictions.csv",
+    "predictions/test_predictions.csv",
+)
 
 
 def load_progress_json(progress_json: Path | None) -> dict[str, dict[str, str]]:
@@ -47,6 +56,8 @@ def load_progress_json(progress_json: Path | None) -> dict[str, dict[str, str]]:
 
 
 def build_progress_task_key(alloy_family: str, property_name: str) -> str:
+    if str(alloy_family) == "MatbenchSteels":
+        return f"MatbenchSteels_{property_name}"
     return f"{normalize_alloy_family_name(alloy_family)}_{property_name}"
 
 
@@ -65,6 +76,7 @@ def resolve_progress_status(
 
 def expected_raw_ood_method_for_tracked_config(experiment_name: str) -> str | None:
     for method_name in (
+        "random_cv",
         "sparse_x_cluster",
         "sparse_x_single",
         "sparse_y_cluster",
@@ -72,6 +84,8 @@ def expected_raw_ood_method_for_tracked_config(experiment_name: str) -> str | No
         "loco",
     ):
         if experiment_name.endswith(f"_{method_name}"):
+            if experiment_name.startswith("experiment_hybrid_all_nn_"):
+                return f"hybrid_extrapolation_{method_name}_k5"
             return f"{method_name}_k5"
     return None
 
@@ -91,7 +105,7 @@ def build_summary_row(
     representative_model_dir = summary.get("representative_model_dir") or str(model_dir)
     representative_model_path = Path(str(representative_model_dir))
     loco_outer_fold_best_details = summary.get("loco_outer_fold_best_details") or []
-    return {
+    row = {
         "alloy_family": normalize_alloy_family_name(alloy_family),
         "dataset_name": dataset_name,
         "property": property_name,
@@ -121,6 +135,174 @@ def build_summary_row(
         "batch_progress_task_key": progress_task_key,
         "batch_progress_status": progress_status,
     }
+    row.update(load_hybrid_test_set_metrics(model_dir / "final_evaluation_metrics.json"))
+    for key, value in summary.items():
+        if str(key).startswith("summary_test_extrapolation_high20_") or str(key).startswith("summary_test_inner_ood_"):
+            row[key] = value
+    return row
+
+
+def _load_metric_payloads(model_dirs: list[Path]) -> list[dict[str, Any]]:
+    payloads: list[dict[str, Any]] = []
+    for model_dir in model_dirs:
+        metrics_path = model_dir / "final_evaluation_metrics.json"
+        if not metrics_path.exists():
+            continue
+        try:
+            with metrics_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            continue
+        if isinstance(payload, dict):
+            payloads.append(payload)
+    return payloads
+
+
+def _std_or_zero(values: pd.Series) -> float:
+    numeric = pd.to_numeric(values, errors="coerce").dropna()
+    if numeric.empty:
+        return 0.0
+    std_value = numeric.std()
+    if pd.isna(std_value):
+        return 0.0
+    return float(std_value)
+
+
+def _load_json(path: Path) -> dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _metric_value(payload: dict[str, Any], property_name: str, metric_name: str) -> float | None:
+    combined_summary = payload.get("combined_evaluation_summary")
+    if not isinstance(combined_summary, dict):
+        return None
+    test_metrics = combined_summary.get("test_set_metrics")
+    if not isinstance(test_metrics, dict):
+        return None
+    value = test_metrics.get(f"test_{property_name}_{metric_name}")
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    if pd.isna(numeric):
+        return None
+    return float(numeric)
+
+
+def _first_prediction_file(model_dir: Path) -> str | None:
+    for relative_path in PREDICTION_FILE_CANDIDATES:
+        candidate = model_dir / relative_path
+        if candidate.exists():
+            return str(candidate)
+    return None
+
+
+def summarize_no_optuna_final_model(model_dir: Path, property_name: str) -> dict[str, dict[str, object]]:
+    payload = _load_json(model_dir / "final_evaluation_metrics.json")
+    if not payload:
+        return {}
+
+    r2 = _metric_value(payload, property_name, "r2")
+    mae = _metric_value(payload, property_name, "mae")
+    rmse = _metric_value(payload, property_name, "rmse")
+    if r2 is None or mae is None or rmse is None:
+        return {}
+
+    return {
+        property_name: {
+            "trial_count": 1,
+            "fold_count": 1,
+            "summary_test_r2": r2,
+            "summary_test_r2_std": 0.0,
+            "summary_test_mae": mae,
+            "summary_test_mae_std": 0.0,
+            "summary_test_rmse": rmse,
+            "summary_test_rmse_std": 0.0,
+            "representative_selection_mode": "final_model_no_optuna",
+            "representative_trial_id": None,
+            "representative_fold": None,
+            "representative_test_r2": r2,
+            "representative_test_mae": mae,
+            "representative_test_rmse": rmse,
+            "representative_predictions_file": _first_prediction_file(model_dir),
+            "representative_model_dir": str(model_dir),
+        }
+    }
+
+
+def summarize_no_optuna_loco_folds(
+    fold_model_dirs: list[Path],
+    property_name: str,
+) -> dict[str, dict[str, object]]:
+    rows: list[dict[str, object]] = []
+    for fold_dir in sorted(fold_model_dirs, key=lambda path: path.name):
+        payload = _load_json(fold_dir / "final_evaluation_metrics.json")
+        if not payload:
+            continue
+        r2 = _metric_value(payload, property_name, "r2")
+        mae = _metric_value(payload, property_name, "mae")
+        rmse = _metric_value(payload, property_name, "rmse")
+        if r2 is None or mae is None or rmse is None:
+            continue
+        fold_name = fold_dir.name
+        fold_index = None
+        if fold_name.startswith("fold_") and fold_name.split("_", 1)[1].isdigit():
+            fold_index = int(fold_name.split("_", 1)[1])
+        rows.append(
+            {
+                "outer_fold_index": fold_index,
+                "model_dir": str(fold_dir),
+                "outer_predictions_file": _first_prediction_file(fold_dir),
+                "outer_test_r2": r2,
+                "outer_test_mae": mae,
+                "outer_test_rmse": rmse,
+            }
+        )
+
+    if not rows:
+        return {}
+
+    outer_df = pd.DataFrame(rows)
+    summary_test_r2 = float(pd.to_numeric(outer_df["outer_test_r2"], errors="coerce").mean())
+    summary_test_mae = float(pd.to_numeric(outer_df["outer_test_mae"], errors="coerce").mean())
+    summary_test_rmse = float(pd.to_numeric(outer_df["outer_test_rmse"], errors="coerce").mean())
+    representative_df = outer_df.assign(
+        _distance_to_summary_test_mae=(
+            pd.to_numeric(outer_df["outer_test_mae"], errors="coerce") - summary_test_mae
+        ).abs(),
+        _sort_outer_fold=pd.to_numeric(outer_df["outer_fold_index"], errors="coerce").fillna(float("inf")),
+    ).sort_values(
+        ["_distance_to_summary_test_mae", "outer_test_mae", "outer_test_r2", "_sort_outer_fold"],
+        ascending=[True, True, False, True],
+        kind="mergesort",
+    )
+    representative = representative_df.iloc[0]
+
+    return {
+        property_name: {
+            "trial_count": 1,
+            "fold_count": int(len(outer_df)),
+            "summary_test_r2": summary_test_r2,
+            "summary_test_r2_std": _std_or_zero(outer_df["outer_test_r2"]),
+            "summary_test_mae": summary_test_mae,
+            "summary_test_mae_std": _std_or_zero(outer_df["outer_test_mae"]),
+            "summary_test_rmse": summary_test_rmse,
+            "summary_test_rmse_std": _std_or_zero(outer_df["outer_test_rmse"]),
+            "representative_selection_mode": "outer_fold_final_no_optuna",
+            "representative_trial_id": None,
+            "representative_fold": representative.get("outer_fold_index"),
+            "representative_test_r2": float(representative["outer_test_r2"]),
+            "representative_test_mae": float(representative["outer_test_mae"]),
+            "representative_test_rmse": float(representative["outer_test_rmse"]),
+            "representative_predictions_file": representative.get("outer_predictions_file"),
+            "representative_model_dir": str(representative["model_dir"]),
+            "loco_outer_fold_best_details": rows,
+        }
+    }
 
 
 def collect_rows(
@@ -135,7 +317,9 @@ def collect_rows(
     progress = progress or {}
     tracked_configs = tracked_configs or set()
     experiment_dirs = sorted(
-        path for path in base_dir.iterdir() if path.is_dir() and path.name.startswith("experiment2")
+        path
+        for path in base_dir.iterdir()
+        if path.is_dir() and (path.name.startswith("experiment2") or path.name.startswith("experiment_hybrid_all_nn_"))
     )
     for experiment_dir in experiment_dirs:
         config_is_tracked = experiment_dir.name in tracked_configs or (not tracked_configs and experiment_dir.name in progress)
@@ -196,16 +380,30 @@ def collect_rows(
                         optuna_trials_dir,
                         property_name=property_name,
                     )
-                elif ood_method in {"LOCO", "RandomCV"}:
-                    loco_model_dirs = sorted(
+                elif ood_method in {"LOCO", "RandomCV", "HybridHigh20+LOCO", "HybridHigh20+RandCV"}:
+                    all_loco_model_dirs = sorted(
                         fold_dir
                         for fold_dir in (model_dir / "folds").glob("fold_*")
-                        if (fold_dir / "predictions" / "optuna_trials").exists()
+                        if fold_dir.is_dir()
                     ) if (model_dir / "folds").exists() else []
-                    summaries = summarize_outer_fold_final_test_metrics(
-                        loco_model_dirs,
-                        property_name=property_name,
+                    loco_model_dirs = sorted(
+                        fold_dir
+                        for fold_dir in all_loco_model_dirs
+                        if (fold_dir / "predictions" / "optuna_trials").exists()
                     )
+                    if loco_model_dirs:
+                        summaries = summarize_outer_fold_final_test_metrics(
+                            loco_model_dirs,
+                            property_name=property_name,
+                        )
+                    else:
+                        summaries = summarize_no_optuna_loco_folds(
+                            all_loco_model_dirs,
+                            property_name=property_name,
+                        )
+                    hybrid_columns = aggregate_hybrid_test_set_metrics(_load_metric_payloads(all_loco_model_dirs))
+                    for summary in summaries.values():
+                        summary.update(hybrid_columns)
                 else:
                     loco_trial_dirs = sorted(
                         fold_dir / "predictions" / "optuna_trials"
@@ -216,6 +414,11 @@ def collect_rows(
                         loco_trial_dirs,
                         property_name=property_name,
                     )
+                    if not summaries:
+                        summaries = summarize_no_optuna_final_model(
+                            model_dir,
+                            property_name=property_name,
+                        )
                 if not summaries:
                     continue
 

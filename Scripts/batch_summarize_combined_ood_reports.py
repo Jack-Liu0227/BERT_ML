@@ -8,7 +8,10 @@ import pandas as pd
 
 from _external_ood_sources import load_external_ood_sources
 from _ood_summary_common import (
+    HYBRID_TEST_SET_COLUMN_PREFIXES,
+    HYBRID_TEST_SET_METRICS,
     OOD_METHOD_ORDER,
+    SUMMARY_TABLES_DIRNAME,
     normalize_alloy_family_name,
     plot_case_metric,
     reset_output_dir,
@@ -99,6 +102,20 @@ NUMERIC_COLUMNS = [
     "family_rank_score",
     "rank_within_family",
 ]
+
+for _hybrid_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+    for _hybrid_metric in HYBRID_TEST_SET_METRICS:
+        _hybrid_column = f"{_hybrid_prefix}_{_hybrid_metric}"
+        if _hybrid_column not in CANONICAL_COLUMNS:
+            CANONICAL_COLUMNS.append(_hybrid_column)
+        if _hybrid_column not in NUMERIC_COLUMNS:
+            NUMERIC_COLUMNS.append(_hybrid_column)
+        if _hybrid_metric != "n_samples":
+            _hybrid_std_column = f"{_hybrid_column}_std"
+            if _hybrid_std_column not in CANONICAL_COLUMNS:
+                CANONICAL_COLUMNS.append(_hybrid_std_column)
+            if _hybrid_std_column not in NUMERIC_COLUMNS:
+                NUMERIC_COLUMNS.append(_hybrid_std_column)
 
 
 def _coalesce_column(
@@ -375,6 +392,22 @@ def build_combined_df(reports_root: Path, external_sources_config: Path | None =
     return enrich_with_artifact_metrics(combined_df)
 
 
+def load_subset_labeling_audits(reports_root: Path) -> pd.DataFrame:
+    frames: list[pd.DataFrame] = []
+    for family_name in SUMMARY_FILES:
+        audit_file = reports_root / family_name / SUMMARY_TABLES_DIRNAME / "subset_labeling_audit.csv"
+        if not audit_file.exists():
+            continue
+        audit_df = pd.read_csv(audit_file)
+        if audit_df.empty:
+            continue
+        audit_df["summary_family"] = family_name
+        frames.append(audit_df)
+    if not frames:
+        return pd.DataFrame()
+    return pd.concat(frames, ignore_index=True)
+
+
 def summarize_case_anomalies(case_df: pd.DataFrame) -> list[dict]:
     records: list[dict] = []
     model_count = int(
@@ -546,6 +579,9 @@ def main() -> None:
         return
 
     save_csv(combined_df.reindex(columns=CANONICAL_COLUMNS), output_root / "data" / "all_model_families_ood_summary.csv")
+    subset_audit_df = load_subset_labeling_audits(args.reports_root)
+    if not subset_audit_df.empty:
+        save_csv(subset_audit_df, output_root / "data" / "subset_labeling_audit.csv")
     audit_df = export_combined_case_outputs(combined_df, output_root)
 
     print(f"Combined OOD summary complete: {output_root}")

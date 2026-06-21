@@ -101,6 +101,8 @@ COMMON_OOD_DEFAULTS: Dict[str, Any] = {
     "random_state": 42,
     "baseline_num_folds": 5,
     "split_cache_dir": "output/ood_splits",
+    "result_base_dir": "output/ood_results",
+    "outer_test_size": 0.2,
     "use_llmprop": False,
 }
 
@@ -226,6 +228,130 @@ OOD_METHODS: Dict[str, Dict[str, Any]] = {
         },
         "cli_args": ["split_strategy", "baseline_num_folds"],
     },
+    "hybrid_extrapolation_random_cv": {
+        "display_name": "hybrid high20 + RandomCV",
+        "config_suffix": "random_cv",
+        "result_dir_suffix": "hybrid_extrapolation_random_cv_k5",
+        "summary_file_name": "hybrid_extrapolation_random_cv_manifest.json",
+        "is_multi_fold": True,
+        "is_hybrid": True,
+        "default_params": {
+            "split_strategy": "hybrid_extrapolation_random_cv",
+            "outer_test_size": 0.2,
+            "baseline_num_folds": 5,
+        },
+        "cli_args": ["split_strategy", "test_size", "outer_test_size", "baseline_num_folds"],
+    },
+    "hybrid_extrapolation_sparse_x_single": {
+        "display_name": "hybrid high20 + sparse X single",
+        "config_suffix": "sparse_x_single",
+        "result_dir_suffix": "hybrid_extrapolation_sparse_x_single_k5",
+        "summary_file_name": "split_summary.json",
+        "is_multi_fold": False,
+        "is_hybrid": True,
+        "default_params": {
+            "split_strategy": "hybrid_extrapolation_sparse_x_single",
+            "outer_test_size": 0.2,
+            "sparse_candidate_pool_size": 500,
+            "sparse_cluster_count": 5,
+            "sparse_samples_per_cluster": 1,
+            "sparse_kde_bandwidth": None,
+        },
+        "cli_args": [
+            "split_strategy",
+            "test_size",
+            "outer_test_size",
+            "sparse_candidate_pool_size",
+            "sparse_cluster_count",
+            "sparse_samples_per_cluster",
+            "sparse_kde_bandwidth",
+        ],
+    },
+    "hybrid_extrapolation_sparse_y_single": {
+        "display_name": "hybrid high20 + sparse Y single",
+        "config_suffix": "sparse_y_single",
+        "result_dir_suffix": "hybrid_extrapolation_sparse_y_single_k5",
+        "summary_file_name": "split_summary.json",
+        "is_multi_fold": False,
+        "is_hybrid": True,
+        "default_params": {
+            "split_strategy": "hybrid_extrapolation_sparse_y_single",
+            "outer_test_size": 0.2,
+            "sparse_candidate_pool_size": 500,
+            "sparse_cluster_count": 5,
+            "sparse_samples_per_cluster": 1,
+            "sparse_kde_bandwidth": None,
+        },
+        "cli_args": [
+            "split_strategy",
+            "test_size",
+            "outer_test_size",
+            "sparse_candidate_pool_size",
+            "sparse_cluster_count",
+            "sparse_samples_per_cluster",
+            "sparse_kde_bandwidth",
+        ],
+    },
+    "hybrid_extrapolation_sparse_x_cluster": {
+        "display_name": "hybrid high20 + sparse X cluster",
+        "config_suffix": "sparse_x_cluster",
+        "result_dir_suffix": "hybrid_extrapolation_sparse_x_cluster_k5",
+        "summary_file_name": "split_summary.json",
+        "is_multi_fold": False,
+        "is_hybrid": True,
+        "default_params": {
+            "split_strategy": "hybrid_extrapolation_sparse_x_cluster",
+            "outer_test_size": 0.2,
+            "sparse_candidate_pool_size": 500,
+            "sparse_cluster_count": 5,
+            "sparse_neighbors_per_seed": 5,
+        },
+        "cli_args": [
+            "split_strategy",
+            "test_size",
+            "outer_test_size",
+            "sparse_candidate_pool_size",
+            "sparse_cluster_count",
+            "sparse_neighbors_per_seed",
+        ],
+    },
+    "hybrid_extrapolation_sparse_y_cluster": {
+        "display_name": "hybrid high20 + sparse Y cluster",
+        "config_suffix": "sparse_y_cluster",
+        "result_dir_suffix": "hybrid_extrapolation_sparse_y_cluster_k5",
+        "summary_file_name": "split_summary.json",
+        "is_multi_fold": False,
+        "is_hybrid": True,
+        "default_params": {
+            "split_strategy": "hybrid_extrapolation_sparse_y_cluster",
+            "outer_test_size": 0.2,
+            "sparse_candidate_pool_size": 500,
+            "sparse_cluster_count": 5,
+            "sparse_neighbors_per_seed": 5,
+        },
+        "cli_args": [
+            "split_strategy",
+            "test_size",
+            "outer_test_size",
+            "sparse_candidate_pool_size",
+            "sparse_cluster_count",
+            "sparse_neighbors_per_seed",
+        ],
+    },
+    "hybrid_extrapolation_loco": {
+        "display_name": "hybrid high20 + LOCO",
+        "config_suffix": "loco",
+        "result_dir_suffix": "hybrid_extrapolation_loco_k5",
+        "summary_file_name": "loco_manifest.json",
+        "is_multi_fold": True,
+        "is_hybrid": True,
+        "default_params": {
+            "split_strategy": "hybrid_extrapolation_loco",
+            "outer_test_size": 0.2,
+            "loco_cluster_count": 5,
+        },
+        "cli_args": ["split_strategy", "test_size", "outer_test_size", "loco_cluster_count"],
+    },
 }
 
 
@@ -307,6 +433,14 @@ EXPERIMENT_TEMPLATES: Dict[str, Dict[str, Any]] = {
     },
 }
 
+HYBRID_EXPERIMENT_PREFIXES: Dict[str, str] = {
+    "experiment1_all_ml_models": "experiment_hybrid_all_ml_models",
+    "experiment2a_all_nn_scibert": "experiment_hybrid_all_nn_scibert",
+    "experiment2b_all_nn_steelbert": "experiment_hybrid_all_nn_steelbert",
+    "experiment2c_all_nn_matscibert": "experiment_hybrid_all_nn_matscibert",
+    "experiment3_llmprop": "experiment_hybrid_llmprop",
+}
+
 
 def get_alloy_config_ood(alloy_type: str) -> Dict[str, Any]:
     if alloy_type not in ALLOY_CONFIGS_OOD:
@@ -338,6 +472,8 @@ def _build_batch_configs() -> Dict[str, Dict[str, Any]]:
     batch_configs: Dict[str, Dict[str, Any]] = {}
     for template_name, template in EXPERIMENT_TEMPLATES.items():
         for method_name, method_meta in OOD_METHODS.items():
+            if method_meta.get("is_hybrid"):
+                continue
             config_name = f"{template_name}_{method_meta['config_suffix']}"
             batch_configs[config_name] = {
                 **COMMON_OOD_DEFAULTS,
@@ -347,6 +483,23 @@ def _build_batch_configs() -> Dict[str, Dict[str, Any]]:
                 "is_multi_fold": method_meta["is_multi_fold"],
                 "summary_file_name": method_meta["summary_file_name"],
                 "result_dir_suffix": method_meta["result_dir_suffix"],
+                "description": f"{template['description_prefix']} ({method_meta['display_name']})",
+            }
+    for template_name, template in EXPERIMENT_TEMPLATES.items():
+        hybrid_prefix = HYBRID_EXPERIMENT_PREFIXES[template_name]
+        for method_name, method_meta in OOD_METHODS.items():
+            if not method_meta.get("is_hybrid"):
+                continue
+            config_name = f"{hybrid_prefix}_{method_meta['config_suffix']}"
+            batch_configs[config_name] = {
+                **COMMON_OOD_DEFAULTS,
+                **method_meta["default_params"],
+                **template,
+                "ood_method": method_name,
+                "is_multi_fold": method_meta["is_multi_fold"],
+                "summary_file_name": method_meta["summary_file_name"],
+                "result_dir_suffix": method_meta["result_dir_suffix"],
+                "result_base_dir": "output/ood_hybrid_results",
                 "description": f"{template['description_prefix']} ({method_meta['display_name']})",
             }
     return batch_configs

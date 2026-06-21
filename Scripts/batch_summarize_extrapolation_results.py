@@ -9,12 +9,17 @@ import pandas as pd
 from _ood_summary_common import (
     align_summary_metrics_to_artifact,
     annotate_family_ranks,
+    aggregate_hybrid_test_set_metrics,
     create_global_exports,
     export_case_outputs,
+    fill_missing_hybrid_test_set_metrics,
     iter_experiment_dirs,
+    load_hybrid_prediction_subset_metrics,
+    load_hybrid_test_set_metrics,
     normalize_alloy_family_name,
     normalize_ood_method,
     reset_output_dir,
+    save_subset_labeling_audit,
 )
 from _raw_prediction_stats import (
     load_case_level_test_metrics,
@@ -39,12 +44,22 @@ CANONICAL_RAW_METHOD_BY_EXPERIMENT_SUFFIX = {
     "sparse_x_single": {"sparse_x_single_k5", "sparse_x_single"},
     "sparse_y_cluster": {"sparse_y_cluster_k5", "sparse_y_cluster"},
     "sparse_y_single": {"sparse_y_single_k5", "sparse_y_single"},
+    "hybrid_all_ml_models_loco": {"hybrid_extrapolation_loco_k5", "hybrid_extrapolation_loco"},
+    "hybrid_all_ml_models_random_cv": {"hybrid_extrapolation_random_cv_k5", "hybrid_extrapolation_random_cv"},
+    "hybrid_all_ml_models_sparse_x_cluster": {"hybrid_extrapolation_sparse_x_cluster_k5", "hybrid_extrapolation_sparse_x_cluster"},
+    "hybrid_all_ml_models_sparse_x_single": {"hybrid_extrapolation_sparse_x_single_k5", "hybrid_extrapolation_sparse_x_single"},
+    "hybrid_all_ml_models_sparse_y_cluster": {"hybrid_extrapolation_sparse_y_cluster_k5", "hybrid_extrapolation_sparse_y_cluster"},
+    "hybrid_all_ml_models_sparse_y_single": {"hybrid_extrapolation_sparse_y_single_k5", "hybrid_extrapolation_sparse_y_single"},
 }
 
 
 def expected_raw_methods_for_experiment(experiment_name: str) -> set[str]:
-    prefix = "experiment1_all_ml_models_"
-    suffix = experiment_name[len(prefix):] if experiment_name.startswith(prefix) else experiment_name
+    prefixes = ("experiment1_all_ml_models_", "experiment_")
+    suffix = experiment_name
+    for prefix in prefixes:
+        if experiment_name.startswith(prefix):
+            suffix = experiment_name[len(prefix):]
+            break
     return CANONICAL_RAW_METHOD_BY_EXPERIMENT_SUFFIX.get(suffix, set())
 
 
@@ -57,11 +72,12 @@ def build_summary_row(
     model_dir: Path,
     experiment_dir: Path,
     summary: dict[str, object],
+    subset_audit_rows: list[dict[str, object]] | None = None,
 ) -> dict[str, object]:
     representative_model_dir = summary.get("representative_model_dir") or str(model_dir)
     representative_model_path = Path(str(representative_model_dir))
     loco_outer_fold_best_details = summary.get("loco_outer_fold_best_details") or []
-    return {
+    row = {
         "alloy_family": normalize_alloy_family_name(alloy_family),
         "dataset_name": dataset_name,
         "property": property_name,
@@ -89,6 +105,28 @@ def build_summary_row(
         "loco_outer_fold_best_count": len(loco_outer_fold_best_details),
         "loco_outer_fold_best_details_json": json.dumps(loco_outer_fold_best_details, ensure_ascii=False),
     }
+    row.update(load_hybrid_test_set_metrics(model_dir / "final_evaluation_metrics.json"))
+    for key, value in summary.items():
+        if str(key).startswith("summary_test_extrapolation_high20_") or str(key).startswith("summary_test_inner_ood_"):
+            row[key] = value
+    if str(ood_method).startswith("HybridHigh20+") and str(ood_method) != "HybridHigh20+LOCO":
+        recovered_metrics, audit_rows = load_hybrid_prediction_subset_metrics(
+            model_dir,
+            property_name,
+            context={
+                "alloy_family": normalize_alloy_family_name(alloy_family),
+                "dataset_name": dataset_name,
+                "property": property_name,
+                "ood_method": ood_method,
+                "model_family": "Traditional",
+                "model": model_label,
+                "source_dir": str(experiment_dir),
+            },
+        )
+        fill_missing_hybrid_test_set_metrics(row, recovered_metrics)
+        if subset_audit_rows is not None:
+            subset_audit_rows.extend(audit_rows)
+    return row
 
 
 def _outer_fold_index(path: Path) -> int | None:
@@ -126,10 +164,15 @@ def summarize_outer_fold_case_level_metrics(
     """
 
     fold_rows: list[dict[str, object]] = []
+    hybrid_metric_payloads: list[dict[str, object]] = []
     for model_dir in sorted(outer_model_dirs, key=lambda path: (_outer_fold_index(path) is None, _outer_fold_index(path) or 0, str(path))):
         metrics = load_case_level_test_metrics(model_dir, property_name)
         if metrics is None:
             continue
+        metrics_json = model_dir / "final_evaluation_metrics.json"
+        if metrics_json.exists():
+            with metrics_json.open("r", encoding="utf-8") as handle:
+                hybrid_metric_payloads.append(json.load(handle))
         fold_rows.append(
             {
                 "outer_fold_index": _outer_fold_index(model_dir),
@@ -176,7 +219,7 @@ def summarize_outer_fold_case_level_metrics(
     representative_fold = representative_row["outer_fold_index"]
     representative_fold = int(representative_fold) if pd.notna(representative_fold) else pd.NA
 
-    return {
+    summary_payload = {
         property_name: {
             "trial_count": int(len(fold_df)),
             "fold_count": int(len(fold_df)),
@@ -197,13 +240,20 @@ def summarize_outer_fold_case_level_metrics(
             "loco_outer_fold_best_details": fold_rows,
         }
     }
+    summary_payload[property_name].update(aggregate_hybrid_test_set_metrics(hybrid_metric_payloads))
+    return summary_payload
 
 
-def collect_rows(base_dir: Path) -> list[dict[str, object]]:
+def collect_rows(base_dir: Path) -> tuple[list[dict[str, object]], list[dict[str, object]]]:
     rows: list[dict[str, object]] = []
+    subset_audit_rows: list[dict[str, object]] = []
     loco_case_models: dict[tuple[str, str, str, str, str, Path], list[Path]] = {}
 
-    for experiment_dir in iter_experiment_dirs(base_dir, "experiment1_all_ml_models_"):
+    experiment_dirs = [
+        *iter_experiment_dirs(base_dir, "experiment1_all_ml_models_"),
+        *iter_experiment_dirs(base_dir, "experiment_hybrid_all_ml_models_"),
+    ]
+    for experiment_dir in sorted(set(experiment_dirs)):
         expected_raw_methods = expected_raw_methods_for_experiment(experiment_dir.name)
         # The output layout is fixed; scanning the exact Traditional depth is
         # much faster than a recursive walk over every trial artifact.
@@ -244,6 +294,7 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                                 model_dir=model_dir,
                                 experiment_dir=experiment_dir,
                                 summary=summary,
+                                subset_audit_rows=subset_audit_rows,
                             )
                         )
                 continue
@@ -269,7 +320,7 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                     loco_case_models.setdefault(key, []).append(model_dir)
 
     for (alloy_family, dataset_name, property_name, ood_method, model_label, experiment_dir), model_dirs in sorted(loco_case_models.items()):
-        if str(ood_method) in {"LOCO", "RandomCV"}:
+        if str(ood_method) in {"LOCO", "RandomCV", "HybridHigh20+LOCO", "HybridHigh20+RandCV"}:
             summaries = summarize_outer_fold_case_level_metrics(
                 model_dirs,
                 property_name=property_name,
@@ -294,10 +345,11 @@ def collect_rows(base_dir: Path) -> list[dict[str, object]]:
                     model_dir=Path(str(representative_model_dir)),
                     experiment_dir=experiment_dir,
                     summary=summary,
+                    subset_audit_rows=subset_audit_rows,
                 )
             )
 
-    return rows
+    return rows, subset_audit_rows
 
 
 def main() -> None:
@@ -322,7 +374,7 @@ def main() -> None:
     summary_root = args.output_dir or Path("output/ood_summary_reports/Traditional")
     reset_output_dir(summary_root)
 
-    rows = collect_rows(args.base_dir)
+    rows, subset_audit_rows = collect_rows(args.base_dir)
     if not rows:
         print(f"No Traditional multi-OOD metrics were collected under: {args.base_dir}")
         return
@@ -331,6 +383,7 @@ def main() -> None:
     summary_df = annotate_family_ranks(summary_df)
     summary_df["alloy_family"] = summary_df["alloy_family"].map(normalize_alloy_family_name)
     create_global_exports(summary_df, summary_root, "all_traditional_ood_model_summary.csv")
+    save_subset_labeling_audit(subset_audit_rows, summary_root)
     export_case_outputs(summary_df, summary_root)
 
     print(f"Traditional OOD summary complete: {summary_root}")

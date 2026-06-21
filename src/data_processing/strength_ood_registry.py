@@ -3,6 +3,14 @@ from __future__ import annotations
 from typing import Dict, List, Type
 
 from src.data_processing.strength_extrapolation_data_processor import StrengthExtrapolationDataProcessor
+from src.data_processing.strength_hybrid_extrapolation_data_processor import (
+    StrengthHybridExtrapolationLocoDataProcessor,
+    StrengthHybridExtrapolationRandomCVDataProcessor,
+    StrengthHybridExtrapolationSparseXClusterDataProcessor,
+    StrengthHybridExtrapolationSparseXSingleDataProcessor,
+    StrengthHybridExtrapolationSparseYClusterDataProcessor,
+    StrengthHybridExtrapolationSparseYSingleDataProcessor,
+)
 from src.data_processing.strength_loco_data_processor import StrengthLocoDataProcessor
 from src.data_processing.strength_ood_common import StrengthOODProcessorBase
 from src.data_processing.strength_sparse_x_cluster_data_processor import StrengthSparseXClusterDataProcessor
@@ -20,6 +28,12 @@ PROCESSOR_REGISTRY: Dict[str, Type[StrengthOODProcessorBase]] = {
     "sparse_y_cluster": StrengthSparseYClusterDataProcessor,
     "loco": StrengthLocoDataProcessor,
     "random_cv_baseline": StrengthRandomCVBaselineDataProcessor,
+    "hybrid_extrapolation_sparse_x_single": StrengthHybridExtrapolationSparseXSingleDataProcessor,
+    "hybrid_extrapolation_sparse_y_single": StrengthHybridExtrapolationSparseYSingleDataProcessor,
+    "hybrid_extrapolation_sparse_x_cluster": StrengthHybridExtrapolationSparseXClusterDataProcessor,
+    "hybrid_extrapolation_sparse_y_cluster": StrengthHybridExtrapolationSparseYClusterDataProcessor,
+    "hybrid_extrapolation_loco": StrengthHybridExtrapolationLocoDataProcessor,
+    "hybrid_extrapolation_random_cv": StrengthHybridExtrapolationRandomCVDataProcessor,
 }
 
 

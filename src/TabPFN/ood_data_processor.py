@@ -133,6 +133,7 @@ class TabPFNOODDataProcessor:
         target_col: str,
         split_strategy: str,
         test_size: float = 0.2,
+        outer_test_size: float = 0.2,
         extrapolation_side: str = "low_to_high",
         sparse_candidate_pool_size: int = 500,
         sparse_cluster_count: int = 50,
@@ -152,6 +153,7 @@ class TabPFNOODDataProcessor:
             df=feature_frame,
             target_col=target_col,
             test_ratio=test_size,
+            outer_test_size=outer_test_size,
             extrapolation_side=extrapolation_side,
             sparse_candidate_pool_size=sparse_candidate_pool_size,
             sparse_cluster_count=sparse_cluster_count,
@@ -171,6 +173,7 @@ class TabPFNOODDataProcessor:
         target_col: str,
         split_strategy: str,
         test_size: float = 0.2,
+        outer_test_size: float = 0.2,
         extrapolation_side: str = "low_to_high",
         sparse_candidate_pool_size: int = 500,
         sparse_cluster_count: int = 50,
@@ -185,6 +188,7 @@ class TabPFNOODDataProcessor:
             target_col=target_col,
             split_strategy=split_strategy,
             test_size=test_size,
+            outer_test_size=outer_test_size,
             extrapolation_side=extrapolation_side,
             sparse_candidate_pool_size=sparse_candidate_pool_size,
             sparse_cluster_count=sparse_cluster_count,
@@ -239,6 +243,36 @@ class TabPFNOODDataProcessor:
             X_test.loc[:, self.numeric_feature_cols] = X_test_numeric
 
         return X_train, X_test, y_train, y_test, ids_train, ids_test
+
+    def build_additional_test_inputs(
+        self,
+        test_df: pd.DataFrame,
+        target_col: str,
+        scale: bool = True,
+    ) -> Tuple[pd.DataFrame, np.ndarray, np.ndarray]:
+        if not self.available_feature_cols:
+            raise ValueError("Feature columns are not prepared")
+        X_test = test_df[self.available_feature_cols].copy()
+        y_test = test_df[target_col].to_numpy()
+        ids_test = test_df["ID"].to_numpy()
+
+        numeric_cols = [col for col in self.numeric_feature_cols if col in X_test.columns]
+        non_numeric_cols = [col for col in self.non_numeric_feature_cols if col in X_test.columns]
+        if numeric_cols:
+            numeric_values = X_test[numeric_cols].apply(pd.to_numeric, errors="coerce")
+            X_test.loc[:, numeric_cols] = numeric_values.fillna(0)
+        if non_numeric_cols:
+            X_test.loc[:, non_numeric_cols] = X_test[non_numeric_cols].fillna("").astype(str)
+
+        if scale and numeric_cols:
+            X_test_numeric = pd.DataFrame(
+                self.scaler.transform(X_test[numeric_cols]),
+                columns=numeric_cols,
+                index=X_test.index,
+            )
+            X_test = X_test.copy()
+            X_test.loc[:, numeric_cols] = X_test_numeric
+        return self._sanitize_non_numeric_columns(X_test), y_test, ids_test
 
     def save_split_artifacts(
         self,

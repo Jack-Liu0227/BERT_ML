@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 import math
 import random
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass, field, replace
 from pathlib import Path
 from typing import Any, Dict
 
@@ -29,6 +29,7 @@ class LLMPropTrainingConfig:
     train_csv: str
     test_csv: str
     target_column: str
+    test_set_csvs: Dict[str, str] = field(default_factory=dict)
     base_model_path: str = "models/llmprop/google_t5_v1_1_small"
     tokenizer_path: str = "models/llmprop/tokenizers/t5_tokenizer_trained_on_modified_part_of_C4_and_textedge"
     epochs: int = 200
@@ -138,6 +139,15 @@ def _metrics(y_true: np.ndarray, y_pred: np.ndarray, target_column: str, prefix:
     }
 
 
+def _plain_metrics(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    return {
+        "rmse": float(math.sqrt(mean_squared_error(y_true, y_pred))),
+        "mae": float(mean_absolute_error(y_true, y_pred)),
+        "r2": float(r2_score(y_true, y_pred)),
+        "n_samples": int(len(y_true)),
+    }
+
+
 def _save_predictions(
     result_dir: Path,
     train_df: pd.DataFrame,
@@ -167,6 +177,25 @@ def _save_predictions(
     train_out.to_csv(predictions_dir / "train_predictions.csv", index=False)
     test_out.to_csv(predictions_dir / "test_predictions.csv", index=False)
     pd.concat([train_out, test_out], ignore_index=True).to_csv(predictions_dir / "all_predictions.csv", index=False)
+
+
+def _save_test_set_predictions(
+    result_dir: Path,
+    test_set_name: str,
+    test_df: pd.DataFrame,
+    y_true: np.ndarray,
+    y_pred: np.ndarray,
+    target_column: str,
+) -> None:
+    predictions_dir = result_dir / "predictions" / "test_sets"
+    predictions_dir.mkdir(parents=True, exist_ok=True)
+    out = pd.DataFrame()
+    if "ID" in test_df.columns:
+        out["ID"] = test_df["ID"].to_numpy()
+    out["Dataset"] = test_set_name
+    out[f"{target_column}_Actual"] = y_true
+    out[f"{target_column}_Predicted"] = y_pred
+    out.to_csv(predictions_dir / f"{test_set_name}_predictions.csv", index=False)
 
 
 def _candidate_values(values: list[Any], current: Any) -> list[Any]:
@@ -299,6 +328,10 @@ def run_llmprop_ood_training(config: LLMPropTrainingConfig) -> Dict[str, Any]:
 
     train_full = pd.read_csv(config.train_csv)
     test_df = pd.read_csv(config.test_csv)
+    test_set_frames = {
+        str(name): pd.read_csv(path).reset_index(drop=True)
+        for name, path in (config.test_set_csvs or {}).items()
+    }
     if len(train_full) < 3:
         # Very small smoke-test splits cannot support a separate inner
         # validation set. Keep the OOD test untouched and reuse outer train for
@@ -364,6 +397,18 @@ def run_llmprop_ood_training(config: LLMPropTrainingConfig) -> Dict[str, Any]:
         pooling=config.pooling,
         shuffle=False,
     )
+    test_set_loaders = {
+        name: create_dataloader(
+            tokenizer,
+            frame,
+            config.max_len,
+            config.batch_size,
+            config.target_column,
+            pooling=config.pooling,
+            shuffle=False,
+        )
+        for name, frame in test_set_frames.items()
+    }
 
     optimizer = AdamW(model.parameters(), lr=config.learning_rate)
     total_steps = max(1, len(train_loader) * max(1, config.epochs))
@@ -416,10 +461,24 @@ def run_llmprop_ood_training(config: LLMPropTrainingConfig) -> Dict[str, Any]:
     model.load_state_dict(loaded["model_state_dict"])
     train_true, train_pred = _predict(model, outer_train_loader, device, labels_mean, labels_std)
     test_true, test_pred = _predict(model, test_loader, device, labels_mean, labels_std)
+    test_set_metrics: Dict[str, Any] = {}
+    for test_set_name, loader in test_set_loaders.items():
+        test_set_true, test_set_pred = _predict(model, loader, device, labels_mean, labels_std)
+        test_set_metrics[test_set_name] = _plain_metrics(test_set_true, test_set_pred)
+        _save_test_set_predictions(
+            result_dir=result_dir,
+            test_set_name=test_set_name,
+            test_df=test_set_frames[test_set_name],
+            y_true=test_set_true,
+            y_pred=test_set_pred,
+            target_column=config.target_column,
+        )
 
     metrics: Dict[str, Any] = {}
     metrics.update(_metrics(train_true, train_pred, config.target_column, "train"))
     metrics.update(_metrics(test_true, test_pred, config.target_column, "test"))
+    if test_set_metrics:
+        metrics["test_set_metrics"] = test_set_metrics
     metrics["best_epoch"] = best_epoch
     metrics["best_valid_mae"] = best_val_mae
     (result_dir / "final_evaluation_metrics.json").write_text(
@@ -439,8 +498,13 @@ def run_llmprop_ood_training(config: LLMPropTrainingConfig) -> Dict[str, Any]:
         "fold_index": config.fold_index,
         "train_csv": config.train_csv,
         "test_csv": config.test_csv,
+        "test_set_csvs": dict(config.test_set_csvs or {}),
         "train_split_hash": canonical_row_hash(pd.read_csv(config.train_csv)),
         "test_split_hash": canonical_row_hash(pd.read_csv(config.test_csv)),
+        "test_set_split_hashes": {
+            name: canonical_row_hash(frame)
+            for name, frame in test_set_frames.items()
+        },
         "valid_split_hash": canonical_row_hash(valid_df),
         "normalizer": {
             "type": config.normalizer,

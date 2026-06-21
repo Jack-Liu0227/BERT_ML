@@ -43,6 +43,18 @@ OOD_METHOD_MAP = {
     "sparse_y_cluster_k5": "SparseYcluster",
     "sparse_y_single": "SparseYsingle",
     "sparse_y_single_k5": "SparseYsingle",
+    "hybrid_extrapolation_loco": "HybridHigh20+LOCO",
+    "hybrid_extrapolation_loco_k5": "HybridHigh20+LOCO",
+    "hybrid_extrapolation_random_cv": "HybridHigh20+RandCV",
+    "hybrid_extrapolation_random_cv_k5": "HybridHigh20+RandCV",
+    "hybrid_extrapolation_sparse_x_cluster": "HybridHigh20+SparseXcluster",
+    "hybrid_extrapolation_sparse_x_cluster_k5": "HybridHigh20+SparseXcluster",
+    "hybrid_extrapolation_sparse_x_single": "HybridHigh20+SparseXsingle",
+    "hybrid_extrapolation_sparse_x_single_k5": "HybridHigh20+SparseXsingle",
+    "hybrid_extrapolation_sparse_y_cluster": "HybridHigh20+SparseYcluster",
+    "hybrid_extrapolation_sparse_y_cluster_k5": "HybridHigh20+SparseYcluster",
+    "hybrid_extrapolation_sparse_y_single": "HybridHigh20+SparseYsingle",
+    "hybrid_extrapolation_sparse_y_single_k5": "HybridHigh20+SparseYsingle",
 }
 OOD_METHOD_ORDER = [
     "RandomCV",
@@ -52,7 +64,18 @@ OOD_METHOD_ORDER = [
     "SparseXsingle",
     "SparseYcluster",
     "SparseYsingle",
+    "HybridHigh20+RandCV",
+    "HybridHigh20+LOCO",
+    "HybridHigh20+SparseXcluster",
+    "HybridHigh20+SparseXsingle",
+    "HybridHigh20+SparseYcluster",
+    "HybridHigh20+SparseYsingle",
 ]
+HYBRID_TEST_SET_COLUMN_PREFIXES = {
+    "test_extrapolation_high20": "summary_test_extrapolation_high20",
+    "test_inner_ood": "summary_test_inner_ood",
+}
+HYBRID_TEST_SET_METRICS = ("r2", "mae", "rmse", "n_samples")
 SUMMARY_TABLES_DIRNAME = "00_summary_tables"
 CASES_DIRNAME = "01_alloy_cases"
 OOD_SUMMARY_DIRNAME = "02_ood_method_summary"
@@ -67,6 +90,10 @@ TEST_DATASET_ALIASES = {
     "extrapolationtest",
     "extrapolation_test",
     "extrapolation test",
+    "testextrapolationhigh20",
+    "test_extrapolation_high20",
+    "testinnerood",
+    "test_inner_ood",
 }
 CASE_LEVEL_PREDICTION_PATTERNS = [
     "predictions/all_predictions.csv",
@@ -106,6 +133,79 @@ def normalize_alloy_family_name(text: str) -> str:
 def save_csv(df: pd.DataFrame, output_path: Path) -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     df.to_csv(output_path, index=False, encoding="utf-8-sig")
+
+
+def _read_json_if_exists(path: Path) -> dict:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            payload = json.load(handle)
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def flatten_hybrid_test_set_metrics(payload: dict | None, *, include_std: bool = True) -> dict[str, object]:
+    if not isinstance(payload, dict):
+        return {}
+    test_set_metrics = payload.get("test_set_metrics")
+    if not isinstance(test_set_metrics, dict):
+        return {}
+
+    flattened: dict[str, object] = {}
+    for test_set_name, column_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.items():
+        metrics = test_set_metrics.get(test_set_name)
+        if not isinstance(metrics, dict):
+            continue
+        for metric in HYBRID_TEST_SET_METRICS:
+            value = metrics.get(metric)
+            flattened[f"{column_prefix}_{metric}"] = value
+            if include_std and metric != "n_samples":
+                flattened[f"{column_prefix}_{metric}_std"] = 0.0
+    return flattened
+
+
+def load_hybrid_test_set_metrics(metrics_path: Path, *, payload_key: str | None = None) -> dict[str, object]:
+    payload = _read_json_if_exists(metrics_path)
+    if payload_key is not None:
+        nested = payload.get(payload_key, {})
+        payload = nested if isinstance(nested, dict) else {}
+    return flatten_hybrid_test_set_metrics(payload)
+
+
+def aggregate_hybrid_test_set_metrics(payloads: Iterable[dict]) -> dict[str, object]:
+    values: dict[tuple[str, str], list[float]] = {}
+    sample_counts: dict[str, float] = {}
+    for payload in payloads:
+        if not isinstance(payload, dict):
+            continue
+        test_set_metrics = payload.get("test_set_metrics")
+        if not isinstance(test_set_metrics, dict):
+            continue
+        for test_set_name, column_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.items():
+            metrics = test_set_metrics.get(test_set_name)
+            if not isinstance(metrics, dict):
+                continue
+            for metric in ("r2", "mae", "rmse"):
+                value = pd.to_numeric(pd.Series([metrics.get(metric)]), errors="coerce").iloc[0]
+                if pd.notna(value):
+                    values.setdefault((column_prefix, metric), []).append(float(value))
+            count = pd.to_numeric(pd.Series([metrics.get("n_samples")]), errors="coerce").iloc[0]
+            if pd.notna(count):
+                sample_counts[column_prefix] = sample_counts.get(column_prefix, 0.0) + float(count)
+
+    flattened: dict[str, object] = {}
+    for (column_prefix, metric), metric_values in values.items():
+        if not metric_values:
+            continue
+        series = pd.Series(metric_values, dtype="float64")
+        flattened[f"{column_prefix}_{metric}"] = float(series.mean())
+        std_value = series.std()
+        flattened[f"{column_prefix}_{metric}_std"] = 0.0 if pd.isna(std_value) else float(std_value)
+    for column_prefix, count in sample_counts.items():
+        flattened[f"{column_prefix}_n_samples"] = int(count)
+    return flattened
 
 
 def normalize_ood_method(raw_method: str) -> str:
@@ -150,6 +250,13 @@ def ensure_canonical_summary_schema(summary_df: pd.DataFrame) -> pd.DataFrame:
         "rank_within_family": ["rank_within_family"],
         "is_family_best": ["is_family_best"],
     }
+    for column_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+        for metric in HYBRID_TEST_SET_METRICS:
+            column = f"{column_prefix}_{metric}"
+            canonical_map[column] = [column]
+            if metric != "n_samples":
+                std_column = f"{column_prefix}_{metric}_std"
+                canonical_map[std_column] = [std_column]
 
     for column, candidates in canonical_map.items():
         df[column] = first_available(candidates)
@@ -172,6 +279,11 @@ def ensure_canonical_summary_schema(summary_df: pd.DataFrame) -> pd.DataFrame:
         "representative_test_mae": np.nan,
         "representative_test_rmse": np.nan,
     }
+    for column_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+        for metric in HYBRID_TEST_SET_METRICS:
+            numeric_defaults[f"{column_prefix}_{metric}"] = np.nan
+            if metric != "n_samples":
+                numeric_defaults[f"{column_prefix}_{metric}_std"] = 0.0
     for column, default in numeric_defaults.items():
         df[column] = pd.to_numeric(df[column], errors="coerce")
         if default is not np.nan:
@@ -478,6 +590,20 @@ def build_case_wide_summary(case_df: pd.DataFrame) -> pd.DataFrame:
         "representative_test_r2",
         "representative_test_mae",
         "representative_test_rmse",
+        "summary_test_extrapolation_high20_r2",
+        "summary_test_extrapolation_high20_r2_std",
+        "summary_test_extrapolation_high20_mae",
+        "summary_test_extrapolation_high20_mae_std",
+        "summary_test_extrapolation_high20_rmse",
+        "summary_test_extrapolation_high20_rmse_std",
+        "summary_test_extrapolation_high20_n_samples",
+        "summary_test_inner_ood_r2",
+        "summary_test_inner_ood_r2_std",
+        "summary_test_inner_ood_mae",
+        "summary_test_inner_ood_mae_std",
+        "summary_test_inner_ood_rmse",
+        "summary_test_inner_ood_rmse_std",
+        "summary_test_inner_ood_n_samples",
         "rank_within_family",
         "is_family_best",
     ]
@@ -661,6 +787,321 @@ def _align_test_df_to_split_ids(test_df: pd.DataFrame, expected_split_df: pd.Dat
     return merged_df
 
 
+SUBSET_LABELING_AUDIT_COLUMNS = [
+    "alloy_family",
+    "dataset_name",
+    "property",
+    "ood_method",
+    "model_family",
+    "model",
+    "model_dir",
+    "source_dir",
+    "subset_name",
+    "summary_prefix",
+    "status",
+    "source_mode",
+    "source_prediction_file",
+    "split_file",
+    "prediction_id_column",
+    "split_id_column",
+    "actual_column",
+    "predicted_column",
+    "expected_id_count",
+    "matched_prediction_count",
+    "missing_id_count",
+    "metric_row_count",
+]
+
+
+def _nonempty_normalized_ids(series: pd.Series) -> list[str]:
+    values: list[str] = []
+    for value in _normalize_id_series(series).tolist():
+        text = str(value).strip()
+        if not text or text.lower() in {"nan", "none", "<na>"}:
+            continue
+        values.append(text)
+    return values
+
+
+def _find_hybrid_test_set_files(model_dir: Path) -> dict[str, Path]:
+    candidate_dirs: list[Path] = []
+    seen: set[Path] = set()
+    search_paths = [model_dir]
+    search_paths.extend(model_dir.parents[:6])
+
+    for base_path in search_paths:
+        test_sets_dir = base_path / "split_data" / "test_sets"
+        if not test_sets_dir.is_dir():
+            continue
+        resolved = test_sets_dir.resolve()
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        candidate_dirs.append(test_sets_dir)
+
+    subset_files: dict[str, Path] = {}
+    for subset_name in HYBRID_TEST_SET_COLUMN_PREFIXES:
+        for test_sets_dir in candidate_dirs:
+            candidate = test_sets_dir / f"{subset_name}.csv"
+            if candidate.exists():
+                subset_files[subset_name] = candidate
+                break
+    return subset_files
+
+
+def _read_csv_or_none(path: Path) -> pd.DataFrame | None:
+    try:
+        return pd.read_csv(path, low_memory=False)
+    except Exception as exc:
+        print(f"[WARN] Failed to read CSV {path}: {exc}")
+        return None
+
+
+def _hybrid_subset_prediction_candidates(model_dir: Path, subset_name: str) -> list[Path]:
+    patterns = [
+        f"predictions/test_sets/{subset_name}_predictions.csv",
+        f"predictions/test_sets/{subset_name}.csv",
+        "predictions/all_predictions.csv",
+        "predictions/best_model_all_predictions.csv",
+        "predictions/test_predictions.csv",
+        "predictions/best_model_test_predictions.csv",
+    ]
+    candidates: list[Path] = []
+    seen: set[Path] = set()
+    for pattern in patterns:
+        for candidate in model_dir.glob(pattern):
+            if not candidate.is_file():
+                continue
+            resolved = candidate.resolve()
+            if resolved in seen:
+                continue
+            seen.add(resolved)
+            candidates.append(candidate)
+    return candidates
+
+
+def _subset_source_mode(model_dir: Path, candidate_file: Path, subset_name: str) -> str:
+    try:
+        relative_text = "/".join(candidate_file.relative_to(model_dir).parts).lower()
+    except ValueError:
+        relative_text = str(candidate_file).lower()
+    if f"test_sets/{subset_name}" in relative_text:
+        return "subset_prediction_file"
+    if relative_text.endswith("predictions/all_predictions.csv"):
+        return "all_predictions_id_match"
+    if relative_text.endswith("predictions/best_model_all_predictions.csv"):
+        return "best_model_all_predictions_id_match"
+    if "test_predictions" in relative_text:
+        return "test_predictions_id_match"
+    return "prediction_id_match"
+
+
+def _align_prediction_rows_to_split_ids(
+    prediction_df: pd.DataFrame,
+    split_df: pd.DataFrame,
+) -> tuple[pd.DataFrame | None, dict[str, object]]:
+    split_id_col = _resolve_id_column(split_df)
+    pred_id_col = _resolve_id_column(prediction_df)
+
+    if split_id_col is None or pred_id_col is None:
+        return None, {
+            "prediction_id_column": pred_id_col,
+            "split_id_column": split_id_col,
+            "expected_id_count": np.nan,
+            "matched_prediction_count": 0,
+            "missing_id_count": np.nan,
+        }
+
+    expected_ids = _nonempty_normalized_ids(split_df[split_id_col])
+    expected_id_set = set(expected_ids)
+    if not expected_id_set:
+        return None, {
+            "prediction_id_column": pred_id_col,
+            "split_id_column": split_id_col,
+            "expected_id_count": 0,
+            "matched_prediction_count": 0,
+            "missing_id_count": 0,
+        }
+
+    candidate_df = prediction_df.copy()
+    candidate_df["__normalized_id__"] = _normalize_id_series(candidate_df[pred_id_col])
+    candidate_df = candidate_df[candidate_df["__normalized_id__"].isin(expected_id_set)].copy()
+    matched_ids = set(_nonempty_normalized_ids(candidate_df["__normalized_id__"])) if not candidate_df.empty else set()
+    candidate_df = candidate_df.drop_duplicates(subset=["__normalized_id__"], keep="first")
+
+    split_order_df = pd.DataFrame({"__normalized_id__": list(dict.fromkeys(expected_ids))})
+    aligned_df = split_order_df.merge(candidate_df, on="__normalized_id__", how="left", sort=False)
+    aligned_df = aligned_df.drop(columns=["__normalized_id__"])
+
+    return aligned_df, {
+        "prediction_id_column": pred_id_col,
+        "split_id_column": split_id_col,
+        "expected_id_count": int(len(expected_id_set)),
+        "matched_prediction_count": int(len(matched_ids)),
+        "missing_id_count": int(len(expected_id_set - matched_ids)),
+    }
+
+
+def _is_metric_missing(value: object) -> bool:
+    numeric = pd.to_numeric(pd.Series([value]), errors="coerce").iloc[0]
+    return pd.isna(numeric)
+
+
+def has_complete_hybrid_test_set_metrics(values: dict[str, object] | pd.Series) -> bool:
+    for column_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.values():
+        for metric in HYBRID_TEST_SET_METRICS:
+            if _is_metric_missing(values.get(f"{column_prefix}_{metric}", pd.NA)):
+                return False
+    return True
+
+
+def load_hybrid_prediction_subset_metrics(
+    model_dir: Path,
+    property_name: str,
+    *,
+    context: dict[str, object] | None = None,
+) -> tuple[dict[str, object], list[dict[str, object]]]:
+    """Recover hybrid subset metrics from existing prediction rows and split IDs."""
+
+    model_dir = Path(model_dir)
+    context = dict(context or {})
+    metrics_by_subset: dict[str, object] = {}
+    audit_rows: list[dict[str, object]] = []
+    subset_files = _find_hybrid_test_set_files(model_dir)
+
+    for subset_name, summary_prefix in HYBRID_TEST_SET_COLUMN_PREFIXES.items():
+        audit_base = {
+            **context,
+            "subset_name": subset_name,
+            "summary_prefix": summary_prefix,
+            "model_dir": str(model_dir),
+            "source_prediction_file": pd.NA,
+            "split_file": pd.NA,
+            "prediction_id_column": pd.NA,
+            "split_id_column": pd.NA,
+            "actual_column": pd.NA,
+            "predicted_column": pd.NA,
+            "expected_id_count": np.nan,
+            "matched_prediction_count": 0,
+            "missing_id_count": np.nan,
+            "metric_row_count": 0,
+        }
+
+        split_file = subset_files.get(subset_name)
+        if split_file is None:
+            audit_rows.append({**audit_base, "status": "missing_split_file", "source_mode": pd.NA})
+            continue
+
+        split_df = _read_csv_or_none(split_file)
+        if split_df is None:
+            audit_rows.append(
+                {
+                    **audit_base,
+                    "status": "split_read_failed",
+                    "source_mode": pd.NA,
+                    "split_file": str(split_file),
+                }
+            )
+            continue
+
+        chosen_audit: dict[str, object] | None = None
+        chosen_metrics: dict[str, float] | None = None
+        for prediction_file in _hybrid_subset_prediction_candidates(model_dir, subset_name):
+            prediction_df = read_prediction_csv(prediction_file)
+            if prediction_df is None:
+                continue
+
+            _, actual_col, pred_col = resolve_prediction_columns(prediction_df, property_name)
+            aligned_df, id_audit = _align_prediction_rows_to_split_ids(prediction_df, split_df)
+            candidate_audit = {
+                **audit_base,
+                **id_audit,
+                "status": "no_matching_prediction_rows",
+                "source_mode": _subset_source_mode(model_dir, prediction_file, subset_name),
+                "source_prediction_file": str(prediction_file),
+                "split_file": str(split_file),
+                "actual_column": actual_col or pd.NA,
+                "predicted_column": pred_col or pd.NA,
+            }
+
+            if actual_col is None or pred_col is None or aligned_df is None:
+                chosen_audit = candidate_audit
+                continue
+
+            candidate_metrics = _compute_subset_metrics(aligned_df, actual_col, pred_col)
+            if candidate_metrics is None:
+                chosen_audit = candidate_audit
+                continue
+
+            candidate_audit["metric_row_count"] = candidate_metrics["test_row_count"]
+            candidate_audit["status"] = (
+                "complete"
+                if int(candidate_audit.get("missing_id_count", 0) or 0) == 0
+                and int(candidate_audit.get("matched_prediction_count", 0) or 0)
+                == int(candidate_audit.get("expected_id_count", 0) or 0)
+                else "partial_id_match"
+            )
+            chosen_audit = candidate_audit
+            chosen_metrics = candidate_metrics
+            break
+
+        if chosen_metrics is not None:
+            metrics_by_subset[f"{summary_prefix}_r2"] = chosen_metrics["test_r2"]
+            metrics_by_subset[f"{summary_prefix}_r2_std"] = 0.0
+            metrics_by_subset[f"{summary_prefix}_mae"] = chosen_metrics["test_mae"]
+            metrics_by_subset[f"{summary_prefix}_mae_std"] = 0.0
+            metrics_by_subset[f"{summary_prefix}_rmse"] = chosen_metrics["test_rmse"]
+            metrics_by_subset[f"{summary_prefix}_rmse_std"] = 0.0
+            metrics_by_subset[f"{summary_prefix}_n_samples"] = int(chosen_metrics["test_row_count"])
+            audit_rows.append(chosen_audit or {**audit_base, "status": "complete"})
+        else:
+            audit_rows.append(
+                chosen_audit
+                or {
+                    **audit_base,
+                    "status": "missing_prediction_file",
+                    "source_mode": pd.NA,
+                    "split_file": str(split_file),
+                }
+            )
+
+    return metrics_by_subset, audit_rows
+
+
+def fill_missing_hybrid_test_set_metrics(
+    row: dict[str, object],
+    fallback_metrics: dict[str, object],
+) -> None:
+    for key, value in fallback_metrics.items():
+        if key not in row or _is_metric_missing(row.get(key, pd.NA)):
+            row[key] = value
+
+
+def save_subset_labeling_audit(audit_rows: list[dict[str, object]], summary_root: Path) -> None:
+    audit_df = pd.DataFrame(audit_rows)
+    if audit_df.empty:
+        audit_df = pd.DataFrame(columns=SUBSET_LABELING_AUDIT_COLUMNS)
+    else:
+        for column in SUBSET_LABELING_AUDIT_COLUMNS:
+            if column not in audit_df.columns:
+                audit_df[column] = pd.NA
+        sort_columns = [
+            "alloy_family",
+            "dataset_name",
+            "property",
+            "ood_method",
+            "model_family",
+            "model",
+            "subset_name",
+        ]
+        audit_df = (
+            audit_df.reindex(columns=SUBSET_LABELING_AUDIT_COLUMNS)
+            .sort_values(sort_columns, na_position="last")
+            .reset_index(drop=True)
+        )
+    save_csv(audit_df, summary_root / SUMMARY_TABLES_DIRNAME / "subset_labeling_audit.csv")
+
+
 def _artifact_source_label(model_dir: Path, candidate_file: Path) -> str:
     try:
         relative_parts = candidate_file.relative_to(model_dir).parts
@@ -704,7 +1145,7 @@ def _collect_case_level_prediction_candidates(model_dir: Path) -> list[Path]:
 def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
     property_name = str(row.get("property", "") or "")
     loco_fold_details = _load_loco_outer_fold_best_details(row)
-    if str(row.get("ood_method", "") or "") in {"LOCO", "RandomCV"} and loco_fold_details:
+    if str(row.get("ood_method", "") or "") in {"LOCO", "RandomCV", "HybridHigh20+LOCO", "HybridHigh20+RandCV"} and loco_fold_details:
         outer_df = pd.DataFrame(loco_fold_details)
         if not outer_df.empty and {"outer_test_r2", "outer_test_mae", "outer_test_rmse"}.issubset(outer_df.columns):
             outer_df["outer_test_r2"] = pd.to_numeric(outer_df["outer_test_r2"], errors="coerce")
@@ -750,7 +1191,7 @@ def resolve_case_level_artifact(row: pd.Series) -> dict[str, object] | None:
 
     tabpfn_loco_fold_details = _load_tabpfn_loco_fold_details(row)
     if (
-        str(row.get("ood_method", "") or "") in {"LOCO", "RandomCV"}
+        str(row.get("ood_method", "") or "") in {"LOCO", "RandomCV", "HybridHigh20+LOCO", "HybridHigh20+RandCV"}
         and str(row.get("model_family", "") or "") == "TabPFN"
         and tabpfn_loco_fold_details
     ):

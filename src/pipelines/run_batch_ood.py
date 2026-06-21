@@ -42,6 +42,9 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+HYBRID_STRATEGY_PREFIX = "hybrid_extrapolation_"
+HYBRID_REQUIRED_TEST_SET_NAMES = ("test_extrapolation_high20", "test_inner_ood")
+
 
 class ProgressManager:
     def __init__(self, progress_file: str = ".batch_progress_ood.json") -> None:
@@ -171,6 +174,11 @@ def is_llmprop_config(args: Any) -> bool:
     return bool(getattr(args, "use_llmprop", False))
 
 
+def is_hybrid_config(args: Any, method_meta: Dict[str, Any]) -> bool:
+    split_strategy = str(getattr(args, "split_strategy", ""))
+    return split_strategy.startswith(HYBRID_STRATEGY_PREFIX) or bool(method_meta.get("is_hybrid"))
+
+
 def _dataset_name_from_config(raw_data: str) -> str:
     dataset_name = Path(raw_data).stem
     for suffix in ["_Processed_cleaned", "_with_ID", "_withID", "_cleaned", "_processed", "_Processed"]:
@@ -188,9 +196,9 @@ def build_result_dir(
     dataset_name = _dataset_name_from_config(alloy_config["raw_data"])
     target_column = alloy_config["target_column"]
     terminal_dir = "llmprop" if is_llmprop_config(args) else args.embedding_type
+    result_base_dir = Path(getattr(args, "result_base_dir", "output/ood_results"))
     return (
-        Path("output")
-        / "ood_results"
+        result_base_dir
         / config_name
         / alloy_type
         / dataset_name
@@ -202,6 +210,8 @@ def build_result_dir(
 
 def _append_method_specific_args(cmd: List[str], args: Any, method_meta: Dict[str, Any]) -> None:
     cli_args = set(method_meta.get("cli_args", []))
+    if "outer_test_size" in cli_args:
+        cmd.extend(["--outer_test_size", str(args.outer_test_size)])
     if "extrapolation_side" in cli_args:
         cmd.extend(["--extrapolation_side", args.extrapolation_side])
     if "sparse_candidate_pool_size" in cli_args:
@@ -354,7 +364,52 @@ def _json_manifest_matches(path: Path, target_column: str) -> bool:
     return recorded_target in (None, target_column)
 
 
-def _ml_model_artifacts_complete(run_root: Path, target_column: str, model_name: str) -> bool:
+def _load_json_object(path: Path) -> Dict[str, Any]:
+    if not path.exists() or path.stat().st_size == 0:
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _has_combined_metrics(payload: Dict[str, Any]) -> bool:
+    combined_summary = payload.get("combined_evaluation_summary")
+    if isinstance(combined_summary, dict):
+        return bool(combined_summary)
+    return any(key != "test_set_metrics" and value is not None for key, value in payload.items())
+
+
+def _has_required_hybrid_test_set_metrics(payload: Dict[str, Any]) -> bool:
+    test_set_metrics = payload.get("test_set_metrics")
+    if not isinstance(test_set_metrics, dict):
+        return False
+    for test_set_name in HYBRID_REQUIRED_TEST_SET_NAMES:
+        metrics = test_set_metrics.get(test_set_name)
+        if not isinstance(metrics, dict) or not metrics:
+            return False
+        metric_keys = {"mae", "rmse", "r2", "test_mae", "test_rmse", "test_r2", "n_samples"}
+        if not metric_keys.intersection(metrics):
+            return False
+    return True
+
+
+def _metrics_file_complete(path: Path, require_hybrid_test_sets: bool) -> bool:
+    payload = _load_json_object(path)
+    if not payload or not _has_combined_metrics(payload):
+        return False
+    if require_hybrid_test_sets and not _has_required_hybrid_test_set_metrics(payload):
+        return False
+    return True
+
+
+def _ml_model_artifacts_complete(
+    run_root: Path,
+    target_column: str,
+    model_name: str,
+    require_hybrid_test_sets: bool = False,
+) -> bool:
     model_dir = run_root / "model_comparison" / f"{model_name}_results"
     if not _json_manifest_matches(model_dir / "ood_manifest.json", target_column):
         return False
@@ -365,10 +420,16 @@ def _ml_model_artifacts_complete(run_root: Path, target_column: str, model_name:
         model_dir / "final_evaluation_metrics.json",
         model_dir / "cv_avg_metrics.json",
     ]
+    if require_hybrid_test_sets:
+        return _metrics_file_complete(model_dir / "final_evaluation_metrics.json", True)
     return any(path.exists() and path.stat().st_size > 0 for path in metric_candidates)
 
 
-def _nn_artifacts_complete(run_root: Path, target_column: str) -> bool:
+def _nn_artifacts_complete(
+    run_root: Path,
+    target_column: str,
+    require_hybrid_test_sets: bool = False,
+) -> bool:
     if not _json_manifest_matches(run_root / "ood_manifest.json", target_column):
         return False
     checkpoint_candidates = [
@@ -377,14 +438,21 @@ def _nn_artifacts_complete(run_root: Path, target_column: str) -> bool:
     ]
     if not any(path.exists() and path.stat().st_size > 0 for path in checkpoint_candidates):
         return False
+    if require_hybrid_test_sets:
+        return _metrics_file_complete(run_root / "final_evaluation_metrics.json", True)
     metric_candidates = [
+        run_root / "final_evaluation_metrics.json",
         run_root / "best_model_best_model_evaluation_evaluation_summary.json",
         run_root / "cv_avg_metrics.json",
     ]
     return any(path.exists() and path.stat().st_size > 0 for path in metric_candidates)
 
 
-def _llmprop_artifacts_complete(run_root: Path, target_column: str) -> bool:
+def _llmprop_artifacts_complete(
+    run_root: Path,
+    target_column: str,
+    require_hybrid_test_sets: bool = False,
+) -> bool:
     manifest_path = run_root / "llmprop_manifest.json"
     metrics_path = run_root / "final_evaluation_metrics.json"
     checkpoint_path = run_root / "checkpoints" / "best_model.pt"
@@ -395,7 +463,9 @@ def _llmprop_artifacts_complete(run_root: Path, target_column: str) -> bool:
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
     except Exception:
         return False
-    return payload.get("target_column") == target_column
+    if payload.get("target_column") != target_column:
+        return False
+    return _metrics_file_complete(metrics_path, require_hybrid_test_sets)
 
 
 def _load_fold_roots(result_dir: Path, method_meta: Dict[str, Any]) -> List[Path]:
@@ -442,6 +512,7 @@ def task_artifacts_complete(
     """
     result_dir = build_result_dir(config_name, alloy_type, alloy_config, args, method_meta)
     target_column = alloy_config["target_column"]
+    require_hybrid_test_sets = is_hybrid_config(args, method_meta)
     if not result_dir.exists():
         return False
 
@@ -450,16 +521,22 @@ def task_artifacts_complete(
         if not fold_roots:
             return False
         if is_llmprop_config(args):
-            return all(_llmprop_artifacts_complete(fold_root, target_column) for fold_root in fold_roots)
+            return all(
+                _llmprop_artifacts_complete(fold_root, target_column, require_hybrid_test_sets)
+                for fold_root in fold_roots
+            )
         if model_name:
-            return all(_ml_model_artifacts_complete(fold_root, target_column, model_name) for fold_root in fold_roots)
-        return all(_nn_artifacts_complete(fold_root, target_column) for fold_root in fold_roots)
+            return all(
+                _ml_model_artifacts_complete(fold_root, target_column, model_name, require_hybrid_test_sets)
+                for fold_root in fold_roots
+            )
+        return all(_nn_artifacts_complete(fold_root, target_column, require_hybrid_test_sets) for fold_root in fold_roots)
 
     if is_llmprop_config(args):
-        return _llmprop_artifacts_complete(result_dir, target_column)
+        return _llmprop_artifacts_complete(result_dir, target_column, require_hybrid_test_sets)
     if model_name:
-        return _ml_model_artifacts_complete(result_dir, target_column, model_name)
-    return _nn_artifacts_complete(result_dir, target_column)
+        return _ml_model_artifacts_complete(result_dir, target_column, model_name, require_hybrid_test_sets)
+    return _nn_artifacts_complete(result_dir, target_column, require_hybrid_test_sets)
 
 
 def should_skip_completed_task(
@@ -474,6 +551,12 @@ def should_skip_completed_task(
     model_name: Optional[str] = None,
 ) -> bool:
     if progress_manager.is_task_completed(config_name, task_key):
+        if is_hybrid_config(args, method_meta):
+            if task_artifacts_complete(config_name, alloy_type, alloy_config, args, method_meta, model_name):
+                logger.info(f"[SKIP] {config_name} / {task_key} (progress=success, hybrid artifacts complete)")
+                return True
+            logger.info(f"[RERUN] {config_name} / {task_key} (progress=success but hybrid metrics are incomplete)")
+            return False
         logger.info(f"[SKIP] {config_name} / {task_key} (progress=success)")
         return True
     if task_artifacts_complete(config_name, alloy_type, alloy_config, args, method_meta, model_name):
@@ -707,7 +790,7 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--targets",
         nargs="+",
-        help='Optional target columns to run, e.g. --targets "UTS(MPa)" "El(%)". Filters each selected alloy.',
+        help='Optional target columns to run, e.g. --targets "UTS(MPa)" "El(%%)". Filters each selected alloy.',
     )
     parser.add_argument(
         "--jobs",

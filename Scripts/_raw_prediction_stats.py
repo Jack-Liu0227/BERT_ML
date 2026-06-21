@@ -9,7 +9,15 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 
 
 CSV_ENCODINGS = ["utf-8-sig", "utf-8", "gb18030", "gbk", "latin1"]
-TEST_LABELS = {"test", "testing", "extrapolationtest"}
+TEST_LABELS = {
+    "test",
+    "testing",
+    "extrapolationtest",
+    "test_extrapolation_high20",
+    "testextrapolationhigh20",
+    "test_inner_ood",
+    "testinnerood",
+}
 CASE_LEVEL_TEST_LABELS = {
     "test",
     "testing",
@@ -19,6 +27,10 @@ CASE_LEVEL_TEST_LABELS = {
     "extrapolationtest",
     "extrapolation_test",
     "extrapolation test",
+    "test_extrapolation_high20",
+    "test extrapolation high20",
+    "test_inner_ood",
+    "test inner ood",
 }
 LOCO_OUTER_PREDICTION_PATTERNS = [
     "predictions/all_predictions.csv",
@@ -51,6 +63,8 @@ def read_prediction_csv(file_path: Path) -> Optional[pd.DataFrame]:
         if column in {"Dataset", "set", "ID", "id"}
         or column.endswith("_Actual")
         or column.endswith("_Predicted")
+        or column.lower().endswith("_true")
+        or column.lower().endswith("_predicted")
         or column.startswith("True_")
         or column.startswith("Pred_")
     ]
@@ -709,15 +723,19 @@ def resolve_prediction_columns(df: pd.DataFrame, property_name: str) -> tuple[Op
 
     actual_col = None
     pred_col = None
+    column_lookup = {str(column).lower(): column for column in df.columns}
     for token in _property_tokens(property_name):
         for actual_candidate, pred_candidate in [
             (f"{token}_Actual", f"{token}_Predicted"),
             (f"True_{token}", f"Pred_{token}"),
             (f"Actual_{token}", f"Predicted_{token}"),
+            (f"{token}_true", f"{token}_predicted"),
         ]:
-            if actual_candidate in df.columns and pred_candidate in df.columns:
-                actual_col = actual_candidate
-                pred_col = pred_candidate
+            actual_match = column_lookup.get(actual_candidate.lower())
+            pred_match = column_lookup.get(pred_candidate.lower())
+            if actual_match is not None and pred_match is not None:
+                actual_col = actual_match
+                pred_col = pred_match
                 return dataset_col, actual_col, pred_col
 
     return dataset_col, actual_col, pred_col

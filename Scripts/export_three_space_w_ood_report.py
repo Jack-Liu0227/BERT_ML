@@ -13,6 +13,8 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
+from matplotlib.lines import Line2D
+from matplotlib.ticker import FuncFormatter, NullFormatter
 import numpy as np
 import pandas as pd
 from scipy import sparse
@@ -72,6 +74,15 @@ METHOD_COLORS = {
     "sparse_y_single": "#72b7b2",
     "sparse_x_cluster": "#e45756",
     "sparse_y_cluster": "#54a24b",
+}
+METHOD_CURVE_COLORS = {
+    "random_cv_baseline": "#111111",
+    "loco": "#0072B2",
+    "target_extrapolation": "#D55E00",
+    "sparse_x_single": "#E69F00",
+    "sparse_y_single": "#009E73",
+    "sparse_x_cluster": "#CC79A7",
+    "sparse_y_cluster": "#56B4E9",
 }
 SPACE_COLORS = {
     "Y-space": "#6b9ac4",
@@ -159,6 +170,13 @@ def save_figure(fig: plt.Figure, output_base: Path, formats: Iterable[str], dpi:
     plt.close(fig)
 
 
+def remove_stale_task_dashboard_figures(case_dir: Path) -> None:
+    for fmt in ("png", "pdf", "svg"):
+        stale_path = case_dir / f"task_w_dashboard.{fmt}"
+        if stale_path.exists():
+            stale_path.unlink()
+
+
 def slugify(value: object) -> str:
     text = str(value).strip()
     text = re.sub(r"[^\w\u4e00-\u9fff.-]+", "_", text, flags=re.UNICODE)
@@ -180,6 +198,10 @@ def method_label(method: str) -> str:
 
 def method_color(method: str) -> str:
     return METHOD_COLORS.get(method, "#4c78a8")
+
+
+def method_curve_color(method: str) -> str:
+    return METHOD_CURVE_COLORS.get(method, method_color(method))
 
 
 def required_x_columns() -> tuple[list[str], list[str]]:
@@ -449,20 +471,40 @@ def style_axes(ax: plt.Axes, grid_axis: str = "y") -> None:
     ax.set_axisbelow(True)
 
 
-def maybe_symlog_y(ax: plt.Axes, values: Iterable[float], label: str) -> None:
+def normalized_rank_x(count: int) -> np.ndarray:
+    if count <= 0:
+        return np.asarray([], dtype=float)
+    if count == 1:
+        return np.asarray([0.0], dtype=float)
+    return np.linspace(0.0, 1.0, count)
+
+
+def plain_number_tick(value: float, _pos: int) -> str:
+    if abs(value) < 1e-12:
+        return "0"
+    if abs(value) >= 100:
+        return f"{value:.0f}"
+    if abs(value) >= 10:
+        return f"{value:g}"
+    return f"{value:.2f}".rstrip("0").rstrip(".")
+
+
+def set_nonnegative_adaptive_y(ax: plt.Axes, values: Iterable[float], label: str) -> None:
     finite = np.asarray([float(value) for value in values if pd.notna(value) and math.isfinite(float(value))])
     max_value = float(np.nanmax(finite)) if finite.size else 1.0
     if finite.size and max_value > 15:
         ax.set_yscale("symlog", linthresh=1.0)
-        ax.set_ylabel(f"{label} (symlog)")
+        ax.yaxis.set_major_formatter(FuncFormatter(plain_number_tick))
+        ax.yaxis.set_minor_formatter(NullFormatter())
     else:
-        ax.set_ylabel(label)
+        ax.set_yscale("linear")
+    ax.set_ylabel(label)
     _, upper = ax.get_ylim()
     padded_upper = max(upper * 1.05, max_value * 1.25, 1.0)
     ax.set_ylim(bottom=0.0, top=padded_upper)
 
 
-def plot_three_space_ratio(case_summary: pd.DataFrame, output_base: Path, formats: Iterable[str], dpi: int) -> None:
+def plot_task_ratio(case_summary: pd.DataFrame, output_base: Path, formats: Iterable[str], dpi: int) -> None:
     methods = ordered_methods_by_ood(case_summary)
     work = case_summary.set_index("method").reindex(methods)
     x = np.arange(len(methods), dtype=float)
@@ -488,8 +530,8 @@ def plot_three_space_ratio(case_summary: pd.DataFrame, output_base: Path, format
     ax.axhline(1.0, color="#333333", linestyle="--", linewidth=1.0, label="Random-CV baseline")
     ax.set_xticks(x)
     ax.set_xticklabels([method_label(method) for method in methods], rotation=25, ha="right")
-    maybe_symlog_y(ax, all_values, "W ratio vs Random-CV")
-    ax.set_title(f"Three-space W ratio vs Random-CV\n{work['case_label'].dropna().iloc[0]}")
+    set_nonnegative_adaptive_y(ax, all_values, "W ratio vs Random-CV")
+    ax.set_title(f"A. Method-level W ratio vs Random-CV\n{work['case_label'].dropna().iloc[0]}")
     ax.legend(frameon=False, ncol=4, loc="upper left")
     style_axes(ax)
     fig.tight_layout()
@@ -552,7 +594,7 @@ def plot_xspace_boxplot(case_samples: pd.DataFrame, output_base: Path, formats: 
 
     ax.set_xticks(positions)
     ax.set_xticklabels([method_label(method) for method in methods], rotation=25, ha="right")
-    maybe_symlog_y(ax, all_values, "X-space sample W contribution")
+    set_nonnegative_adaptive_y(ax, all_values, "X-space sample W contribution")
     ax.set_title(f"X-space sample-level W contribution\n{case_samples['case_label'].dropna().iloc[0]}")
     ax.scatter([], [], marker="D", color="#111111", label="Mean")
     ax.plot([], [], marker="_", color="#333333", linestyle="None", markersize=12, markeredgewidth=2.0, label="Median")
@@ -679,7 +721,7 @@ def plot_sample_w_boxplot(
 
     ax.set_xticks(positions)
     ax.set_xticklabels([method_label(method) for method in methods], rotation=28, ha="right")
-    maybe_symlog_y(ax, plotted_values, ylabel)
+    set_nonnegative_adaptive_y(ax, plotted_values, ylabel)
     ax.set_title(f"{panel_label}. {space} sample W distribution", loc="left", fontweight="bold")
     style_axes(ax)
 
@@ -708,7 +750,7 @@ def plot_sample_w_ranked_curve(
                     continue
                 values = values.sort_values(ascending=False).reset_index(drop=True)
                 plotted_values.extend([float(value) for value in values if math.isfinite(float(value))])
-                rank_x = (np.arange(len(values)) + 1) / len(values)
+                rank_x = normalized_rank_x(len(values))
                 ax.plot(
                     rank_x,
                     values.to_numpy(dtype=float),
@@ -725,7 +767,7 @@ def plot_sample_w_ranked_curve(
                 continue
             values = values.sort_values(ascending=False).reset_index(drop=True)
             plotted_values.extend([float(value) for value in values if math.isfinite(float(value))])
-            rank_x = (np.arange(len(values)) + 1) / len(values)
+            rank_x = normalized_rank_x(len(values))
             ax.plot(
                 rank_x,
                 values.to_numpy(dtype=float),
@@ -745,14 +787,148 @@ def plot_sample_w_ranked_curve(
         ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, color="#555555")
 
     ax.set_xlabel("Normalized rank within method/fold")
-    maybe_symlog_y(ax, plotted_values, ylabel)
+    set_nonnegative_adaptive_y(ax, plotted_values, ylabel)
     ax.set_title(f"{panel_label}. {space} ranked sample W curve", loc="left", fontweight="bold")
     if legend_count:
         ax.legend(frameon=False, fontsize=6.2, ncol=2, loc="upper right")
     style_axes(ax)
 
 
-def plot_task_dashboard(
+def plot_aggregate_ranked_curve(
+    ax: plt.Axes,
+    case_samples: pd.DataFrame,
+    methods: list[str],
+    space: str,
+    panel_label: str,
+    ylabel: str,
+    show_legend: bool = False,
+) -> None:
+    work = case_samples[case_samples["space"] == space].copy()
+    plotted_values: list[float] = []
+    plotted_methods: list[str] = []
+
+    for method in methods:
+        method_rows = work[work["method"] == method].copy()
+        if method_rows.empty:
+            continue
+        values = finite_sample_values(method_rows)
+        if values.empty:
+            continue
+        values = values.sort_values(ascending=False).reset_index(drop=True)
+        plotted_values.extend([float(value) for value in values if math.isfinite(float(value))])
+        plotted_methods.append(method)
+        rank_x = normalized_rank_x(len(values))
+        ax.plot(
+            rank_x,
+            values.to_numpy(dtype=float),
+            color=method_curve_color(method),
+            linestyle="-",
+            linewidth=2.0,
+            alpha=0.95,
+            label=method_label(method),
+        )
+
+    if not plotted_values:
+        statuses = sorted(set(work.get("status", pd.Series(dtype=str)).dropna().astype(str)))
+        message = "Missing sample-level values"
+        if statuses:
+            message += "\n" + " | ".join(statuses[:3])
+        ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, color="#555555")
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel("Normalized rank within method")
+    set_nonnegative_adaptive_y(ax, plotted_values, ylabel)
+    ax.set_title(f"{panel_label}. {space} aggregate ranked sample W curve", loc="left", fontweight="bold")
+    if show_legend and plotted_methods:
+        ax.legend(frameon=False, fontsize=7.1, ncol=2, loc="upper right")
+    style_axes(ax)
+
+
+def add_fold_curve_legend(ax: plt.Axes, fold_ids: list[str]) -> None:
+    fig = ax.figure
+    method_handles = [
+        Line2D([0], [0], color="#333333", linestyle="-", linewidth=1.8, label="LOCO"),
+        Line2D([0], [0], color="#333333", linestyle="--", linewidth=1.8, label="Random-CV"),
+    ]
+    fig.legend(
+        handles=method_handles,
+        title="Method",
+        frameon=False,
+        fontsize=7.0,
+        title_fontsize=7.2,
+        loc="upper right",
+        bbox_to_anchor=(0.985, 0.875),
+    )
+
+    fold_handles = [
+        Line2D([0], [0], color=fold_color(fold_id), linestyle="-", linewidth=2.0, label=fold_id)
+        for fold_id in fold_ids
+    ]
+    if fold_handles:
+        fig.legend(
+            handles=fold_handles,
+            title="Fold",
+            frameon=False,
+            fontsize=7.0,
+            title_fontsize=7.2,
+            loc="upper right",
+            bbox_to_anchor=(0.985, 0.79),
+        )
+
+
+def plot_fold_ranked_curve(
+    ax: plt.Axes,
+    case_samples: pd.DataFrame,
+    space: str,
+    panel_label: str,
+    ylabel: str,
+    show_legend: bool = False,
+) -> None:
+    work = case_samples[case_samples["space"] == space].copy()
+    fold_methods = [method for method in ["loco", "random_cv_baseline"] if method in set(work["method"].astype(str))]
+    fold_ids = sorted(
+        work.loc[work["method"].isin(fold_methods), "fold_id"].dropna().astype(str).unique(),
+        key=fold_sort_key,
+    )
+    plotted_values: list[float] = []
+    plotted_line_count = 0
+
+    for fold_id in fold_ids:
+        for method in fold_methods:
+            method_rows = work[(work["method"] == method) & (work["fold_id"].astype(str) == fold_id)]
+            values = finite_sample_values(method_rows)
+            if values.empty:
+                continue
+            values = values.sort_values(ascending=False).reset_index(drop=True)
+            plotted_values.extend([float(value) for value in values if math.isfinite(float(value))])
+            rank_x = normalized_rank_x(len(values))
+            ax.plot(
+                rank_x,
+                values.to_numpy(dtype=float),
+                color=fold_color(fold_id),
+                linestyle=method_linestyle(method),
+                linewidth=1.45 if method == "random_cv_baseline" else 1.7,
+                alpha=0.9,
+            )
+            plotted_line_count += 1
+
+    if not plotted_values:
+        statuses = sorted(set(work.get("status", pd.Series(dtype=str)).dropna().astype(str)))
+        message = "Missing LOCO/Random-CV fold-level values"
+        if statuses:
+            message += "\n" + " | ".join(statuses[:3])
+        ax.text(0.5, 0.5, message, ha="center", va="center", transform=ax.transAxes, color="#555555")
+
+    ax.set_xlim(0.0, 1.0)
+    ax.set_xlabel("Normalized rank within method/fold")
+    set_nonnegative_adaptive_y(ax, plotted_values, ylabel)
+    ax.set_title(f"{panel_label}. {space} LOCO/Random-CV fold ranked W curve", loc="left", fontweight="bold")
+    if show_legend and plotted_line_count:
+        add_fold_curve_legend(ax, fold_ids)
+    style_axes(ax)
+
+
+def plot_task_curves(
     case_summary: pd.DataFrame,
     case_samples: pd.DataFrame,
     output_base: Path,
@@ -760,66 +936,58 @@ def plot_task_dashboard(
     dpi: int,
 ) -> None:
     methods = ordered_methods_by_ood(case_summary)
-    summary_indexed = case_summary.set_index("method").reindex(methods)
-    labels = [method_label(method) for method in methods]
     case_label = case_summary["case_label"].dropna().iloc[0]
 
-    fig = plt.figure(figsize=(18.5, 15.2))
-    grid = fig.add_gridspec(
-        4,
-        2,
-        height_ratios=[0.92, 1.0, 1.0, 1.0],
-        hspace=0.52,
-        wspace=0.24,
-        left=0.065,
-        right=0.985,
-        top=0.91,
-        bottom=0.065,
+    fig, axes = plt.subplots(3, 3, figsize=(21.5, 12.2))
+    fig.suptitle(
+        f"Sample-level W contribution distributions and ranked curves\n{case_label}",
+        fontsize=15,
+        fontweight="bold",
+        y=0.982,
     )
-    fig.suptitle(f"Three-space sample-level W-OOD dashboard\n{case_label}", fontsize=15, fontweight="bold", y=0.975)
 
-    ax = fig.add_subplot(grid[0, :])
-    x = np.arange(len(methods), dtype=float)
-    width = 0.24
-    offsets = {"Y-space": -width, "Z-space": 0.0, "X-space": width}
-    ratio_columns = {"Y-space": "Y_ratio", "Z-space": "Z_ratio", "X-space": "X_ratio"}
-    ratio_values: list[float] = []
-    for space_name, column in ratio_columns.items():
-        values = pd.to_numeric(summary_indexed[column], errors="coerce").to_numpy(dtype=float)
-        ratio_values.extend([value for value in values if math.isfinite(value)])
-        ax.bar(
-            x + offsets[space_name],
-            values,
-            width=width,
-            label=space_name,
-            color=SPACE_COLORS[space_name],
-            edgecolor="#333333",
-            linewidth=0.45,
+    panel_specs = [
+        ("X-space", "B", "C", "D", "X-space sample W"),
+        ("Y-space", "E", "F", "G", "Y-space sample W"),
+        ("Z-space", "H", "I", "J", "Z-space sample W"),
+    ]
+    for row, (space, box_label, aggregate_label, fold_label, ylabel) in enumerate(panel_specs):
+        plot_sample_w_boxplot(
+            axes[row, 0],
+            case_samples,
+            methods,
+            space,
+            box_label,
+            ylabel,
         )
-    ax.axhline(1.0, color="#333333", linestyle="--", linewidth=1.0, label="Random-CV")
-    ax.set_xticks(x)
-    ax.set_xticklabels(labels, rotation=28, ha="right")
-    maybe_symlog_y(ax, ratio_values, "W ratio vs Random-CV")
-    ax.set_title("A. Method-level W ratio vs Random-CV", loc="left", fontweight="bold")
-    ax.legend(frameon=False, fontsize=8, ncol=4, loc="upper left")
-    style_axes(ax)
-
-    plot_sample_w_boxplot(fig.add_subplot(grid[1, 0]), case_samples, methods, "X-space", "B", "X-space sample W")
-    plot_sample_w_ranked_curve(fig.add_subplot(grid[1, 1]), case_samples, methods, "X-space", "C", "X-space sample W")
-    plot_sample_w_boxplot(fig.add_subplot(grid[2, 0]), case_samples, methods, "Y-space", "D", "Y-space sample W")
-    plot_sample_w_ranked_curve(fig.add_subplot(grid[2, 1]), case_samples, methods, "Y-space", "E", "Y-space sample W")
-    plot_sample_w_boxplot(fig.add_subplot(grid[3, 0]), case_samples, methods, "Z-space", "F", "Z-space sample W")
-    plot_sample_w_ranked_curve(fig.add_subplot(grid[3, 1]), case_samples, methods, "Z-space", "G", "Z-space sample W")
+        plot_aggregate_ranked_curve(
+            axes[row, 1],
+            case_samples,
+            methods,
+            space,
+            aggregate_label,
+            ylabel,
+            show_legend=row == 0,
+        )
+        plot_fold_ranked_curve(
+            axes[row, 2],
+            case_samples,
+            space,
+            fold_label,
+            ylabel,
+            show_legend=row == 0,
+        )
 
     fig.text(
-        0.012,
-        0.012,
-        "Fold-aware methods: Random-CV is dashed, LOCO is solid; fold colors identify fold_id.",
+        0.01,
+        0.01,
+        "Left panels show full sample W distributions. Middle panels collapse all finite sample contributions by method. Right panels use fold color plus LOCO solid / Random-CV dashed line style.",
         ha="left",
         va="bottom",
-        fontsize=8,
+        fontsize=8.2,
         color="#444444",
     )
+    fig.tight_layout(rect=(0.0, 0.025, 0.9, 0.965))
 
     save_figure(fig, output_base, formats, dpi)
 
@@ -1502,13 +1670,17 @@ def _build_report_legacy_mojibake(
     for case_key, case_summary in summary.groupby("case_key", sort=False):
         case_label = case_summary["case_label"].iloc[0]
         case_dir = output_root / "cases" / case_key
-        dashboard_png = case_dir / "task_w_dashboard.png"
-        dashboard_rel = dashboard_png.relative_to(output_root).as_posix()
+        ratio_png = case_dir / "task_w_ratio.png"
+        curves_png = case_dir / "task_w_curves.png"
+        ratio_rel = ratio_png.relative_to(output_root).as_posix()
+        curves_rel = curves_png.relative_to(output_root).as_posix()
         lines.extend(
             [
                 f"### {case_label}",
                 "",
-                f"![{case_label} task dashboard]({dashboard_rel})",
+                f"![{case_label} task W ratio]({ratio_rel})",
+                "",
+                f"![{case_label} task W curves]({curves_rel})",
                 "",
                 markdown_table(
                     case_summary,
@@ -1716,20 +1888,24 @@ def build_report(
             "",
             "## 分 task 图表",
             "",
-            "每个 dashboard 包含 7 个 panel：A 为三空间 method-level ratio；B/C 为 X-space 样本级贡献分布和排序曲线；D/E 为 Y-space；F/G 为 Z-space。Random-CV 使用虚线，LOCO 使用实线，多 fold 用不同颜色区分。",
+            "每个 task 输出两个单图：`task_w_ratio` 为三空间 method-level ratio；`task_w_curves` 为 3×3 图，左列保留完整样本 W 箱线图，中列为各 method 聚合后的样本贡献排序曲线，右列为 LOCO/Random-CV 分 fold 排序曲线。右列使用 fold 颜色区分 fold，LOCO 为实线，Random-CV 为虚线。",
             "",
         ]
     )
     for case_key, case_summary in summary.groupby("case_key", sort=False):
         case_label = case_summary["case_label"].iloc[0]
         case_dir = output_root / "cases" / case_key
-        dashboard_png = case_dir / "task_w_dashboard.png"
-        dashboard_rel = dashboard_png.relative_to(output_root).as_posix()
+        ratio_png = case_dir / "task_w_ratio.png"
+        curves_png = case_dir / "task_w_curves.png"
+        ratio_rel = ratio_png.relative_to(output_root).as_posix()
+        curves_rel = curves_png.relative_to(output_root).as_posix()
         lines.extend(
             [
                 f"### {case_label}",
                 "",
-                f"![{case_label} task dashboard]({dashboard_rel})",
+                f"![{case_label} task W ratio]({ratio_rel})",
+                "",
+                f"![{case_label} task W curves]({curves_rel})",
                 "",
                 markdown_table(
                     case_summary,
@@ -1762,32 +1938,60 @@ def main() -> None:
     output_root = Path(args.output_root) if args.output_root else x_report_root
     formats = list(args.formats)
 
-    sample_values, x_summary, yz_summary = load_inputs(x_report_root, yz_summary_path)
-    summary = sort_summary_by_case_and_ood(build_three_space_summary(x_summary, yz_summary))
-    sample_values = prepare_sample_values(sample_values)
-    top_samples = build_top_samples(sample_values, args.top_n)
-    three_space_samples = build_three_space_sample_values(sample_values, split_summary_path, embedding_data_dir)
-    three_space_sample_summary = summarize_three_space_sample_values(three_space_samples)
+    reused_cached_tables = False
+    try:
+        sample_values, x_summary, yz_summary = load_inputs(x_report_root, yz_summary_path)
+    except FileNotFoundError as error:
+        cached_summary_path = output_root / "three_space_w_ratio_summary.csv"
+        cached_samples_path = output_root / "three_space_sample_w_values.csv"
+        cached_sample_summary_path = output_root / "three_space_sample_w_summary.csv"
+        cached_top_samples_path = output_root / "xspace_top_w_samples.csv"
+        can_reuse_cached_tables = (
+            "Missing Y/Z-space Wasserstein summary" in str(error)
+            and cached_summary_path.exists()
+            and cached_samples_path.exists()
+        )
+        if not can_reuse_cached_tables:
+            raise
+        reused_cached_tables = True
+        print(f"Missing Y/Z-space source; reusing cached three-space tables under: {output_root}")
+        summary = sort_summary_by_case_and_ood(read_csv(cached_summary_path))
+        three_space_samples = read_csv(cached_samples_path)
+        three_space_sample_summary = (
+            read_csv(cached_sample_summary_path)
+            if cached_sample_summary_path.exists()
+            else summarize_three_space_sample_values(three_space_samples)
+        )
+        top_samples = read_csv(cached_top_samples_path) if cached_top_samples_path.exists() else pd.DataFrame()
+    else:
+        summary = sort_summary_by_case_and_ood(build_three_space_summary(x_summary, yz_summary))
+        sample_values = prepare_sample_values(sample_values)
+        top_samples = build_top_samples(sample_values, args.top_n)
+        three_space_samples = build_three_space_sample_values(sample_values, split_summary_path, embedding_data_dir)
+        three_space_sample_summary = summarize_three_space_sample_values(three_space_samples)
 
-    write_csv(summary, output_root / "three_space_w_ratio_summary.csv")
-    write_csv(top_samples, output_root / "xspace_top_w_samples.csv")
-    write_csv(three_space_samples, output_root / "three_space_sample_w_values.csv")
-    write_csv(three_space_sample_summary, output_root / "three_space_sample_w_summary.csv")
+        write_csv(summary, output_root / "three_space_w_ratio_summary.csv")
+        write_csv(top_samples, output_root / "xspace_top_w_samples.csv")
+        write_csv(three_space_samples, output_root / "three_space_sample_w_values.csv")
+        write_csv(three_space_sample_summary, output_root / "three_space_sample_w_summary.csv")
 
     for case_key, case_summary in summary.groupby("case_key", sort=False):
         case_dir = output_root / "cases" / case_key
         case_samples = three_space_samples[three_space_samples["case_key"] == case_key].copy()
         write_csv(case_summary, case_dir / "task_w_summary.csv")
-        plot_task_dashboard(case_summary, case_samples, case_dir / "task_w_dashboard", formats, args.dpi)
+        plot_task_ratio(case_summary, case_dir / "task_w_ratio", formats, args.dpi)
+        plot_task_curves(case_summary, case_samples, case_dir / "task_w_curves", formats, args.dpi)
+        remove_stale_task_dashboard_figures(case_dir)
 
     report = build_report(summary, top_samples, output_root, x_report_root, yz_summary_path)
     report_path = output_root / "three_space_w_ood_report.md"
     report_path.write_text(report, encoding="utf-8")
 
-    print(f"Saved three-space W summary: {output_root / 'three_space_w_ratio_summary.csv'}")
-    print(f"Saved X-space top-W samples: {output_root / 'xspace_top_w_samples.csv'}")
-    print(f"Saved three-space sample W values: {output_root / 'three_space_sample_w_values.csv'}")
-    print(f"Saved three-space sample W summary: {output_root / 'three_space_sample_w_summary.csv'}")
+    table_action = "Reused cached" if reused_cached_tables else "Saved"
+    print(f"{table_action} three-space W summary: {output_root / 'three_space_w_ratio_summary.csv'}")
+    print(f"{table_action} X-space top-W samples: {output_root / 'xspace_top_w_samples.csv'}")
+    print(f"{table_action} three-space sample W values: {output_root / 'three_space_sample_w_values.csv'}")
+    print(f"{table_action} three-space sample W summary: {output_root / 'three_space_sample_w_summary.csv'}")
     print(f"Saved Markdown report: {report_path}")
     print(f"Saved case figures under: {output_root / 'cases'}")
     missing_yz_cases = sorted(summary[summary[["Y_W", "Z_W"]].isna().all(axis=1)]["case_label"].dropna().unique())
