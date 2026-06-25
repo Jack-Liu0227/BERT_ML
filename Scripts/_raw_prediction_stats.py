@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
 
@@ -711,6 +712,18 @@ def _property_tokens(property_name: str) -> List[str]:
         .replace("\\", "")
         .replace(" ", "")
     )
+    normalized = re.sub(r"[^a-z0-9]+", " ", raw.lower()).strip()
+    aliases = {
+        "yield strength": ["YS(MPa)", "YS", "yield_strength"],
+        "ys": ["YS(MPa)", "YS", "yield strength"],
+        "tensile strength": ["UTS(MPa)", "UTS"],
+        "ultimate tensile strength": ["UTS(MPa)", "UTS"],
+        "elongation": ["El(%)", "El"],
+    }
+    for alias in aliases.get(normalized, []):
+        add(alias)
+        add(alias.replace(" ", "_"))
+        add(alias.replace("(", "").replace(")", "").replace("/", "").replace("\\", "").replace(" ", ""))
     return tokens
 
 

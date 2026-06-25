@@ -36,9 +36,31 @@ INPUT_COLUMNS = [
     "method_short",
     "model",
     "space",
+    "ID",
+    "sample_order",
+    "source_split_dir",
+    "split_w",
     "sample_w_contribution",
     "abs_error",
     "relative_error_pct",
+]
+OOD_SEVERITY_COLUMNS = [
+    "scope",
+    "subset",
+    "task_key",
+    "task_id",
+    "method_short",
+    "space",
+    "ood_severity",
+    "ood_severity_n_samples",
+    "ood_severity_n_splits",
+    "ood_severity_status",
+]
+OOD_SEVERITY_METRICS = [
+    "ood_severity",
+    "ood_severity_n_samples",
+    "ood_severity_n_splits",
+    "ood_severity_status",
 ]
 SLOPE_COLUMNS = [
     "scope",
@@ -57,6 +79,10 @@ SLOPE_COLUMNS = [
     "y_min",
     "y_max",
     "slope_status",
+    "ood_severity",
+    "ood_severity_n_samples",
+    "ood_severity_n_splits",
+    "ood_severity_status",
 ]
 BY_TASK_METHOD_COLUMNS = [
     "scope",
@@ -71,6 +97,10 @@ BY_TASK_METHOD_COLUMNS = [
     "intercept",
     "n_points",
     "slope_status",
+    "ood_severity",
+    "ood_severity_n_samples",
+    "ood_severity_n_splits",
+    "ood_severity_status",
 ]
 BY_TASK_MODEL_COLUMNS = [
     "scope",
@@ -85,8 +115,21 @@ BY_TASK_MODEL_COLUMNS = [
     "intercept",
     "n_points",
     "slope_status",
+    "ood_severity",
+    "ood_severity_n_samples",
+    "ood_severity_n_splits",
+    "ood_severity_status",
 ]
 FIGURE_MANIFEST_COLUMNS = ["figure_group", "scope", "subset", "task_id", "method_short", "model", "figure", "format"]
+METHOD_COLORS = {
+    "RandCV": "#4c78a8",
+    "Extra.": "#f58518",
+    "LOCO": "#54a24b",
+    "SX-sgl": "#b279a2",
+    "SX-cls": "#e45756",
+    "SY-sgl": "#72b7b2",
+    "SY-cls": "#ff9da6",
+}
 
 
 def final_results_root() -> Path:
@@ -220,6 +263,115 @@ def fit_slope(x: Iterable[object], y: Iterable[object]) -> dict[str, object]:
     return base
 
 
+def fit_severity_trend(x: Iterable[object], y: Iterable[object]) -> dict[str, float] | None:
+    x_values = pd.to_numeric(pd.Series(x), errors="coerce").to_numpy(dtype=float)
+    y_values = pd.to_numeric(pd.Series(y), errors="coerce").to_numpy(dtype=float)
+    valid = np.isfinite(x_values) & np.isfinite(y_values)
+    if int(valid.sum()) < 2:
+        return None
+    x_valid = x_values[valid]
+    y_valid = y_values[valid]
+    if np.unique(x_valid).size < 2:
+        return None
+    slope, intercept = np.polyfit(x_valid, y_valid, 1)
+    if not np.isfinite(slope) or not np.isfinite(intercept):
+        return None
+    return {
+        "slope": float(slope),
+        "intercept": float(intercept),
+        "x_min": float(np.min(x_valid)),
+        "x_max": float(np.max(x_valid)),
+    }
+
+
+def sample_identity(frame: pd.DataFrame) -> pd.Series:
+    index_key = pd.Series(frame.index.astype(str), index=frame.index, dtype="object")
+    if "sample_order" in frame.columns:
+        sample_order = frame["sample_order"]
+        sample_order_key = sample_order.where(sample_order.notna()).astype("object")
+        sample_order_key = sample_order_key.astype(str)
+        sample_order_key = sample_order_key.where(sample_order.notna() & sample_order_key.ne(""), index_key)
+    else:
+        sample_order_key = index_key
+    if "ID" in frame.columns:
+        sample_id = frame["ID"]
+        sample_id_key = sample_id.where(sample_id.notna()).astype("object")
+        sample_id_key = sample_id_key.astype(str)
+        return sample_id_key.where(sample_id.notna() & sample_id_key.ne(""), sample_order_key)
+    return sample_order_key
+
+
+def summarize_ood_severity_group(group: pd.DataFrame) -> dict[str, object]:
+    if "split_w" not in group.columns:
+        return {
+            "ood_severity": np.nan,
+            "ood_severity_n_samples": 0,
+            "ood_severity_n_splits": 0,
+            "ood_severity_status": "missing_split_w",
+        }
+    work = group.copy()
+    work["_split_w_numeric"] = pd.to_numeric(work["split_w"], errors="coerce")
+    work = work[np.isfinite(work["_split_w_numeric"].to_numpy(dtype=float, na_value=np.nan))].copy()
+    if work.empty:
+        return {
+            "ood_severity": np.nan,
+            "ood_severity_n_samples": 0,
+            "ood_severity_n_splits": 0,
+            "ood_severity_status": "missing_split_w",
+        }
+    work["_source_split_key"] = (
+        work.get("source_split_dir", pd.Series("", index=work.index)).fillna("").astype(str).replace("", "__missing_split_dir__")
+    )
+    work["_sample_key"] = sample_identity(work)
+    dedup_samples = work.drop_duplicates(["_source_split_key", "space", "_split_w_numeric", "_sample_key"])
+    split_summary = (
+        dedup_samples.groupby(["_source_split_key", "space", "_split_w_numeric"], dropna=False, sort=True)["_sample_key"]
+        .nunique()
+        .reset_index(name="n_samples")
+    )
+    split_summary = split_summary[split_summary["n_samples"].gt(0)].copy()
+    if split_summary.empty:
+        return {
+            "ood_severity": np.nan,
+            "ood_severity_n_samples": 0,
+            "ood_severity_n_splits": 0,
+            "ood_severity_status": "missing_split_w",
+        }
+    weights = pd.to_numeric(split_summary["n_samples"], errors="coerce").to_numpy(dtype=float)
+    split_w = pd.to_numeric(split_summary["_split_w_numeric"], errors="coerce").to_numpy(dtype=float)
+    finite = np.isfinite(weights) & np.isfinite(split_w) & (weights > 0)
+    if not finite.any():
+        return {
+            "ood_severity": np.nan,
+            "ood_severity_n_samples": 0,
+            "ood_severity_n_splits": 0,
+            "ood_severity_status": "missing_split_w",
+        }
+    weights = weights[finite]
+    split_w = split_w[finite]
+    return {
+        "ood_severity": float(np.average(split_w, weights=weights)),
+        "ood_severity_n_samples": int(weights.sum()),
+        "ood_severity_n_splits": int(finite.sum()),
+        "ood_severity_status": "ok",
+    }
+
+
+def build_ood_severity_table(frame: pd.DataFrame, *, subset: str) -> pd.DataFrame:
+    if frame.empty:
+        return pd.DataFrame(columns=OOD_SEVERITY_COLUMNS)
+    group_cols = ["scope", "task_key", "task_id", "method_short", "space"]
+    work = frame.copy()
+    for column in group_cols:
+        if column not in work.columns:
+            work[column] = ""
+    rows: list[dict[str, object]] = []
+    for keys, group in work.groupby(group_cols, dropna=False, sort=True):
+        row_base = dict(zip(group_cols, keys if isinstance(keys, tuple) else (keys,)))
+        rows.append({**row_base, "subset": subset, **summarize_ood_severity_group(group)})
+    return pd.DataFrame(rows, columns=OOD_SEVERITY_COLUMNS)
+
+
 def build_slope_table(frame: pd.DataFrame, *, subset: str) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(columns=SLOPE_COLUMNS)
@@ -234,7 +386,14 @@ def build_slope_table(frame: pd.DataFrame, *, subset: str) -> pd.DataFrame:
         for metric in ERROR_METRICS:
             result = fit_slope(group["sample_w_contribution"], group[metric])
             rows.append({**row_base, "subset": subset, "error_metric": metric, **result})
-    return pd.DataFrame(rows, columns=SLOPE_COLUMNS)
+    slopes = pd.DataFrame(rows)
+    severity = build_ood_severity_table(work, subset=subset)
+    merge_cols = ["scope", "subset", "task_key", "task_id", "method_short", "space"]
+    slopes = slopes.merge(severity, on=merge_cols, how="left")
+    for column in OOD_SEVERITY_METRICS:
+        if column not in slopes.columns:
+            slopes[column] = np.nan if column != "ood_severity_status" else "missing_split_w"
+    return slopes.reindex(columns=SLOPE_COLUMNS)
 
 
 def build_comparison_tables(slopes: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -276,6 +435,51 @@ def slope_axis(ax: plt.Axes, panel: pd.DataFrame, x_column: str, x_values: list[
     ax.spines["right"].set_visible(False)
 
 
+def severity_slope_axis(ax: plt.Axes, panel: pd.DataFrame, space: str, metric: str) -> None:
+    match = panel[
+        panel["space"].astype(str).eq(space)
+        & panel["error_metric"].astype(str).eq(metric)
+        & panel["slope_status"].astype(str).eq("ok")
+        & panel["ood_severity_status"].astype(str).eq("ok")
+    ].copy()
+    match["ood_severity"] = pd.to_numeric(match["ood_severity"], errors="coerce")
+    match["slope"] = pd.to_numeric(match["slope"], errors="coerce")
+    finite = np.isfinite(match["ood_severity"].to_numpy(dtype=float, na_value=np.nan)) & np.isfinite(
+        match["slope"].to_numpy(dtype=float, na_value=np.nan)
+    )
+    match = match.loc[finite].sort_values(["ood_severity", "method_short"], kind="stable")
+
+    ax.axhline(0.0, color="#555555", linewidth=0.9, alpha=0.75)
+    if match.empty:
+        ax.text(0.5, 0.5, "No valid severity/slope", ha="center", va="center", transform=ax.transAxes, color="#666666")
+    else:
+        for _, row in match.iterrows():
+            method = str(row.get("method_short", ""))
+            color = METHOD_COLORS.get(method, "#4c78a8")
+            x_value = float(row["ood_severity"])
+            y_value = float(row["slope"])
+            ax.scatter([x_value], [y_value], s=42, color=color, edgecolor="white", linewidth=0.6, zorder=3)
+            ax.annotate(
+                method,
+                (x_value, y_value),
+                xytext=(4, 4),
+                textcoords="offset points",
+                fontsize=7.5,
+                color="#333333",
+            )
+        trend = fit_severity_trend(match["ood_severity"], match["slope"])
+        if trend is not None:
+            x_line = np.linspace(trend["x_min"], trend["x_max"], 100)
+            y_line = trend["slope"] * x_line + trend["intercept"]
+            ax.plot(x_line, y_line, color="#222222", linewidth=1.4, linestyle="-", alpha=0.85)
+    ax.set_title(f"{space} / {ERROR_METRIC_LABELS[metric]}", loc="left", fontsize=10)
+    ax.set_xlabel("OOD severity (split W)")
+    ax.set_ylabel("slope")
+    ax.grid(True, axis="both", color="#e6e6e6", linewidth=0.7)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+
 def plot_slope_comparison_grid(
     group: pd.DataFrame,
     *,
@@ -286,14 +490,17 @@ def plot_slope_comparison_grid(
     dpi: int,
 ) -> list[dict[str, object]]:
     if x_column == "method_short":
-        x_values = ordered_methods(group[x_column])
+        x_values = []
     else:
         x_values = sorted(str(value) for value in group[x_column].dropna().unique())
     fig, axes = plt.subplots(2, 3, figsize=(15.0, 8.5), sharex=False)
     fig.suptitle(title, fontsize=14, fontweight="bold")
     for row_idx, metric in enumerate(ERROR_METRICS):
         for col_idx, space in enumerate(SPACE_ORDER):
-            slope_axis(axes[row_idx, col_idx], group, x_column, x_values, space, metric)
+            if x_column == "method_short":
+                severity_slope_axis(axes[row_idx, col_idx], group, space, metric)
+            else:
+                slope_axis(axes[row_idx, col_idx], group, x_column, x_values, space, metric)
     fig.tight_layout(rect=(0, 0.02, 1, 0.94))
     output_base.parent.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, object]] = []
@@ -349,7 +556,7 @@ def plot_slope_comparisons(slopes: pd.DataFrame, output_dir: Path, formats: Iter
         )
         for row in plot_slope_comparison_grid(
             group,
-            title=f"{task_id} | {model} | slope by method",
+            title=f"{task_id} | {model} | slope by OOD severity",
             x_column="method_short",
             output_base=base,
             formats=formats,
