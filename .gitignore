@@ -103,8 +103,6 @@ batch_run_*.log
 
 # Local legacy backups
 archive/*
-!archive/legacy_scripts/
-!archive/legacy_scripts/**
 
 # CatBoost
 catboost_info/
@@ -128,3 +126,6 @@ ppt_ood_wasserstein/
 element_embeddings/
 *.backup
 datasets/Ti_alloys/Titanium data (Ti BERT).xlsx
+
+outputs/manual-xspace-w-ppt/
+tests/
