@@ -22,6 +22,7 @@ from .config import (
     YZ_OOD_MAP_COLUMNS,
 )
 from .io import clean_text, read_csv
+from .w_level_summaries import SAMPLE_LEVEL, summarize_w_group
 
 
 def normalize_method(value: object) -> str:
@@ -302,8 +303,12 @@ def build_set_ab_model_summary(master: pd.DataFrame, triptych_review: pd.DataFra
     return result[SET_AB_MODEL_SUMMARY_COLUMNS].sort_values(["case", "method", "model", "set_label"], kind="stable").reset_index(drop=True)
 
 
-def build_set_ab_space_summary_long(master: pd.DataFrame, model_summary: pd.DataFrame | None = None) -> pd.DataFrame:
-    summary = build_hybrid_summary_long(master)
+def build_set_ab_space_summary_long(
+    master: pd.DataFrame,
+    model_summary: pd.DataFrame | None = None,
+    w_level: str = SAMPLE_LEVEL,
+) -> pd.DataFrame:
+    summary = build_hybrid_summary_long(master, w_level=w_level)
     if summary.empty or model_summary is None or model_summary.empty:
         return summary
     metric_cols = ["MAE", "RMSE", "R2", "relative_error_mean", "ceiling_bias", "underprediction_ratio", "n_samples"]
@@ -340,7 +345,7 @@ def build_yz_ood_map_summary(summary: pd.DataFrame) -> pd.DataFrame:
     for column in ["Wy_mean", "Wz_mean"]:
         if column not in pivot.columns:
             pivot[column] = np.nan
-    metric_cols = ["aggregation", "MAE", "RMSE", "R2", "relative_error_mean", "n_samples"]
+    metric_cols = ["aggregation", "W_level", "W_source", "MAE", "RMSE", "R2", "relative_error_mean", "n_samples", "n_splits"]
     metrics = work[work["space"].eq("Y-space")][[*key_cols, *metric_cols]].drop_duplicates(subset=key_cols)
     if metrics.empty:
         metrics = work[[*key_cols, *metric_cols]].drop_duplicates(subset=key_cols)
@@ -415,35 +420,18 @@ def deduplicate_group_for_subset(group: pd.DataFrame, subset: str) -> tuple[pd.D
     return group.copy(), "fold_weighted"
 
 
-def summarize_one_group(group: pd.DataFrame, keys: tuple[object, ...], key_cols: list[str]) -> dict[str, object]:
+def summarize_one_group(group: pd.DataFrame, keys: tuple[object, ...], key_cols: list[str], w_level: str = SAMPLE_LEVEL) -> dict[str, object]:
     values = dict(zip(key_cols, keys if isinstance(keys, tuple) else (keys,)))
     subset = clean_text(values.get("subset"))
     work, aggregation = deduplicate_group_for_subset(group, subset)
-    w = pd.to_numeric(work["sample_w_contribution"], errors="coerce")
-    abs_error = pd.to_numeric(work["abs_error"], errors="coerce")
-    rel_error = pd.to_numeric(work["relative_error_pct"], errors="coerce")
-    true_values = pd.to_numeric(work.get("true_value", pd.Series(np.nan, index=work.index)), errors="coerce")
-    pred_values = pd.to_numeric(work.get("predicted_value", pd.Series(np.nan, index=work.index)), errors="coerce")
-    signed = pd.to_numeric(work.get("signed_error", pred_values - true_values), errors="coerce")
     return {
         **values,
         "aggregation": aggregation,
-        "W_mean": float(w.mean()) if w.notna().any() else np.nan,
-        "W_median": float(w.median()) if w.notna().any() else np.nan,
-        "W_p90": float(w.quantile(0.9)) if w.notna().any() else np.nan,
-        "MAE": float(abs_error.mean()) if abs_error.notna().any() else np.nan,
-        "RMSE": float(np.sqrt(np.nanmean(abs_error.to_numpy(dtype=float) ** 2))) if abs_error.notna().any() else np.nan,
-        "R2": r2_score_safe(true_values, pred_values),
-        "relative_error_mean": float(rel_error.mean()) if rel_error.notna().any() else np.nan,
-        "slope": fit_slope(w, rel_error),
-        "spearman": float(w.corr(rel_error, method="spearman")) if w.notna().sum() >= 2 and rel_error.notna().sum() >= 2 else np.nan,
-        "ceiling_bias": float(signed.mean()) if signed.notna().any() else np.nan,
-        "underprediction_ratio": float((signed < 0).mean()) if signed.notna().any() else np.nan,
-        "n_samples": int(len(work)),
+        **summarize_w_group(work, w_level),
     }
 
 
-def build_hybrid_summary_long(frame: pd.DataFrame) -> pd.DataFrame:
+def build_hybrid_summary_long(frame: pd.DataFrame, w_level: str = SAMPLE_LEVEL) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(columns=SUMMARY_COLUMNS)
     work = build_set_ab_master_sample_long(frame) if "set_label" not in frame.columns else frame.copy()
@@ -472,7 +460,7 @@ def build_hybrid_summary_long(frame: pd.DataFrame) -> pd.DataFrame:
         "subset",
         "space",
     ]
-    rows = [summarize_one_group(group, keys, key_cols) for keys, group in work.groupby(key_cols, dropna=False, sort=True)]
+    rows = [summarize_one_group(group, keys, key_cols, w_level=w_level) for keys, group in work.groupby(key_cols, dropna=False, sort=True)]
     result = pd.DataFrame(rows)
     return result[SUMMARY_COLUMNS].sort_values(["case", "method", "model", "subset", "space"], kind="stable").reset_index(drop=True)
 
@@ -484,9 +472,9 @@ def build_ab_delta_summary(summary: pd.DataFrame) -> pd.DataFrame:
     base = summary[base_cols].drop_duplicates().copy()
     for metric, output_col, space in [
         ("MAE", "delta_MAE", "Y-space"),
-        ("W_p90", "delta_X_W", "X-space"),
-        ("W_p90", "delta_Y_W", "Y-space"),
-        ("W_p90", "delta_Z_W", "Z-space"),
+        ("W_mean", "delta_X_W", "X-space"),
+        ("W_mean", "delta_Y_W", "Y-space"),
+        ("W_mean", "delta_Z_W", "Z-space"),
         ("slope", "delta_slope_X", "X-space"),
         ("slope", "delta_slope_Y", "Y-space"),
         ("slope", "delta_slope_Z", "Z-space"),
@@ -503,7 +491,7 @@ def build_ab_delta_summary(summary: pd.DataFrame) -> pd.DataFrame:
     return base[DELTA_COLUMNS].sort_values(["case", "method", "model"], kind="stable").reset_index(drop=True)
 
 
-def build_pure_summary(frame: pd.DataFrame) -> pd.DataFrame:
+def build_pure_summary(frame: pd.DataFrame, w_level: str = SAMPLE_LEVEL) -> pd.DataFrame:
     if frame.empty:
         return pd.DataFrame(columns=PURE_HYBRID_COLUMNS)
     work = frame.copy()
@@ -521,34 +509,39 @@ def build_pure_summary(frame: pd.DataFrame) -> pd.DataFrame:
     rows: list[dict[str, object]] = []
     for keys, group in work.groupby(key_cols, dropna=False, sort=True):
         values = dict(zip(key_cols, keys if isinstance(keys, tuple) else (keys,)))
-        w = pd.to_numeric(group["sample_w_contribution"], errors="coerce")
-        abs_error = pd.to_numeric(group["abs_error"], errors="coerce")
-        rel_error = pd.to_numeric(group["relative_error_pct"], errors="coerce")
-        rows.append(
-            {
-                **values,
-                "W_mean": float(w.mean()) if w.notna().any() else np.nan,
-                "W_median": float(w.median()) if w.notna().any() else np.nan,
-                "W_p90": float(w.quantile(0.9)) if w.notna().any() else np.nan,
-                "MAE": float(abs_error.mean()) if abs_error.notna().any() else np.nan,
-                "relative_error_mean": float(rel_error.mean()) if rel_error.notna().any() else np.nan,
-                "n_samples": int(group["ID"].nunique()) if "ID" in group.columns else int(len(group)),
-            }
-        )
+        metrics = summarize_w_group(group, w_level)
+        rows.append({**values, **{column: metrics.get(column, np.nan) for column in PURE_HYBRID_COLUMNS if column not in values}})
     return pd.DataFrame(rows, columns=PURE_HYBRID_COLUMNS)
 
 
-def build_pure_vs_hybrid_summary(summary: pd.DataFrame, pure_frame: pd.DataFrame | None = None) -> pd.DataFrame:
+def build_pure_vs_hybrid_summary(summary: pd.DataFrame, pure_frame: pd.DataFrame | None = None, w_level: str = SAMPLE_LEVEL) -> pd.DataFrame:
     hybrid = summary.copy()
     if hybrid.empty:
         hybrid_rows = pd.DataFrame(columns=PURE_HYBRID_COLUMNS)
     else:
         hybrid_rows = hybrid.rename(columns={"method": "method_group"})[
-            ["case", "task_key", "model", "model_family", "method_group", "subset", "space", "W_mean", "W_median", "W_p90", "MAE", "relative_error_mean", "n_samples"]
+            [
+                "case",
+                "task_key",
+                "model",
+                "model_family",
+                "method_group",
+                "subset",
+                "space",
+                "W_level",
+                "W_source",
+                "W_mean",
+                "W_median",
+                "W_p90",
+                "MAE",
+                "relative_error_mean",
+                "n_samples",
+                "n_splits",
+            ]
         ].copy()
         hybrid_rows["split_type"] = "Hybrid"
         hybrid_rows = hybrid_rows[PURE_HYBRID_COLUMNS]
-    pure_rows = build_pure_summary(pure_frame if pure_frame is not None else pd.DataFrame())
+    pure_rows = build_pure_summary(pure_frame if pure_frame is not None else pd.DataFrame(), w_level=w_level)
     frames = [frame for frame in [pure_rows, hybrid_rows] if not frame.empty]
     if not frames:
         return pd.DataFrame(columns=PURE_HYBRID_COLUMNS)

@@ -99,12 +99,12 @@ python -m src.LLMProp.run_llmprop_ood --help
 使用 `Scripts/` 下的 active Python 脚本：
 
 ```bash
-python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
-python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/reporting/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
+python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
 ```
 
 只有需要合并外部 LLM OOD 结果时，才设置 `EXTERNAL_OOD_ROOT`。

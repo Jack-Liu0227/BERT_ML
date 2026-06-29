@@ -1,14 +1,24 @@
 # OOD Final Results Guide
 
 This guide explains how to refresh the final OOD result packages after GPT
-prediction/confidence data changes.
+prediction/confidence data changes. All paths are written with portable
+variables so the commands can run on another machine without editing local
+absolute directories.
 
-## Final Result Folders
+## Path Variables
 
-- Standard OOD:
-  `D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD`
-- Hybrid OOD:
-  `D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD`
+Set these PowerShell environment variables before running the commands:
+
+```powershell
+$env:BERT_ML_ROOT = "<path-to-BERT_ML>"
+$env:FEWSHOT_ROOT = "<path-to-fewshot-guided>"
+$env:OUTPUT_DIR = "<path-to-final-result-root>"
+```
+
+`OUTPUT_DIR` is the final result root. It should contain:
+
+- Standard OOD: `$env:OUTPUT_DIR\OOD`
+- Hybrid OOD: `$env:OUTPUT_DIR\OOD HYBIRD`
 
 The folder name `HYBIRD` is kept because the existing final-paper artifact
 directory uses this spelling.
@@ -57,33 +67,32 @@ validated or regenerated for a consistent final package:
 
 ## Recommended Run Order
 
-Run commands from `D:\XJTU\ImportantFile\auto-design-alloy\BERT_ML` unless
-noted otherwise.
+Run BERT_ML commands from `$env:BERT_ML_ROOT` unless noted otherwise.
 
 1. Confirm GPT source files are present.
 
    Standard confidence analysis expects:
 
    ```powershell
-   D:\XJTU\ImportantFile\auto-design-alloy\fewshot-guided\output\ood\k5\<strength_ood_*>\<task>\[fold_*]\openai\gpt-5.4\predictions.csv
+   $env:FEWSHOT_ROOT\output\ood\k5\<strength_ood_*>\<task>\[fold_*]\openai\gpt-5.4\predictions.csv
    ```
 
 2. Refresh standard OOD confidence tables if the source structure above is
    populated.
 
    ```powershell
-   python D:\XJTU\ImportantFile\auto-design-alloy\fewshot-guided\scripts\analyze_confidence_ood_relationship.py `
-     --input-root D:\XJTU\ImportantFile\auto-design-alloy\fewshot-guided\output\ood\k5 `
-     --ood-analysis-dir "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\per_task_extreme_ood_model_analysis" `
-     --output-dir "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\confidence_ood_relationship"
+   python "$env:FEWSHOT_ROOT\scripts\analyze_confidence_ood_relationship.py" `
+     --input-root "$env:FEWSHOT_ROOT\output\ood\k5" `
+     --ood-analysis-dir "$env:OUTPUT_DIR\OOD\per_task_extreme_ood_model_analysis" `
+     --output-dir "$env:OUTPUT_DIR\OOD\confidence_ood_relationship"
    ```
 
 3. Redraw standard OOD confidence figures from the current CSV tables.
 
    ```powershell
-   python D:\XJTU\ImportantFile\auto-design-alloy\fewshot-guided\scripts\build_npj_confidence_ood_figures.py `
-     --input-dir "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\confidence_ood_relationship\csv" `
-     --output-dir "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\confidence_ood_relationship\figures\npj" `
+   python "$env:FEWSHOT_ROOT\scripts\build_npj_confidence_ood_figures.py" `
+     --input-dir "$env:OUTPUT_DIR\OOD\confidence_ood_relationship\csv" `
+     --output-dir "$env:OUTPUT_DIR\OOD\confidence_ood_relationship\figures\npj" `
      --final-summary-layout `
      --clean-output-dir
    ```
@@ -91,26 +100,26 @@ noted otherwise.
 4. Refresh standard OOD triptych artifacts.
 
    ```powershell
-   python "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\triptych\Plot.py"
-   python "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\triptych_randomcv\Plot.py"
+   python "$env:OUTPUT_DIR\OOD\triptych\Plot.py"
+   python "$env:OUTPUT_DIR\OOD\triptych_randomcv\Plot.py"
    ```
 
 5. Validate or refresh standard OOD split/W-only artifacts.
 
    ```powershell
-   python "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\panel_distribution\Plot.py"
-   python "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\wasserstein_distance_standardized\Plot.py"
+   python "$env:OUTPUT_DIR\OOD\panel_distribution\Plot.py"
+   python "$env:OUTPUT_DIR\OOD\wasserstein_distance_standardized\Plot.py"
    ```
 
 6. Refresh the Hybrid OOD final package.
 
-   Run from `D:\XJTU\ImportantFile\auto-design-alloy\fewshot-guided`:
+   Run this command from `$env:FEWSHOT_ROOT`:
 
    ```powershell
    python scripts\build_ood_hybird_results.py `
      --clean `
-     --bert-combined-summary-root D:\XJTU\ImportantFile\auto-design-alloy\BERT_ML\output\ood_summary_reports_hybrid\Combined `
-     --output-root "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD"
+     --bert-combined-summary-root "$env:BERT_ML_ROOT\output\ood_summary_reports_hybrid\Combined" `
+     --output-root "$env:OUTPUT_DIR\OOD HYBIRD"
    ```
 
 7. Refresh W-error relationship artifacts.
@@ -121,19 +130,19 @@ noted otherwise.
    and `test_inner_ood\csv\w_error_samples_long.csv`.
 
    ```powershell
-   python Scripts\plot_w_error_relationships.py `
+   python Scripts\figures\plot_w_error_relationships.py `
      --scope both `
-     --ood-output "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\w_error_relationship" `
-     --hybrid-output "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD\w_error_relationship" `
+     --ood-output "$env:OUTPUT_DIR\OOD\w_error_relationship" `
+     --hybrid-output "$env:OUTPUT_DIR\OOD HYBIRD\w_error_relationship" `
      --formats png pdf svg
    ```
 
    Faster Hybrid CSV-focused run:
 
    ```powershell
-   python Scripts\plot_w_error_relationships.py `
+   python Scripts\figures\plot_w_error_relationships.py `
      --scope hybrid `
-     --hybrid-output "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD\w_error_relationship" `
+     --hybrid-output "$env:OUTPUT_DIR\OOD HYBIRD\w_error_relationship" `
      --formats png `
      --phase-diagram-spaces none
    ```
@@ -141,11 +150,11 @@ noted otherwise.
 8. Refresh Hybrid method visualizations.
 
    ```powershell
-   python Scripts\plot_hybrid_method_visualizations.py `
-     --hybrid-root "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD\w_error_relationship" `
-     --pure-root "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD\w_error_relationship" `
-     --triptych-root "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD\triptych" `
-     --output-dir "D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\最终结果图\OOD HYBIRD\hybrid_method_visualizations" `
+   python Scripts\figures\plot_hybrid_method_visualizations.py `
+     --hybrid-root "$env:OUTPUT_DIR\OOD HYBIRD\w_error_relationship" `
+     --pure-root "$env:OUTPUT_DIR\OOD\w_error_relationship" `
+     --triptych-root "$env:OUTPUT_DIR\OOD HYBIRD\triptych" `
+     --output-dir "$env:OUTPUT_DIR\OOD HYBIRD\hybrid_method_visualizations" `
      --formats png pdf svg
    ```
 
@@ -159,14 +168,14 @@ pytest tests\test_plot_w_error_relationships.py tests\test_plot_hybrid_method_vi
 
 Check:
 
-- `OOD HYBIRD\manifest.json`
-- `OOD HYBIRD\validation_summary.json`
-- `OOD HYBIRD\hybrid_method_visualizations\csv\figure_manifest.csv`
-- `OOD HYBIRD\hybrid_method_visualizations\csv\hybrid_set_ab_yz_ood_map_summary.csv`
-- `OOD HYBIRD\hybrid_method_visualizations\data\Set_A\hybrid_yz_ood_map_summary.csv`
-- `OOD HYBIRD\hybrid_method_visualizations\data\Set_B\hybrid_yz_ood_map_summary.csv`
-- `OOD\confidence_ood_relationship\csv\confidence_by_prediction_file.csv`
-- `OOD HYBIRD\confidence_ood_relationship\csv\confidence_by_prediction_file.csv`
+- `$env:OUTPUT_DIR\OOD HYBIRD\manifest.json`
+- `$env:OUTPUT_DIR\OOD HYBIRD\validation_summary.json`
+- `$env:OUTPUT_DIR\OOD HYBIRD\hybrid_method_visualizations\csv\figure_manifest.csv`
+- `$env:OUTPUT_DIR\OOD HYBIRD\hybrid_method_visualizations\csv\hybrid_set_ab_yz_ood_map_summary.csv`
+- `$env:OUTPUT_DIR\OOD HYBIRD\hybrid_method_visualizations\data\Set_A\hybrid_yz_ood_map_summary.csv`
+- `$env:OUTPUT_DIR\OOD HYBIRD\hybrid_method_visualizations\data\Set_B\hybrid_yz_ood_map_summary.csv`
+- `$env:OUTPUT_DIR\OOD\confidence_ood_relationship\csv\confidence_by_prediction_file.csv`
+- `$env:OUTPUT_DIR\OOD HYBIRD\confidence_ood_relationship\csv\confidence_by_prediction_file.csv`
 
 For `Ti-UTS` hybrid figure 8:
 
@@ -190,7 +199,7 @@ For `Ti-UTS` hybrid figure 8:
   input.
 - Standard confidence source missing: if `analyze_confidence_ood_relationship.py`
   reports no `openai/gpt-5.4` predictions, the expected `strength_ood_*` input
-  tree has not been populated.
+  tree under `$env:FEWSHOT_ROOT\output\ood\k5` has not been populated.
 - `HYBIRD` spelling: final paths intentionally use `OOD HYBIRD`.
 
 ## Latest Refresh Notes
@@ -203,14 +212,14 @@ GPT-5.4 rows.
 The standard OOD triptych and triptych_randomcv figures were regenerated.
 Standard OOD confidence figures were redrawn from the existing CSV tables.
 However, standard OOD confidence bottom tables were not recomputed because the
-expected `fewshot-guided\output\ood\k5\...\openai\gpt-5.4\predictions.csv`
+expected `$env:FEWSHOT_ROOT\output\ood\k5\...\openai\gpt-5.4\predictions.csv`
 source tree was not present.
 
 Standard OOD `panel_distribution\Plot.py` exposed a source schema issue in the
 Matbench panel CSV: missing `display_name`, `group_label`, and `method`.
 Standard OOD `wasserstein_distance_standardized\Plot.py` exposed a missing
 source summary file:
-`D:\XJTU\已完成论文数据汇总\Fewshot\预处理汇总数据\OOD\comparison_outputs\wasserstein_distance_standardized\ood_wasserstein_summary.csv`.
+`$env:OUTPUT_DIR\OOD\comparison_outputs\wasserstein_distance_standardized\ood_wasserstein_summary.csv`.
 
 Full Hybrid figure rendering in `plot_w_error_relationships.py` was too slow
 for an interactive refresh, so the script now supports `--csv-only`. The final

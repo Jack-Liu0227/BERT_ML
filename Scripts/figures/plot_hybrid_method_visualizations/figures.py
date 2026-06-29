@@ -117,6 +117,21 @@ def centered_limit(values: np.ndarray) -> float:
     return limit if math.isfinite(limit) and limit > 0 else 1.0
 
 
+def display_w_column(frame: pd.DataFrame) -> str:
+    return "W_mean" if "W_mean" in frame.columns else "W_p90"
+
+
+def display_w_label(frame: pd.DataFrame) -> str:
+    if "W_level" not in frame.columns:
+        return "Mean W"
+    levels = set(frame["W_level"].dropna().astype(str))
+    if levels == {"distribution_level"}:
+        return "W1"
+    if levels == {"sample_level"}:
+        return "Mean sample W"
+    return "Mean W"
+
+
 def draw_centered_heatmap(
     ax: plt.Axes,
     matrix: pd.DataFrame,
@@ -166,6 +181,8 @@ def pivot_metric_matrix(
 
 def figure_1_severity_decomposition(summary: pd.DataFrame) -> plt.Figure:
     methods = sorted(summary["method"].dropna().unique(), key=method_sort_key) or ["LOCO"]
+    w_col = display_w_column(summary)
+    w_label = display_w_label(summary)
     fig, axes = plt.subplots(len(methods), len(SPACE_ORDER), figsize=(4.0 * len(SPACE_ORDER), 3.0 * len(methods)), squeeze=False)
     fig.suptitle("Hybrid Set A/B W Severity Decomposition (fold-weighted)", fontsize=14, fontweight="bold")
     for row_idx, method in enumerate(methods):
@@ -174,13 +191,13 @@ def figure_1_severity_decomposition(summary: pd.DataFrame) -> plt.Figure:
             panel = summary[(summary["method"].eq(method)) & (summary["space"].eq(space))]
             if not nonempty_or_message(ax, panel):
                 continue
-            data = [pd.to_numeric(panel[panel["subset"].eq(subset)]["W_p90"], errors="coerce").dropna().to_numpy() for subset in ["Set A", "Set B"]]
+            data = [pd.to_numeric(panel[panel["subset"].eq(subset)][w_col], errors="coerce").dropna().to_numpy() for subset in ["Set A", "Set B"]]
             ax.boxplot(data, tick_labels=["Set A", "Set B"], patch_artist=True)
             for pos, values in enumerate(data, start=1):
                 if len(values):
                     ax.scatter(np.full(len(values), pos), values, s=18, alpha=0.65, color="#444444")
             ax.set_title(f"{method} | {space}", loc="left", fontsize=10)
-            ax.set_ylabel("W p90")
+            ax.set_ylabel(w_label)
             ax.grid(True, axis="y", color="#e6e6e6", linewidth=0.7)
     fig.tight_layout(rect=(0, 0, 1, 0.96))
     return fig
@@ -232,6 +249,8 @@ def figure_2_error_dumbbell(summary: pd.DataFrame) -> plt.Figure:
 
 
 def figure_1_severity_decomposition_task_compact(summary: pd.DataFrame) -> plt.Figure:
+    w_col = display_w_column(summary)
+    w_label = display_w_label(summary)
     fig, axes = plt.subplots(1, len(SPACE_ORDER), figsize=(4.2 * len(SPACE_ORDER), 4.2), squeeze=False, sharey=False)
     fig.suptitle("Task Severity Decomposition by Space (fold-weighted)", fontsize=13, fontweight="bold")
     subset_styles = {"Set A": ("o", "#4c78a8"), "Set B": ("s", "#f58518")}
@@ -240,7 +259,7 @@ def figure_1_severity_decomposition_task_compact(summary: pd.DataFrame) -> plt.F
         if not nonempty_or_message(ax, panel):
             continue
         method_order = (
-            panel.groupby("method")["W_p90"]
+            panel.groupby("method")[w_col]
             .mean()
             .sort_values(kind="stable")
             .index.tolist()
@@ -250,14 +269,14 @@ def figure_1_severity_decomposition_task_compact(summary: pd.DataFrame) -> plt.F
         for subset, (marker, color) in subset_styles.items():
             values = []
             for method in method_order:
-                vals = pd.to_numeric(panel[(panel["method"].eq(method)) & (panel["subset"].eq(subset))]["W_p90"], errors="coerce").dropna()
+                vals = pd.to_numeric(panel[(panel["method"].eq(method)) & (panel["subset"].eq(subset))][w_col], errors="coerce").dropna()
                 values.append(float(vals.mean()) if not vals.empty else np.nan)
             ax.plot(x + offsets[subset], values, marker=marker, color=color, linewidth=1.2, label=subset)
         ax.set_title(space)
         ax.set_xticks(x)
         ax.set_xticklabels(method_order, rotation=35, ha="right")
-        ax.set_xlabel("Method ordered by mean W p90")
-        ax.set_ylabel("W p90")
+        ax.set_xlabel(f"Method ordered by mean {w_label}")
+        ax.set_ylabel(w_label)
         ax.grid(True, axis="y", color="#e6e6e6", linewidth=0.7)
     add_bottom_legend(fig, max_cols=2, bottom=0.17)
     return fig
@@ -277,6 +296,8 @@ def figure_4_target_ceiling_task_compact(summary: pd.DataFrame, *, loco_only: bo
 
 def figure_3_representation_severity_sensitivity(summary: pd.DataFrame) -> plt.Figure:
     methods = sorted(summary["method"].dropna().unique(), key=method_sort_key) or ["LOCO"]
+    w_col = display_w_column(summary)
+    w_label = display_w_label(summary)
     fig, axes = plt.subplots(len(methods), len(REPRESENTATION_SPACES), figsize=(4.4 * len(REPRESENTATION_SPACES), 3.2 * len(methods)), squeeze=False)
     fig.suptitle("Representation Severity-Sensitivity Map (fold-weighted)", fontsize=14, fontweight="bold")
     for row_idx, method in enumerate(methods):
@@ -290,10 +311,10 @@ def figure_3_representation_severity_sensitivity(summary: pd.DataFrame) -> plt.F
                 for family, group in subset_panel.groupby("model_family", dropna=False):
                     sizes = 22 + pd.to_numeric(group["MAE"], errors="coerce").fillna(0).clip(lower=0, upper=200).to_numpy() * 0.25
                     label = f"{legend_label_for_group(family, group)} {subset}"
-                    ax.scatter(group["W_p90"], group["slope"], s=sizes, marker=marker, alpha=0.72, color=family_color(family), label=label)
+                    ax.scatter(group[w_col], group["slope"], s=sizes, marker=marker, alpha=0.72, color=family_color(family), label=label)
             ax.axhline(0.0, color="#666666", linewidth=0.8)
             ax.set_title(f"{method} | {space}", loc="left", fontsize=10)
-            ax.set_xlabel("W p90")
+            ax.set_xlabel(w_label)
             ax.set_ylabel("relative error slope")
             ax.grid(True, color="#e6e6e6", linewidth=0.7)
     handles, labels = collect_figure_legend(fig)
@@ -306,6 +327,8 @@ def figure_3_representation_severity_sensitivity(summary: pd.DataFrame) -> plt.F
 
 
 def figure_4_target_ceiling(summary: pd.DataFrame, *, loco_only: bool) -> plt.Figure:
+    w_col = display_w_column(summary)
+    w_label = display_w_label(summary)
     panel = summary[(summary["subset"].eq("Set A")) & (summary["space"].eq("Y-space"))].copy()
     if loco_only:
         panel = panel[panel["method"].eq("LOCO")]
@@ -322,10 +345,10 @@ def figure_4_target_ceiling(summary: pd.DataFrame, *, loco_only: bool) -> plt.Fi
             continue
         for family, group in method_panel.groupby("model_family", dropna=False):
             sizes = 28 + pd.to_numeric(group["MAE"], errors="coerce").fillna(0).clip(lower=0, upper=200).to_numpy() * 0.3
-            ax.scatter(group["W_p90"], group["ceiling_bias"], s=sizes, color=family_color(family), alpha=0.75, label=legend_label_for_group(family, group))
+            ax.scatter(group[w_col], group["ceiling_bias"], s=sizes, color=family_color(family), alpha=0.75, label=legend_label_for_group(family, group))
         ax.axhline(0.0, color="#333333", linewidth=0.9)
         ax.set_title(method, loc="left")
-        ax.set_xlabel("Y-space W p90")
+        ax.set_xlabel(f"Y-space {w_label}")
         ax.set_ylabel("ceiling bias (predicted - true)")
         ax.grid(True, color="#e6e6e6", linewidth=0.7)
     handles, labels = collect_figure_legend(fig)
@@ -351,7 +374,8 @@ def figure_5_delta_heatmap(delta: pd.DataFrame) -> plt.Figure:
     work = delta.copy()
     work["row_label"] = work["model"].astype(str) + " | " + work["method"].astype(str)
     matrix = work.set_index("row_label")[metrics].apply(pd.to_numeric, errors="coerce")
-    fig, ax = plt.subplots(figsize=(9.5, max(4.0, 0.28 * max(len(matrix), 1))))
+    fig_height = min(36.0, max(4.0, 0.28 * max(len(matrix), 1)))
+    fig, ax = plt.subplots(figsize=(9.5, fig_height))
     if matrix.empty:
         nonempty_or_message(ax, matrix)
         return fig
@@ -371,6 +395,8 @@ def figure_5_delta_heatmap(delta: pd.DataFrame) -> plt.Figure:
 
 
 def figure_6_hybrid_failure_disentanglement(summary: pd.DataFrame) -> plt.Figure:
+    w_col = display_w_column(summary)
+    w_label = display_w_label(summary)
     fig, axes = plt.subplots(2, 1, figsize=(11.5, 7.2), sharex=True)
     desired_groups = [
         ("LOCO", "Set A", "Hybrid LOCO Set A"),
@@ -411,12 +437,12 @@ def figure_6_hybrid_failure_disentanglement(summary: pd.DataFrame) -> plt.Figure
             if label not in groups:
                 continue
             vals = pd.to_numeric(
-                work[(work["method"].eq(method)) & (work["subset"].eq(subset)) & (work["space"].eq(space))]["W_p90"],
+                work[(work["method"].eq(method)) & (work["subset"].eq(subset)) & (work["space"].eq(space))][w_col],
                 errors="coerce",
             ).dropna()
             values.append(float(vals.mean()) if not vals.empty else np.nan)
         axes[1].bar(x + offset, values, width=0.18, alpha=0.82, label=space)
-    axes[1].set_ylabel("W p90")
+    axes[1].set_ylabel(w_label)
     axes[1].grid(True, axis="y", color="#e6e6e6", linewidth=0.7)
     axes[1].set_xticks(x)
     axes[1].set_xticklabels([name for name, _ in mae_rows], rotation=25, ha="right")
@@ -430,6 +456,8 @@ def figure_6_pure_vs_hybrid(pure_hybrid: pd.DataFrame) -> plt.Figure:
 
 
 def figure_7_method_contrast(summary: pd.DataFrame) -> plt.Figure:
+    w_col = display_w_column(summary)
+    w_label = display_w_label(summary)
     fig, axes = plt.subplots(1, 2, figsize=(11.0, 4.4), sharey=True)
     for ax, subset in zip(axes, ["Set A", "Set B"]):
         panel = summary[summary["subset"].eq(subset)]
@@ -443,7 +471,7 @@ def figure_7_method_contrast(summary: pd.DataFrame) -> plt.Figure:
             lows = []
             highs = []
             for method in methods:
-                vals = pd.to_numeric(panel[(panel["method"].eq(method)) & (panel["space"].eq(space))]["W_p90"], errors="coerce").dropna()
+                vals = pd.to_numeric(panel[(panel["method"].eq(method)) & (panel["space"].eq(space))][w_col], errors="coerce").dropna()
                 mean = float(vals.mean()) if not vals.empty else np.nan
                 sem = float(vals.std(ddof=1) / math.sqrt(len(vals))) if len(vals) > 1 else 0.0
                 values.append(mean)
@@ -453,7 +481,7 @@ def figure_7_method_contrast(summary: pd.DataFrame) -> plt.Figure:
         ax.set_title(subset, loc="left")
         ax.set_xticks(x)
         ax.set_xticklabels(methods, rotation=35, ha="right")
-        ax.set_ylabel("W p90")
+        ax.set_ylabel(w_label)
         ax.grid(True, axis="y", color="#e6e6e6", linewidth=0.7)
     handles, labels = axes[0].get_legend_handles_labels()
     if handles:

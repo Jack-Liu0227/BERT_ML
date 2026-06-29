@@ -3,8 +3,9 @@ from __future__ import annotations
 from pathlib import Path
 
 
-DEFAULT_HYBRID_ROOT = Path("D:/XJTU/已完成论文数据汇总/Fewshot/预处理汇总数据/最终结果图/OOD HYBIRD/w_error_relationship")
-DEFAULT_PURE_ROOT = Path("D:/XJTU/已完成论文数据汇总/Fewshot/预处理汇总数据/最终结果图/OOD/w_error_relationship")
+FINAL_FIGURE_ROOT = Path(r"D:\XJTU") / "已完成论文数据汇总" / "Fewshot" / "预处理汇总数据" / "最终结果图"
+DEFAULT_HYBRID_ROOT = FINAL_FIGURE_ROOT / "OOD HYBIRD" / "w_error_relationship"
+DEFAULT_PURE_ROOT = FINAL_FIGURE_ROOT / "OOD" / "w_error_relationship"
 DEFAULT_OUTPUT_DIR = Path("output") / "hybrid_method_visualizations"
 DEFAULT_TRIPTYCH_ROOT = DEFAULT_HYBRID_ROOT.parent / "triptych"
 SPACE_ORDER = ["X-space", "Y-space", "Z-space"]
@@ -42,6 +43,8 @@ SUMMARY_COLUMNS = [
     "subset",
     "space",
     "aggregation",
+    "W_level",
+    "W_source",
     "W_mean",
     "W_median",
     "W_p90",
@@ -54,6 +57,7 @@ SUMMARY_COLUMNS = [
     "ceiling_bias",
     "underprediction_ratio",
     "n_samples",
+    "n_splits",
 ]
 YZ_OOD_MAP_COLUMNS = [
     "case",
@@ -67,6 +71,8 @@ YZ_OOD_MAP_COLUMNS = [
     "subset",
     "subset_fs",
     "aggregation",
+    "W_level",
+    "W_source",
     "Wy_mean",
     "Wz_mean",
     "MAE",
@@ -74,6 +80,7 @@ YZ_OOD_MAP_COLUMNS = [
     "R2",
     "relative_error_mean",
     "n_samples",
+    "n_splits",
 ]
 SET_AB_MASTER_COLUMNS = [
     "case",
@@ -202,11 +209,14 @@ PURE_HYBRID_COLUMNS = [
     "split_type",
     "subset",
     "space",
+    "W_level",
+    "W_source",
     "W_mean",
     "W_median",
     "W_p90",
     "MAE",
     "relative_error_mean",
     "n_samples",
+    "n_splits",
 ]
 MANIFEST_COLUMNS = ["scope", "task_id", "figure_id", "format", "figure"]

@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import shutil
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
 
-from _bestplus_tabpfn_triptych_config import default_config_path, load_triptych_config
-from _bestplus_tabpfn_triptych_plotting import plot_triptych, prepare_task_table
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from Scripts.lib._bestplus_tabpfn_triptych_config import default_config_path, load_triptych_config
+from Scripts.lib._bestplus_tabpfn_triptych_plotting import plot_triptych, prepare_task_table
 
 
 TASK_KEYS = ["alloy_family", "dataset_name", "property"]

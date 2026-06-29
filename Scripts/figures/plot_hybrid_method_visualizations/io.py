@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 
 from .config import DEFAULT_HYBRID_ROOT, DEFAULT_OUTPUT_DIR, DEFAULT_PURE_ROOT, DEFAULT_TRIPTYCH_ROOT, RAW_SET_SUBSETS, SUBSET_LABELS
+from .w_level_summaries import selected_w_levels
 
 
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
@@ -23,6 +24,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--overview-only", action="store_true", help="Only generate overview figures.")
     parser.add_argument("--task-figures-only", action="store_true", help="Only generate per-task figures.")
     parser.add_argument("--skip-report", action="store_true", help="Skip Markdown report generation.")
+    parser.add_argument(
+        "--w-level",
+        default="both",
+        choices=["sample", "sample_level", "distribution", "distribution_level", "both"],
+        help="Which W calculation level to export. Default writes sample_level and distribution_level folders.",
+    )
     return parser.parse_args(argv)
 
 
@@ -147,7 +154,14 @@ def load_hybrid_long_tables(hybrid_root: Path, case_contains: str | None = None)
             frame["raw_subset"] = subset
             frames.append(frame)
     if not frames:
-        raise FileNotFoundError(f"No hybrid w_error_samples_long.csv files found under {hybrid_root}")
+        for path in [
+            hybrid_root / "csv" / "set_ab_master_sample_long.csv",
+            hybrid_root / "sample_level" / "csv" / "set_ab_master_sample_long.csv",
+            hybrid_root / "distribution_level" / "csv" / "set_ab_master_sample_long.csv",
+        ]:
+            if path.exists():
+                return case_filter(read_csv(path), case_contains)
+        raise FileNotFoundError(f"No hybrid w_error_samples_long.csv or set_ab_master_sample_long.csv files found under {hybrid_root}")
     combined = pd.concat(frames, ignore_index=True, sort=False)
     combined = relabel_hybrid_rows_from_source_splits(combined)
     combined = combined[combined.get("test_set", "").astype(str).str.lower().isin(["test_extrapolation_high20", "test_inner_ood"])].copy()
@@ -177,14 +191,14 @@ FIGURE_TITLES = {
 
 
 FIGURE_CAPTIONS = {
-    "figure_1_severity_decomposition": "Fold-weighted W_p90 distributions compare Set A and Set B across X/Y/Z spaces and methods.",
+    "figure_1_severity_decomposition": "Fold-weighted mean W displays compare Set A and Set B across X/Y/Z spaces and methods.",
     "figure_2_error_dumbbell": "Model dumbbells compare Set A and Set B MAE within each method using fold-weighted task or overview summaries.",
-    "figure_3_representation_severity_sensitivity": "Severity-sensitivity scatter plots keep X-space and Z-space separate; points show W_p90 versus relative-error slope.",
-    "figure_4_target_ceiling_loco": "Set A Y-space W_p90 is compared with ceiling bias under the LOCO hybrid setting; negative bias means systematic underprediction.",
-    "figure_4_target_ceiling_by_method": "Target-ceiling scatter plots compare Set A Y-space W_p90 with ceiling bias across methods and model families.",
+    "figure_3_representation_severity_sensitivity": "Severity-sensitivity scatter plots keep X-space and Z-space separate; points show the displayed mean W metric versus relative-error slope.",
+    "figure_4_target_ceiling_loco": "Set A Y-space displayed mean W is compared with ceiling bias under the LOCO hybrid setting; negative bias means systematic underprediction.",
+    "figure_4_target_ceiling_by_method": "Target-ceiling scatter plots compare Set A Y-space displayed mean W with ceiling bias across methods and model families.",
     "figure_5_model_method_delta_heatmap": "Delta metrics summarize Set A minus Set B behavior for each model-method pair; diverging colors emphasize direction and magnitude.",
-    "figure_6_hybrid_failure_disentanglement": "Hybrid-only Set A/B summaries compare MAE and X/Y/Z W_p90 for LOCO and RandCV, showing whether hybrid splits separate target-space and representation-space failures.",
-    "figure_7_method_diagnostic_contrast": "Method-level W_p90 contrasts show what kind of X/Y/Z OOD stress each method creates in Set A and Set B.",
+    "figure_6_hybrid_failure_disentanglement": "Hybrid-only Set A/B summaries compare MAE and X/Y/Z displayed mean W for LOCO and RandCV, showing whether hybrid splits separate target-space and representation-space failures.",
+    "figure_7_method_diagnostic_contrast": "Method-level displayed mean W contrasts show what kind of X/Y/Z OOD stress each method creates in Set A and Set B.",
     "figure_8_yz_ood_map": "Set A/top20 and Set B/inner are overlaid on one Wy-Wz coordinate system; marker shape encodes the set and color encodes the hybrid method.",
 }
 
@@ -221,12 +235,24 @@ def metric_range_text(frame: pd.DataFrame, column: str) -> str:
     return f"{values.min():.3g} to {values.max():.3g}"
 
 
+def displayed_w_name(frame: pd.DataFrame) -> str:
+    if frame.empty or "W_level" not in frame.columns:
+        return "mean W"
+    levels = set(frame["W_level"].dropna().astype(str))
+    if levels == {"distribution_level"}:
+        return "W1 (weighted mean split_w)"
+    if levels == {"sample_level"}:
+        return "mean sample W"
+    return "mean W"
+
+
 def analysis_for_figure(figure_id: str, scope: str, task_id: str, summary: pd.DataFrame, delta: pd.DataFrame, pure_hybrid: pd.DataFrame) -> str:
     prefix = "Across all tasks" if scope == "overview" else f"For task `{task_id}`"
     if figure_id == "figure_1_severity_decomposition":
+        w_name = displayed_w_name(summary)
         if scope == "by_task":
-            return f"{prefix}, this compact by-task plot keeps X/Y/Z as separate panels. Within each space, methods are ordered by mean W_p90 from low to high, and the legend distinguishes Set A from Set B."
-        return f"{prefix}, this plot compares fold-level Set A and Set B severity. Y-space W_p90 ranges from {metric_range_text(summary[summary['space'].eq('Y-space')], 'W_p90')}, while X/Z panels show representation-side pressure."
+            return f"{prefix}, this compact by-task plot keeps X/Y/Z as separate panels. Within each space, methods are ordered by {w_name} from low to high, and the legend distinguishes Set A from Set B."
+        return f"{prefix}, this plot compares fold-level Set A and Set B severity. Y-space {w_name} ranges from {metric_range_text(summary[summary['space'].eq('Y-space')], 'W_mean')}, while X/Z panels show representation-side pressure."
     if figure_id == "figure_2_error_dumbbell":
         panel = summary[summary["space"].eq("Y-space")]
         if scope == "by_task":
@@ -240,7 +266,7 @@ def analysis_for_figure(figure_id: str, scope: str, task_id: str, summary: pd.Da
     if figure_id.startswith("figure_4"):
         panel = summary[(summary["subset"].eq("Set A")) & (summary["space"].eq("Y-space"))]
         if scope == "by_task":
-            return f"{prefix}, this target-ceiling scatter uses Set A Y-space W_p90 and ceiling bias. More negative points indicate stronger systematic underprediction of high-performance samples."
+            return f"{prefix}, this target-ceiling scatter uses Set A Y-space {displayed_w_name(panel)} and ceiling bias. More negative points indicate stronger systematic underprediction of high-performance samples."
         return f"{prefix}, negative ceiling bias marks systematic underprediction of high-performance Set A samples. GPT/GPT-5.4-labelled model families are shown as model-family points when present in the source data."
     if figure_id == "figure_5_model_method_delta_heatmap":
         return f"{prefix}, red/blue cells encode the direction of Set A minus Set B deltas, so this is the compact view for deciding whether a model-method pair leans toward target-ceiling or representation-disconnection failure."
@@ -330,7 +356,7 @@ def write_report(
         "## How To Read Figure 5-7",
         "",
         "- Figure 5: red/blue colors represent the direction of Set A minus Set B differences; strong signed values identify whether the failure is more target-ceiling-like or representation-disconnection-like.",
-        "- Figure 6: compare Hybrid Set A and Hybrid Set B within LOCO/RandCV; MAE shows the error response, while X/Y/Z W_p90 shows whether the split separates target-space and representation-space failure sources.",
+        "- Figure 6: compare Hybrid Set A and Hybrid Set B within LOCO/RandCV; MAE shows the error response, while X/Y/Z displayed mean W shows whether the split separates target-space and representation-space failure sources.",
         "- Figure 7: compare methods as OOD stress generators; the X/Y/Z colors show which representation or target space each method stresses.",
         "",
         "## Overview Figures",
@@ -375,3 +401,46 @@ def write_report(
         ]
     )
     (output_dir / "hybrid_method_visualization_report.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def write_w_level_index_report(output_dir: Path, w_level: str) -> None:
+    levels = selected_w_levels(w_level)
+    lines = [
+        "# Hybrid Method Visualization W-Level Index",
+        "",
+        "This run separates sample-level and distribution-level W results into dedicated folders.",
+        "",
+    ]
+    if "sample_level" in levels:
+        lines.extend(
+            [
+                "## sample_level",
+                "",
+                "- Folder: `sample_level/`",
+                "- W source: `sample_w_contribution`",
+                "- Meaning: sample-level contribution statistics retained from the previous workflow.",
+                "- Main figures: `sample_level/figures/overview/` and `sample_level/figures/by_task/`",
+                "",
+            ]
+        )
+    if "distribution_level" in levels:
+        lines.extend(
+            [
+                "## distribution_level",
+                "",
+                "- Folder: `distribution_level/`",
+                "- W source: `split_w`",
+                "- Meaning: one train-vs-test distribution W per fold/space, summarized with fold sample-count weights.",
+                "- Main figures: `distribution_level/figures/overview/` and `distribution_level/figures/by_task/`",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Reading Recommendation",
+            "",
+            "Use `distribution_level` for conclusions about distances between two distributions. Use `sample_level` when tracing which samples contributed most to those distances.",
+            "",
+        ]
+    )
+    (output_dir / "hybrid_method_visualization_report.md").write_text("\n".join(lines), encoding="utf-8")

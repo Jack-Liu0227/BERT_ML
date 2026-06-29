@@ -17,14 +17,12 @@ from matplotlib.lines import Line2D
 import numpy as np
 import pandas as pd
 
-REPO_ROOT = Path(__file__).resolve().parents[1]
+REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
-if str(REPO_ROOT / "Scripts") not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT / "Scripts"))
 
-from Scripts import export_three_space_w_ood_report as three_space
-from _raw_prediction_stats import read_prediction_csv, resolve_prediction_columns
+from Scripts.analysis import export_three_space_w_ood_report as three_space
+from Scripts.lib._raw_prediction_stats import read_prediction_csv, resolve_prediction_columns
 from src.data_processing.compute_wx_v2_mixed_ot import compute_one_split
 
 if hasattr(sys.stdout, "reconfigure"):
@@ -154,6 +152,36 @@ STANDARD_YZ_SEVERITY_COLUMNS = [
     "Wz",
     "Wy_random",
     "Wz_random",
+    "Ry",
+    "Rz",
+    "n_folds_y",
+    "n_folds_z",
+]
+YZ_METHOD_SPLIT_COLUMNS = [
+    "task_key",
+    "task_id",
+    "alloy_family",
+    "dataset_name",
+    "property",
+    "method_short",
+    "Wy",
+    "Wz",
+    "n_folds_y",
+    "n_folds_z",
+]
+HYBRID_SET_AB_YZ_SEVERITY_COLUMNS = [
+    "task_key",
+    "task_id",
+    "alloy_family",
+    "dataset_name",
+    "property",
+    "hybrid_subset",
+    "set_label",
+    "method_short",
+    "Wy",
+    "Wz",
+    "Wy_random80",
+    "Wz_random80",
     "Ry",
     "Rz",
     "n_folds_y",
@@ -894,6 +922,9 @@ def prediction_errors_from_source(source: PredictionSource, *, hybrid_subset: st
         work["test_set"] = classify_hybrid_prediction_rows(source, work)
         if hybrid_subset is not None:
             work = filter_hybrid_subset(work, hybrid_subset)
+            if id_col is None and hybrid_subset not in {"combined", "test_hybrid_combined"}:
+                work = work.reset_index(drop=True)
+                work["sample_order"] = np.arange(len(work))
     else:
         work["test_set"] = "ood_test"
     if work.empty:
@@ -931,24 +962,96 @@ def prediction_errors_from_source(source: PredictionSource, *, hybrid_subset: st
 def classify_hybrid_prediction_rows(source: PredictionSource, frame: pd.DataFrame) -> list[str]:
     mapping = hybrid_map_from_source(source)
     if mapping and "join_id" in frame.columns:
-        return [mapping.get(normalize_id(value), "test_hybrid_combined") for value in frame["join_id"].tolist()]
+        join_ids = [normalize_id(value) for value in frame["join_id"].tolist()]
+        if any(join_ids):
+            order_labels = hybrid_order_labels_from_source(source, len(frame))
+            return [
+                mapping.get(join_id, "test_hybrid_combined") if join_id else order_labels[index] if order_labels else "test_hybrid_combined"
+                for index, join_id in enumerate(join_ids)
+            ]
+    order_labels = hybrid_order_labels_from_source(source, len(frame))
+    if order_labels:
+        return order_labels
     return ["test_hybrid_combined"] * len(frame)
 
 
-def hybrid_map_from_source(source: PredictionSource) -> dict[str, str]:
+def hybrid_split_dir_candidates(source: PredictionSource) -> list[Path]:
     candidates: list[Path] = []
     if source.expected_split_file is not None:
         candidates.append(source.expected_split_file.parent)
     if source.model_dir is not None:
         candidates.append(source.model_dir / "split_data")
     for parent in source.prediction_file.parents:
-        split_data = parent / "split_data"
-        candidates.append(split_data)
+        candidates.append(parent / "split_data")
+    unique: list[Path] = []
+    seen: set[str] = set()
     for candidate in candidates:
+        key = str(candidate)
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(candidate)
+    return unique
+
+
+def hybrid_map_from_source(source: PredictionSource) -> dict[str, str]:
+    for candidate in hybrid_split_dir_candidates(source):
         mapping = hybrid_id_to_subset_map(candidate)
         if mapping:
             return mapping
     return {}
+
+
+def hybrid_order_labels_from_source(source: PredictionSource, row_count: int) -> list[str]:
+    for candidate in hybrid_split_dir_candidates(source):
+        labels = hybrid_order_labels_from_split_dir(candidate, row_count)
+        if labels:
+            return labels
+    return []
+
+
+def hybrid_order_labels_from_split_dir(source_split_dir: Path, row_count: int) -> list[str]:
+    summary_path = source_split_dir / "split_summary.json"
+    combined_path = source_split_dir / "test_hybrid_combined.csv"
+    if row_count <= 0 or not summary_path.exists() or not combined_path.exists():
+        return []
+    try:
+        payload = json.loads(summary_path.read_text(encoding="utf-8-sig"))
+        combined = read_csv(combined_path)
+    except Exception:
+        return []
+    if len(combined) != row_count:
+        return []
+    labels = ["test_hybrid_combined"] * row_count
+    labeled = False
+    if "ID" in combined.columns:
+        id_to_index = {normalize_id(sample_id): index for index, sample_id in enumerate(combined["ID"].tolist())}
+        for subset in ("test_extrapolation_high20", "test_inner_ood"):
+            subset_path = source_split_dir / "test_sets" / f"{subset}.csv"
+            if not subset_path.exists():
+                continue
+            try:
+                subset_frame = read_csv(subset_path)
+            except Exception:
+                continue
+            if "ID" not in subset_frame.columns:
+                continue
+            for sample_id in subset_frame["ID"].tolist():
+                index = id_to_index.get(normalize_id(sample_id))
+                if index is not None:
+                    labels[index] = subset
+                    labeled = True
+    if labeled:
+        return labels
+    outer_n = int(payload.get("outer_test_size", 0) or 0)
+    inner_n = int(payload.get("inner_test_size", 0) or 0)
+    if outer_n <= 0 and inner_n <= 0:
+        return []
+    for index in range(min(outer_n, row_count)):
+        labels[index] = "test_extrapolation_high20"
+    for index in range(outer_n, min(outer_n + inner_n, row_count)):
+        labels[index] = "test_inner_ood"
+    return labels
 
 
 def collect_prediction_errors(scope: str, *, hybrid_subset: str | None = None, case_contains: str | None = None, max_sources: int | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
@@ -1157,18 +1260,18 @@ def ordered_methods(methods: Iterable[object]) -> list[str]:
     return sorted(method_text, key=lambda item: METHOD_ORDER.index(item) if item in METHOD_ORDER else 999)
 
 
-def build_standard_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
+def build_yz_method_split_summary(w_table: pd.DataFrame, *, table_label: str) -> pd.DataFrame:
     if w_table.empty:
-        return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
+        return pd.DataFrame(columns=YZ_METHOD_SPLIT_COLUMNS)
     required = ["task_key", "task_id", *CASE_COLUMNS, "method_short", "fold_id", "space", "split_w"]
     missing = [column for column in required if column not in w_table.columns]
     if missing:
-        raise ValueError(f"Standard OOD W table is missing Wy-Wz severity columns: {missing}")
+        raise ValueError(f"{table_label} W table is missing Wy-Wz severity columns: {missing}")
     work = w_table.copy()
     work["method_short"] = work["method_short"].map(normalize_standard_method)
     work = work[work["space"].isin(["Y-space", "Z-space"])].copy()
     if work.empty:
-        return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
+        return pd.DataFrame(columns=YZ_METHOD_SPLIT_COLUMNS)
     work["split_w"] = pd.to_numeric(work["split_w"], errors="coerce")
     work = work[work["split_w"].notna()].copy()
     fold_cols = ["task_key", "task_id", *CASE_COLUMNS, "method_short", "space", "fold_id"]
@@ -1197,6 +1300,21 @@ def build_standard_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
     for column in ["Wy", "Wz", "n_folds_y", "n_folds_z"]:
         if column not in result.columns:
             result[column] = np.nan
+    valid = result["Wy"].notna() & result["Wz"].notna()
+    result = result[valid].copy()
+    if result.empty:
+        return pd.DataFrame(columns=YZ_METHOD_SPLIT_COLUMNS)
+    result["n_folds_y"] = pd.to_numeric(result["n_folds_y"], errors="coerce").fillna(0).astype(int)
+    result["n_folds_z"] = pd.to_numeric(result["n_folds_z"], errors="coerce").fillna(0).astype(int)
+    return result[YZ_METHOD_SPLIT_COLUMNS].reset_index(drop=True)
+
+
+def build_standard_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
+    if w_table.empty:
+        return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
+    result = build_yz_method_split_summary(w_table, table_label="Standard OOD")
+    if result.empty:
+        return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
     random_base = result[result["method_short"].eq("RandCV")][["task_key", "Wy", "Wz"]].rename(
         columns={"Wy": "Wy_random", "Wz": "Wz_random"}
     )
@@ -1209,13 +1327,65 @@ def build_standard_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
         return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
     result["Ry"] = result["Wy"] / result["Wy_random"]
     result["Rz"] = result["Wz"] / result["Wz_random"]
-    result["n_folds_y"] = pd.to_numeric(result["n_folds_y"], errors="coerce").fillna(0).astype(int)
-    result["n_folds_z"] = pd.to_numeric(result["n_folds_z"], errors="coerce").fillna(0).astype(int)
     result = result[STANDARD_YZ_SEVERITY_COLUMNS].sort_values(["task_id", "method_short"], key=lambda series: series.map(str), kind="stable")
     method_rank = {method: index for index, method in enumerate(METHOD_ORDER)}
     result["_method_rank"] = result["method_short"].map(method_rank).fillna(999).astype(int)
     result = result.sort_values(["task_id", "_method_rank", "method_short"], kind="stable").drop(columns="_method_rank")
     return result.reset_index(drop=True)
+
+
+def build_hybrid_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
+    return build_standard_yz_severity_summary(w_table)
+
+
+def build_hybrid_set_ab_yz_severity_summary(
+    set_a_w_table: pd.DataFrame,
+    set_b_w_table: pd.DataFrame,
+    random80_w_table: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    random80_source = set_b_w_table if random80_w_table is None else random80_w_table
+    baseline_summary = build_yz_method_split_summary(random80_source, table_label="Hybrid random80 baseline")
+    if baseline_summary.empty:
+        return pd.DataFrame(columns=HYBRID_SET_AB_YZ_SEVERITY_COLUMNS)
+    baseline = baseline_summary[baseline_summary["method_short"].eq("RandCV")][["task_key", "Wy", "Wz"]].rename(
+        columns={"Wy": "Wy_random80", "Wz": "Wz_random80"}
+    )
+    if baseline.empty:
+        return pd.DataFrame(columns=HYBRID_SET_AB_YZ_SEVERITY_COLUMNS)
+
+    frames: list[pd.DataFrame] = []
+    for subset_name, set_label, table in [
+        ("test_extrapolation_high20", "SetA", set_a_w_table),
+        ("test_inner_ood", "SetB", set_b_w_table),
+    ]:
+        method_summary = build_yz_method_split_summary(table, table_label=f"Hybrid {set_label}")
+        if method_summary.empty:
+            continue
+        method_summary = method_summary.copy()
+        method_summary["hybrid_subset"] = subset_name
+        method_summary["set_label"] = set_label
+        frames.append(method_summary)
+    if not frames:
+        return pd.DataFrame(columns=HYBRID_SET_AB_YZ_SEVERITY_COLUMNS)
+
+    result = pd.concat(frames, ignore_index=True, sort=False)
+    result = result.merge(baseline, on="task_key", how="left")
+    for column in ["Wy", "Wz", "Wy_random80", "Wz_random80"]:
+        result[column] = pd.to_numeric(result[column], errors="coerce")
+    valid = result["Wy"].notna() & result["Wz"].notna() & result["Wy_random80"].gt(0) & result["Wz_random80"].gt(0)
+    result = result[valid].copy()
+    if result.empty:
+        return pd.DataFrame(columns=HYBRID_SET_AB_YZ_SEVERITY_COLUMNS)
+
+    result["Ry"] = result["Wy"] / result["Wy_random80"]
+    result["Rz"] = result["Wz"] / result["Wz_random80"]
+    result["n_folds_y"] = pd.to_numeric(result["n_folds_y"], errors="coerce").fillna(0).astype(int)
+    result["n_folds_z"] = pd.to_numeric(result["n_folds_z"], errors="coerce").fillna(0).astype(int)
+    result = result[HYBRID_SET_AB_YZ_SEVERITY_COLUMNS]
+    result["_set_rank"] = result["set_label"].map({"SetA": 0, "SetB": 1}).fillna(99).astype(int)
+    result["_method_rank"] = result["method_short"].map({method: index for index, method in enumerate(METHOD_ORDER)}).fillna(999).astype(int)
+    result = result.sort_values(["task_id", "_set_rank", "_method_rank", "method_short"], kind="stable")
+    return result.drop(columns=["_set_rank", "_method_rank"]).reset_index(drop=True)
 
 
 def fit_linear_trend_line(x: Iterable[object], y: Iterable[object]) -> tuple[np.ndarray, np.ndarray] | None:
@@ -1533,6 +1703,7 @@ def overview_label_rows(summary: pd.DataFrame, *, per_method: int = 2) -> pd.Dat
 
 
 CORE_YZ_PROTOCOLS = ("RandCV", "Extra.", "LOCO")
+HYBRID_CORE_YZ_PROTOCOLS = ("RandCV", "LOCO")
 
 
 def core_protocol_yz_summary(summary: pd.DataFrame) -> pd.DataFrame:
@@ -1541,6 +1712,14 @@ def core_protocol_yz_summary(summary: pd.DataFrame) -> pd.DataFrame:
     work = summary.copy()
     work["method_short"] = work["method_short"].map(normalize_standard_method)
     return work[work["method_short"].isin(CORE_YZ_PROTOCOLS)].copy().reset_index(drop=True)
+
+
+def hybrid_core_protocol_yz_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary.copy()
+    work = summary.copy()
+    work["method_short"] = work["method_short"].map(normalize_standard_method)
+    return work[work["method_short"].isin(HYBRID_CORE_YZ_PROTOCOLS)].copy().reset_index(drop=True)
 
 
 def plot_standard_yz_severity_overview_to_file(
@@ -1702,6 +1881,207 @@ def plot_standard_yz_core_protocol_overview(
         manifest_task_id="all_tasks_core_protocols",
         method_short="RandCV+Extra.+LOCO",
         title="All-task pure OOD Wy-Wz severity map - core protocols",
+    )
+
+
+def plot_hybrid_yz_core_protocol_overview(
+    summary: pd.DataFrame,
+    output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+) -> pd.DataFrame:
+    return plot_standard_yz_severity_overview_to_file(
+        hybrid_core_protocol_yz_summary(summary),
+        output_dir,
+        formats,
+        dpi,
+        figure_stem="yz_severity_map_core_protocols",
+        figure_group="hybrid_yz_severity_map_core_protocols",
+        manifest_task_id="all_tasks_hybrid_core_protocols",
+        method_short="RandCV+LOCO",
+        title="All-task hybrid Wy-Wz severity map - core protocols",
+    )
+
+
+def hybrid_set_ab_label_rows(summary: pd.DataFrame, *, per_method: int = 1, max_labels: int = 6) -> pd.DataFrame:
+    if summary.empty:
+        return summary.copy()
+    work = summary.copy()
+    work["Ry"] = pd.to_numeric(work["Ry"], errors="coerce")
+    work["Rz"] = pd.to_numeric(work["Rz"], errors="coerce")
+    work = work[work["Ry"].gt(0) & work["Rz"].gt(0) & ~work["method_short"].astype(str).eq("RandCV")].copy()
+    if work.empty:
+        return work
+    rows: list[pd.Series] = []
+    for (set_label, method), group in work.groupby(["set_label", "method_short"], dropna=False, sort=False):
+        group = group.copy()
+        candidates = [
+            group.sort_values(["Ry", "task_id"], ascending=[False, True], kind="stable").head(1),
+            group.sort_values(["Rz", "task_id"], ascending=[False, True], kind="stable").head(1),
+        ]
+        selected = pd.concat(candidates, ignore_index=False).drop_duplicates(subset=["task_id", "method_short", "set_label"], keep="first")
+        if len(selected) > per_method:
+            selected = selected.assign(_score=selected[["Ry", "Rz"]].max(axis=1)).sort_values("_score", ascending=False, kind="stable").head(per_method)
+            selected = selected.drop(columns="_score")
+        rows.extend([row for _, row in selected.iterrows()])
+    if not rows:
+        return work.iloc[0:0].copy()
+    result = pd.DataFrame(rows).drop_duplicates(subset=["task_id", "method_short", "set_label"], keep="first")
+    result = result.assign(_score=result[["Ry", "Rz"]].max(axis=1))
+    result = result.sort_values("_score", ascending=False, kind="stable").drop_duplicates(subset=["task_id", "set_label"], keep="first")
+    result = result.head(max_labels)
+    return result.drop(columns="_score").reset_index(drop=True)
+
+
+def hybrid_set_ab_core_protocol_yz_summary(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty:
+        return summary.copy()
+    work = summary.copy()
+    work["method_short"] = work["method_short"].map(normalize_standard_method)
+    return work[work["method_short"].isin(HYBRID_CORE_YZ_PROTOCOLS)].copy().reset_index(drop=True)
+
+
+def plot_hybrid_set_ab_yz_overview_random80_baseline(
+    summary: pd.DataFrame,
+    output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+    *,
+    figure_stem: str = "yz_severity_map_setA_setB_random80_baseline",
+    figure_group: str = "hybrid_yz_severity_map_setA_setB_random80",
+    manifest_task_id: str = "all_tasks_setA_setB",
+    method_short: str = "all_methods",
+    title: str = "Hybrid SetA/SetB Wy-Wz severity map - 80% RandCV baseline",
+) -> pd.DataFrame:
+    manifest_rows: list[dict[str, object]] = []
+    if summary.empty:
+        return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
+    work = summary.copy()
+    work["Ry"] = pd.to_numeric(work["Ry"], errors="coerce")
+    work["Rz"] = pd.to_numeric(work["Rz"], errors="coerce")
+    work = work[work["Ry"].gt(0) & work["Rz"].gt(0)].copy()
+    if work.empty:
+        return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
+
+    set_markers = {"SetA": "o", "SetB": "^"}
+    fig, ax = plt.subplots(figsize=(10.5, 7.4))
+    method_handles: dict[str, object] = {}
+    label_rows = hybrid_set_ab_label_rows(work)
+    label_ranks = {
+        (clean_text(row["task_id"]) or "unknown_task", clean_text(row["method_short"]), clean_text(row["set_label"])): index
+        for index, row in label_rows.iterrows()
+    }
+    x_limit_probe = severity_axis_limits(work["Ry"])[1]
+    y_limit_probe = severity_axis_limits(work["Rz"])[1]
+    for _, row in work.iterrows():
+        method = clean_text(row["method_short"])
+        set_label = clean_text(row["set_label"]) or "Set"
+        task_id = clean_text(row["task_id"]) or "unknown_task"
+        color = METHOD_COLORS.get(method, "#333333")
+        point = ax.scatter(
+            row["Ry"],
+            row["Rz"],
+            s=78 if method == "RandCV" else 60,
+            color=color,
+            marker=set_markers.get(set_label, "o"),
+            alpha=0.78,
+            edgecolors="#333333" if set_label == "SetB" or method == "RandCV" else "#ffffff",
+            linewidths=0.9 if set_label == "SetB" or method == "RandCV" else 0.45,
+            zorder=3,
+        )
+        method_handles.setdefault(method, point)
+        label_key = (task_id, method, set_label)
+        if label_key in label_ranks:
+            label_rank = label_ranks[label_key]
+            near_right_edge = float(row["Ry"]) > x_limit_probe * 0.72
+            near_top_edge = float(row["Rz"]) > y_limit_probe * 0.78
+            x_offset = -88 if near_right_edge else 8
+            y_offset = -16 - (label_rank % 3) * 8 if near_top_edge else 8 + (label_rank % 3) * 8
+            ax.annotate(
+                f"{task_id} {method} {set_label}",
+                (row["Ry"], row["Rz"]),
+                xytext=(x_offset, y_offset),
+                textcoords="offset points",
+                fontsize=7.3,
+                ha="right" if near_right_edge else "left",
+                va="top" if near_top_edge else "bottom",
+                color="#333333",
+                arrowprops={"arrowstyle": "-", "color": "#777777", "linewidth": 0.5, "shrinkA": 0, "shrinkB": 3},
+                bbox={"boxstyle": "round,pad=0.16", "facecolor": "white", "edgecolor": "none", "alpha": 0.76},
+            )
+
+    ax.set_xscale("log")
+    ax.set_yscale("log")
+    x_ticks = severity_multiplier_ticks(work["Ry"])
+    y_ticks = severity_multiplier_ticks(work["Rz"])
+    ax.set_xticks(x_ticks)
+    ax.set_yticks(y_ticks)
+    ax.set_xticklabels([f"{tick:g}x" for tick in x_ticks])
+    ax.set_yticklabels([f"{tick:g}x" for tick in y_ticks])
+    ax.set_xlim(*severity_axis_limits(work["Ry"]))
+    ax.set_ylim(*severity_axis_limits(work["Rz"]))
+    ax.axvline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
+    ax.axhline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
+    ax.set_xlabel("R_y = Wy / Wy_random80")
+    ax.set_ylabel("R_z = Wz / Wz_random80")
+    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
+    ax.grid(True, which="both", color="#e6e6e6", linewidth=0.7)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+
+    ordered_method_labels = ordered_methods(method_handles.keys())
+    method_legend = ax.legend(
+        [method_handles[label] for label in ordered_method_labels if label in method_handles],
+        [label for label in ordered_method_labels if label in method_handles],
+        loc="upper left",
+        frameon=False,
+        fontsize=8,
+        title="Protocol",
+    )
+    ax.add_artist(method_legend)
+    set_handles = [
+        Line2D([0], [0], marker=set_markers["SetA"], linestyle="None", color="#555555", markerfacecolor="#555555", label="SetA"),
+        Line2D([0], [0], marker=set_markers["SetB"], linestyle="None", color="#555555", markerfacecolor="#555555", label="SetB"),
+    ]
+    ax.legend(set_handles, ["SetA", "SetB"], loc="lower right", frameon=False, fontsize=8, title="Set")
+    fig.tight_layout(rect=(0, 0, 0.98, 1))
+
+    base = output_dir / "figures" / "yz_severity_map" / "overview" / figure_stem
+    base.parent.mkdir(parents=True, exist_ok=True)
+    for fmt in formats:
+        path = base.parent / f"{base.name}.{fmt}"
+        fig.savefig(path, dpi=dpi, bbox_inches="tight")
+        manifest_rows.append(
+            {
+                "figure_group": figure_group,
+                "task_id": manifest_task_id,
+                "model": "all_methods",
+                "method_short": method_short,
+                "rep_space": "Y/Z-space",
+                "figure": str(path),
+                "format": fmt,
+            }
+        )
+    plt.close(fig)
+    return pd.DataFrame(manifest_rows, columns=FIGURE_MANIFEST_COLUMNS)
+
+
+def plot_hybrid_set_ab_yz_core_protocols_random80_baseline(
+    summary: pd.DataFrame,
+    output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+) -> pd.DataFrame:
+    return plot_hybrid_set_ab_yz_overview_random80_baseline(
+        hybrid_set_ab_core_protocol_yz_summary(summary),
+        output_dir,
+        formats,
+        dpi,
+        figure_stem="yz_severity_map_setA_setB_random80_baseline_core_protocols",
+        figure_group="hybrid_yz_severity_map_setA_setB_random80_core_protocols",
+        manifest_task_id="all_tasks_setA_setB_core_protocols",
+        method_short="RandCV+LOCO",
+        title="Hybrid SetA/SetB Wy-Wz severity map - RandCV and LOCO",
     )
 
 
@@ -1974,6 +2354,61 @@ def run_one_output(
     write_report(output_dir, joined, coverage, inventory, figures)
 
 
+def write_hybrid_yz_severity_outputs(
+    w_table: pd.DataFrame,
+    output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+) -> pd.DataFrame:
+    yz_severity = build_hybrid_yz_severity_summary(w_table)
+    yz_output_dir = output_dir / "yz_severity_map"
+    write_csv(yz_severity, yz_output_dir / "csv" / "hybrid_yz_severity_summary.csv")
+    figures = pd.concat(
+        [
+            plot_standard_yz_severity_figures(yz_severity, yz_output_dir, formats, dpi),
+            plot_standard_yz_severity_overview(yz_severity, yz_output_dir, formats, dpi),
+            plot_hybrid_yz_core_protocol_overview(yz_severity, yz_output_dir, formats, dpi),
+        ],
+        ignore_index=True,
+    )
+    manifest_path = yz_output_dir / "csv" / "figure_manifest.csv"
+    write_csv(figures, manifest_path)
+    return figures
+
+
+def write_hybrid_set_ab_yz_random80_outputs(
+    set_a_w_table: pd.DataFrame,
+    set_b_w_table: pd.DataFrame,
+    yz_output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+    random80_w_table: pd.DataFrame | None = None,
+) -> pd.DataFrame:
+    yz_severity = build_hybrid_set_ab_yz_severity_summary(set_a_w_table, set_b_w_table, random80_w_table)
+    write_csv(yz_severity, yz_output_dir / "csv" / "hybrid_yz_severity_setA_setB_random80_summary.csv")
+    figures = pd.concat(
+        [
+            plot_hybrid_set_ab_yz_overview_random80_baseline(yz_severity, yz_output_dir, formats, dpi),
+            plot_hybrid_set_ab_yz_core_protocols_random80_baseline(yz_severity, yz_output_dir, formats, dpi),
+        ],
+        ignore_index=True,
+    )
+
+    manifest_path = yz_output_dir / "csv" / "figure_manifest.csv"
+    if manifest_path.exists():
+        manifest = read_csv(manifest_path)
+        refresh_groups = {
+            "hybrid_yz_severity_map_setA_setB_random80",
+            "hybrid_yz_severity_map_setA_setB_random80_core_protocols",
+        }
+        manifest = manifest[~manifest["figure_group"].astype(str).isin(refresh_groups)].copy()
+    else:
+        manifest = pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
+    manifest = pd.concat([manifest, figures], ignore_index=True, sort=False)
+    write_csv(manifest[FIGURE_MANIFEST_COLUMNS], manifest_path)
+    return figures
+
+
 def run_standard(args: argparse.Namespace) -> None:
     w_path = Path(args.standard_w_table)
     if not w_path.exists():
@@ -1999,6 +2434,7 @@ def run_standard(args: argparse.Namespace) -> None:
 def run_hybrid(args: argparse.Namespace) -> None:
     cache_root = hybrid_cache_run_root(Path(args.hybrid_cache_root), args.case_contains)
     embedding_dir = Path(args.embedding_data_dir)
+    prepared_tables: dict[str, pd.DataFrame] = {}
     for subset in HYBRID_SUBSETS:
         w_path = ensure_hybrid_w_table(
             subset,
@@ -2008,6 +2444,8 @@ def run_hybrid(args: argparse.Namespace) -> None:
             case_contains=args.case_contains,
         )
         w_table = prepare_w_table(read_csv(w_path), scope="hybrid", hybrid_subset=subset)
+        prepared_tables[subset] = w_table
+        write_hybrid_yz_severity_outputs(w_table, Path(args.hybrid_output) / subset, args.formats, args.dpi)
         errors, inventory = collect_prediction_errors(
             "hybrid",
             hybrid_subset=subset,
@@ -2025,6 +2463,15 @@ def run_hybrid(args: argparse.Namespace) -> None:
             args.phase_diagram_spaces,
             args.phase_diagram_color_percentile,
             csv_only=args.csv_only,
+        )
+    if {"test_extrapolation_high20", "test_inner_ood"}.issubset(prepared_tables):
+        write_hybrid_set_ab_yz_random80_outputs(
+            prepared_tables["test_extrapolation_high20"],
+            prepared_tables["test_inner_ood"],
+            Path(args.hybrid_output) / "combined" / "yz_severity_map",
+            args.formats,
+            args.dpi,
+            random80_w_table=prepared_tables["test_inner_ood"],
         )
 
 

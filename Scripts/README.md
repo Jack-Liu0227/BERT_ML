@@ -1,166 +1,194 @@
 # Scripts
 
-`Scripts/` only keeps the core OOD reporting and final-figure pipeline. Historical repair, export, Optuna, 2D-map, and one-off utilities were removed from this active directory; archived utilities live under `archive/legacy_scripts/`.
+Run commands from the repository root. `Scripts/` now keeps executable Python
+entrypoints grouped by workflow, while reusable helpers live in `Scripts/lib/`
+and YAML configuration lives under `configs/`.
 
-Run every command from the repository root.
+## Directory Layout
 
-## Core Workflow
+- `reporting/`: OOD summary and combined-report entrypoints.
+- `figures/`: final figure and W-error visualization entrypoints.
+- `analysis/`: X-space, sample-W, top-tail, and diagnostic analysis entrypoints.
+- `lib/`: private helper modules imported by scripts; do not run these directly.
 
-1. Summarize each model family into the canonical OOD schema.
-2. Merge family summaries into one combined report.
-3. Build final per-task triptych figures from the combined report.
+## Core OOD Reporting Workflow
 
 ```bash
-python Scripts/batch_summarize_extrapolation_results.py
-python Scripts/batch_summarize_bert_extrapolation_results.py
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/batch_summarize_llmprop_ood_results.py
-python Scripts/batch_summarize_combined_ood_reports.py
-python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+python Scripts/reporting/batch_summarize_extrapolation_results.py
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/reporting/batch_summarize_llmprop_ood_results.py
+python Scripts/reporting/batch_summarize_combined_ood_reports.py
+python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
 ```
 
-## Retained CLI Scripts
+## Reporting Scripts
 
-### `batch_summarize_extrapolation_results.py`
+### `reporting/batch_summarize_extrapolation_results.py`
 
 Summarizes Traditional-ML OOD results into the canonical schema.
 
-Default inputs and outputs:
-
-- input: `output/ood_results`
-- output: `output/ood_summary_reports/Traditional`
-
-Common usage:
-
 ```bash
-python Scripts/batch_summarize_extrapolation_results.py
-python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results --output-dir output/ood_summary_reports/Traditional
+python Scripts/reporting/batch_summarize_extrapolation_results.py
+python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results --output-dir output/ood_summary_reports/Traditional
 ```
 
-### `batch_summarize_bert_extrapolation_results.py`
+### `reporting/batch_summarize_bert_extrapolation_results.py`
 
 Summarizes BERT/NN OOD results into the canonical schema.
 
-Default inputs and outputs:
-
-- input: `output/ood_results`
-- output: `output/ood_summary_reports/BERT`
-- optional progress filter: `.batch_progress_ood.json`
-
-Common usage:
-
 ```bash
-python Scripts/batch_summarize_bert_extrapolation_results.py
-python Scripts/batch_summarize_bert_extrapolation_results.py --success-only
-python Scripts/batch_summarize_bert_extrapolation_results.py --tracked-config experiment2a_all_nn_scibert_extrapolation
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --success-only
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --tracked-config experiment2a_all_nn_scibert_extrapolation
 ```
 
-### `batch_summarize_tabpfn_extrapolation_results.py`
+### `reporting/batch_summarize_tabpfn_extrapolation_results.py`
 
 Summarizes TabPFN OOD results into the canonical schema.
 
-Default inputs and outputs:
-
-- input: `output/ood_results_TabPFN-2.5-Plus-Numeric` and `output/ood_results_TabPFN-2.5-Plus-Text`
-- output: `output/ood_summary_reports/TabPFN`
-
-Common usage:
-
 ```bash
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dir output/ood_results_TabPFN-2.5-Plus-Numeric
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py --base-dirs output/ood_results_TabPFN-2.5-Plus-Numeric output/ood_results_TabPFN-2.5-Plus-Text
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py --base-dir output/ood_results_TabPFN-2.5-Plus-Numeric
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py --base-dirs output/ood_results_TabPFN-2.5-Plus-Numeric output/ood_results_TabPFN-2.5-Plus-Text
 ```
 
-### `batch_summarize_llmprop_ood_results.py`
+### `reporting/batch_summarize_llmprop_ood_results.py`
 
 Summarizes LLMProp OOD results into the canonical schema.
 
-Default inputs and outputs:
-
-- input: `output/ood_results`
-- output: `output/ood_summary_reports/LLMProp`
-
-Common usage:
-
 ```bash
-python Scripts/batch_summarize_llmprop_ood_results.py
-python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results --output-dir output/ood_summary_reports/LLMProp
+python Scripts/reporting/batch_summarize_llmprop_ood_results.py
+python Scripts/reporting/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results --output-dir output/ood_summary_reports/LLMProp
 ```
 
-### `batch_summarize_combined_ood_reports.py`
+### `reporting/batch_summarize_combined_ood_reports.py`
 
-Merges Traditional, BERT, TabPFN, LLMProp, and optional external OOD summaries into one report.
+Merges Traditional, BERT, TabPFN, LLMProp, and optional external OOD summaries.
 
-Default inputs and outputs:
-
-- input root: `output/ood_summary_reports`
-- output: `output/ood_summary_reports/Combined`
-- optional external config: `Scripts/external_ood_model_sources.yaml`
-
-Common usage:
+Default external config:
+`configs/ood_reporting/external_ood_model_sources.yaml`
 
 ```bash
-python Scripts/batch_summarize_combined_ood_reports.py
-python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports --output-dir output/ood_summary_reports/Combined
+python Scripts/reporting/batch_summarize_combined_ood_reports.py
+python Scripts/reporting/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports --output-dir output/ood_summary_reports/Combined
 ```
 
-Optional external LLM results are loaded only when their configured root exists. To use the default external config:
-
-```bash
-EXTERNAL_OOD_ROOT=/path/to/external/ood/results python Scripts/batch_summarize_combined_ood_reports.py
-```
-
-On Windows PowerShell, set the environment variable before running Python:
+On Windows PowerShell, enable optional external results before running:
 
 ```text
 $env:EXTERNAL_OOD_ROOT="D:\path\to\external\ood\results"
-python Scripts/batch_summarize_combined_ood_reports.py
+python Scripts/reporting/batch_summarize_combined_ood_reports.py
 ```
 
-### `build_bestplus_tabpfn_triptych.py`
+## Figure Scripts
 
-Builds final per-task triptych figures from the combined summary. It does not read raw model outputs; it reads the combined canonical summary.
+### `figures/build_bestplus_tabpfn_triptych.py`
 
-Default inputs and outputs:
+Builds final per-task triptych figures from the combined canonical summary.
 
-- input: `output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv`
-- default config: `Scripts/build_bestplus_tabpfn_triptych.config.yaml`
-- paper config: `Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml`
-- output: `output/ood_summary_reports/Combined/figure/per_task_bestplus_tabpfn`
+Default configs:
 
-Common usage:
+- `configs/figures/build_bestplus_tabpfn_triptych.config.yaml`
+- `configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml`
 
 ```bash
-python Scripts/build_bestplus_tabpfn_triptych.py
-python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
-python Scripts/build_bestplus_tabpfn_triptych.py --summary-csv output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv --output-dir output/ood_summary_reports/Combined/figure/per_task_bestplus_tabpfn_paper
+python Scripts/figures/build_bestplus_tabpfn_triptych.py
+python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
+python Scripts/figures/build_bestplus_tabpfn_triptych.py --summary-csv output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv --output-dir output/ood_summary_reports/Combined/figure/per_task_bestplus_tabpfn_paper
 ```
 
-## Helper And Configuration Files
+### `figures/plot_w_error_relationships.py`
 
-The following files are required by the retained CLI scripts:
+Builds per-sample W/error relationship figures and long-form tables.
 
-- `_raw_prediction_stats.py`: prediction and Optuna trial metric readers.
-- `_ood_summary_common.py`: canonical OOD schema, exports, ranking, and plotting helpers.
-- `_external_ood_sources.py`: optional external result loader for combined reports.
-- `_bestplus_tabpfn_triptych_config.py`: triptych config loader and defaults.
-- `_bestplus_tabpfn_triptych_plotting.py`: triptych plotting implementation.
-- `OOD_SUMMARY_SCHEMA.md`: canonical schema description.
-- `external_ood_model_sources.yaml`: optional external LLM source mapping.
-- `build_bestplus_tabpfn_triptych.config.yaml`: default figure config.
-- `build_bestplus_tabpfn_triptych.paper.config.yaml`: paper-oriented figure config.
+```bash
+python Scripts/figures/plot_w_error_relationships.py --scope both
+python Scripts/figures/plot_w_error_relationships.py --scope hybrid --case-contains Al__aluminum
+```
 
-Do not run helper modules directly.
+### `figures/plot_hybrid_method_visualizations.py`
 
-## Removed From Active Scripts
+Builds method-aware Hybrid Set A/B W-severity visualizations.
 
-The active directory no longer contains:
+```bash
+python Scripts/figures/plot_hybrid_method_visualizations.py
+python Scripts/figures/plot_hybrid_method_visualizations.py --overview-only
+```
 
-- shell wrappers: `.ps1`, `.bat`, `.sh`, `.cmd`
-- historical Optuna-only scripts
-- one-off export scripts
-- 2D-map rendering and split-trace refresh scripts
-- local repair or rerun utilities
+### `figures/plot_ood_xspace_figures.py`
 
-Use the Python module entrypoints in `src/` to generate experiments, then use the retained scripts here to summarize and plot results.
+Builds figures from X-space OOD score outputs.
+
+```bash
+python Scripts/figures/plot_ood_xspace_figures.py
+```
+
+## Analysis Scripts
+
+### `analysis/analyze_top_tail_loco_proximity.py`
+
+Analyzes top-tail proximity to LOCO clusters.
+
+Default config:
+`configs/analysis/top_tail_loco_proximity_outliers.yaml`
+
+```bash
+python Scripts/analysis/analyze_top_tail_loco_proximity.py
+python Scripts/analysis/analyze_top_tail_loco_proximity.py --outlier-policy steel_core
+```
+
+### `analysis/score_ood_splits.py`
+
+Scores canonical OOD split geometry.
+
+```bash
+python Scripts/analysis/score_ood_splits.py
+```
+
+### `analysis/export_ood_sample_w_reports.py`
+
+Exports sample-level W reports from OOD score outputs.
+
+```bash
+python Scripts/analysis/export_ood_sample_w_reports.py
+```
+
+### `analysis/export_three_space_w_ood_report.py`
+
+Combines X/Y/Z-space sample-W reports.
+
+```bash
+python Scripts/analysis/export_three_space_w_ood_report.py
+```
+
+### `analysis/export_wx_v2_sample_w_reports.py`
+
+Builds sample-W reports using Wx v2 mixed-OT scores.
+
+```bash
+python Scripts/analysis/export_wx_v2_sample_w_reports.py
+```
+
+### `analysis/generate_matbench_embedding_background.py`
+
+Generates Matbench Steel embedding background data.
+
+```bash
+python Scripts/analysis/generate_matbench_embedding_background.py
+```
+
+### `analysis/summarize_w_error_trend_slopes.py`
+
+Summarizes W/error trend slopes from generated long tables.
+
+```bash
+python Scripts/analysis/summarize_w_error_trend_slopes.py
+```
+
+## Notes
+
+- Helper modules in `Scripts/lib/` are implementation details.
+- YAML configuration belongs under `configs/`, not `Scripts/`.
+- Historical one-off utilities should be archived in `archive/legacy_scripts/`.
+- Do not add `.ps1`, `.bat`, `.sh`, or `.cmd` wrappers; use Python commands directly.

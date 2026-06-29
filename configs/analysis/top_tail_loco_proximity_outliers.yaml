@@ -1,0 +1,66 @@
+defaults:
+  include_matbench: true
+  thresholds: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
+  sliced_projections: 128
+
+outlier_sets:
+  steel_core:
+    alloy_family: Steel
+    action: drop
+    ids: [1, 2, 82, 457, 458, 565, 566, 567, 568, 569]
+    reason: core Steel feature-space outliers and likely misclassified/special steel cases
+
+  steel_hns:
+    alloy_family: Steel
+    action: drop
+    ids: [114, 116, 118, 368, 369, 370, 371, 372, 373, 374, 375, 376, 377]
+    reason: high-Cr/HNS-like Steel sensitivity group
+
+  hea_uts_35_40_jump:
+    alloy_family: HEA
+    action: flag
+    property: UTS(MPa)
+    ids: [165, 308, 436, 315, 489, 217, 4, 234, 28, 286, 254, 350, 17, 320, 67, 82, 152, 145, 364, 445, 233, 409, 391, 21]
+    flag_column: is_hea_uts_35_40_jump_entrant
+    reason: HEA UTS samples newly entering the top-tail between the 35% and 40% thresholds
+
+  hea_ys_20_25_jump:
+    alloy_family: HEA
+    action: flag
+    property: YS(MPa)
+    ids: [491, 410, 22, 166, 12, 264, 203, 139, 261, 4, 269, 275, 350, 392, 253, 403, 196, 436, 233, 191, 165, 455, 470, 27, 240]
+    flag_column: is_hea_ys_20_25_jump_entrant
+    reason: HEA YS samples newly entering the top-tail between the 20% and 25% thresholds
+
+  hea_jump_overlap:
+    alloy_family: HEA
+    action: flag
+    ids: [4, 165, 233, 350, 436]
+    flag_column: is_hea_jump_overlap_id
+    reason: exact ID overlap between the HEA UTS and YS jump entrant sets
+
+policies:
+  none:
+    description: baseline analysis without filtering or flagging
+    use_sets: []
+    output_suffix: xspace
+
+  steel_core:
+    description: drop core Steel outliers only
+    use_sets: [steel_core]
+    output_suffix: xspace_drop_steel_core_outliers
+
+  steel_core_plus_hns:
+    description: drop core Steel outliers plus high-Cr/HNS sensitivity group
+    use_sets: [steel_core, steel_hns]
+    output_suffix: xspace_drop_steel_core_plus_hns
+
+  flag_hea_jump:
+    description: flag HEA jump entrants without dropping samples
+    use_sets: [hea_uts_35_40_jump, hea_ys_20_25_jump, hea_jump_overlap]
+    output_suffix: xspace_flag_hea_jump_samples
+
+  steel_core_plus_flag_hea_jump:
+    description: drop Steel core outliers and flag HEA jump entrants
+    use_sets: [steel_core, hea_uts_35_40_jump, hea_ys_20_25_jump, hea_jump_overlap]
+    output_suffix: xspace_drop_steel_core_flag_hea_jump

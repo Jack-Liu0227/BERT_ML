@@ -3,11 +3,16 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import pandas as pd
 
-from _ood_summary_common import (
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from Scripts.lib._ood_summary_common import (
     align_summary_metrics_to_artifact,
     annotate_family_ranks,
     aggregate_hybrid_test_set_metrics,
@@ -18,7 +23,7 @@ from _ood_summary_common import (
     normalize_ood_method,
     reset_output_dir,
 )
-from _raw_prediction_stats import (
+from Scripts.lib._raw_prediction_stats import (
     summarize_outer_fold_final_test_metrics,
     summarize_optuna_model_trials,
     summarize_optuna_model_trials_from_dirs,

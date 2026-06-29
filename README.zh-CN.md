@@ -91,15 +91,15 @@ python -m src.LLMProp.run_llmprop_ood --help
 当前仍在使用的分析和绘图脚本保留在 `Scripts/`。示例：
 
 ```bash
-python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
-python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/reporting/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
+python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
 ```
 
-外部 OOD 结果源由 `Scripts/external_ood_model_sources.yaml` 配置。如需合并外部 LLM 结果，运行 combined summary 前设置 `EXTERNAL_OOD_ROOT`。
+外部 OOD 结果源由 `configs/ood_reporting/external_ood_model_sources.yaml` 配置。如需合并外部 LLM 结果，运行 combined summary 前设置 `EXTERNAL_OOD_ROOT`。
 
 ## 文档
 

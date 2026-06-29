@@ -91,15 +91,15 @@ Generated features, logs, figures, and model outputs are written to ignored dire
 Active analysis and figure scripts remain in `Scripts/`. Examples:
 
 ```bash
-python Scripts/batch_summarize_extrapolation_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
-python Scripts/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
-python Scripts/build_bestplus_tabpfn_triptych.py --config Scripts/build_bestplus_tabpfn_triptych.paper.config.yaml
+python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
+python Scripts/reporting/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
+python Scripts/reporting/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
+python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
 ```
 
-Optional external OOD sources are configured in `Scripts/external_ood_model_sources.yaml`. Set `EXTERNAL_OOD_ROOT` before running combined summaries if external LLM results should be merged.
+Optional external OOD sources are configured in `configs/ood_reporting/external_ood_model_sources.yaml`. Set `EXTERNAL_OOD_ROOT` before running combined summaries if external LLM results should be merged.
 
 ## Documentation
 

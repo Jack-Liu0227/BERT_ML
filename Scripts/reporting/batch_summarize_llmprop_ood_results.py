@@ -3,12 +3,17 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+import sys
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
-from _ood_summary_common import (
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from Scripts.lib._ood_summary_common import (
     align_summary_metrics_to_artifact,
     annotate_family_ranks,
     aggregate_hybrid_test_set_metrics,

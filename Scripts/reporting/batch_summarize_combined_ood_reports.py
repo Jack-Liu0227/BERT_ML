@@ -2,12 +2,17 @@ from __future__ import annotations
 
 import argparse
 from pathlib import Path
+import sys
 
 import numpy as np
 import pandas as pd
 
-from _external_ood_sources import load_external_ood_sources
-from _ood_summary_common import (
+REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from Scripts.lib._external_ood_sources import load_external_ood_sources
+from Scripts.lib._ood_summary_common import (
     HYBRID_TEST_SET_COLUMN_PREFIXES,
     HYBRID_TEST_SET_METRICS,
     OOD_METHOD_ORDER,
@@ -561,7 +566,7 @@ def main() -> None:
     parser.add_argument(
         "--external-sources-config",
         type=Path,
-        default=Path("Scripts/external_ood_model_sources.yaml"),
+        default=Path("configs/ood_reporting/external_ood_model_sources.yaml"),
         help="Optional YAML config describing extra external OOD model sources to merge into the combined summary.",
     )
     args = parser.parse_args()
