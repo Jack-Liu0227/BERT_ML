@@ -21,7 +21,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 DEFAULT_SPLIT_SUMMARY = Path("output") / "ood_xspace_scores" / "ood_split_summary.csv"
-DEFAULT_OUTPUT_ROOT = Path("output") / "ood_xspace_scores" / "wx_v2_mixed_ot"
+DEFAULT_OUTPUT_ROOT = Path("output") / "ood_xspace_scores" / "wx_mixed_ot"
 COMPOSITION_SUFFIXES = ("(wt%)", "(at%)")
 PROCESS_REGEXES = (
     re.compile(r"^st\d+$", re.IGNORECASE),
@@ -53,10 +53,10 @@ SPLIT_SUMMARY_COLUMNS = [
     "train_size",
     "test_size",
     "feature_count",
-    "wx_v2",
-    "wx_v2_solver",
-    "wx_v2_status",
-    "wx_v2_warning",
+    "wx",
+    "wx_solver",
+    "wx_status",
+    "wx_warning",
 ]
 SAMPLE_COLUMNS = [
     "alloy_family",
@@ -71,9 +71,9 @@ SAMPLE_COLUMNS = [
     "__source_index__",
     "target_col",
     "target_value",
-    "wx_v2_sample_score",
-    "wx_v2_mass_contribution",
-    "wx_v2_rank_desc",
+    "wx_sample_score",
+    "wx_mass_contribution",
+    "wx_rank_desc",
 ]
 FEATURE_COLUMNS = [
     "alloy_family",
@@ -93,8 +93,8 @@ FEATURE_COLUMNS = [
     "train_value_matched_mean",
     "test_value",
     "feature_scale",
-    "wx_v2_feature_score",
-    "wx_v2_feature_fraction",
+    "wx_feature_score",
+    "wx_feature_fraction",
     "presence_mismatch_fraction",
 ]
 FAILURE_COLUMNS = [
@@ -119,7 +119,7 @@ class MixedDistanceComponents:
 
 @dataclass
 class ExactOTResult:
-    wx_v2: float
+    wx: float
     plan: np.ndarray
     sample_scores: np.ndarray
     sample_mass_contributions: np.ndarray
@@ -127,7 +127,7 @@ class ExactOTResult:
 
 
 @dataclass
-class WxV2Result:
+class WxResult:
     split_row: dict[str, Any]
     sample_scores: pd.DataFrame
     feature_contributions: pd.DataFrame
@@ -136,7 +136,7 @@ class WxV2Result:
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Compute parallel Wx_v2 scores with bounded mixed feature distances "
+            "Compute Wx scores with bounded mixed feature distances "
             "and exact optimal transport."
         )
     )
@@ -233,7 +233,7 @@ def build_mixed_distance_components(
     feature_columns: list[str],
 ) -> MixedDistanceComponents:
     if not feature_columns:
-        raise ValueError("No X-space feature columns available for Wx_v2.")
+        raise ValueError("No X-space feature columns available for Wx.")
     if train_x.empty or test_x.empty:
         raise ValueError("Train or test feature frame is empty.")
 
@@ -274,7 +274,7 @@ def build_mixed_distance_components(
         cost_matrix += distances / feature_count
 
     if not np.isfinite(cost_matrix).all():
-        raise ValueError("Wx_v2 cost matrix contains non-finite values.")
+        raise ValueError("Wx cost matrix contains non-finite values.")
     return MixedDistanceComponents(
         cost_matrix=cost_matrix,
         feature_distances=feature_distances,
@@ -307,9 +307,9 @@ def solve_exact_ot(cost_matrix: np.ndarray) -> ExactOTResult:
     sample_mass_contributions = (plan * costs).sum(axis=0)
     sample_mass_contributions[np.abs(sample_mass_contributions) < 1e-15] = 0.0
     sample_scores = sample_mass_contributions * test_count
-    wx_v2 = float(result.fun)
+    wx = float(result.fun)
     return ExactOTResult(
-        wx_v2=wx_v2,
+        wx=wx,
         plan=plan,
         sample_scores=sample_scores,
         sample_mass_contributions=sample_mass_contributions,
@@ -319,6 +319,18 @@ def solve_exact_ot(cost_matrix: np.ndarray) -> ExactOTResult:
 
 def base_sample_frame(test_df: pd.DataFrame, target_col: str, metadata: dict[str, Any]) -> pd.DataFrame:
     row_count = len(test_df)
+    if "ID" in test_df.columns:
+        sample_ids = test_df["ID"].to_numpy()
+    elif "__row_id__" in test_df.columns:
+        sample_ids = test_df["__row_id__"].to_numpy()
+    elif "__test_index__" in test_df.columns:
+        sample_ids = test_df["__test_index__"].to_numpy()
+    elif "sample_index" in test_df.columns:
+        sample_ids = test_df["sample_index"].to_numpy()
+    elif "composition" in test_df.columns:
+        sample_ids = test_df["composition"].to_numpy()
+    else:
+        sample_ids = np.arange(row_count)
     result = pd.DataFrame(
         {
             "alloy_family": metadata.get("alloy_family", ""),
@@ -328,7 +340,7 @@ def base_sample_frame(test_df: pd.DataFrame, target_col: str, metadata: dict[str
             "split_id": metadata.get("split_id", ""),
             "fold_id": metadata.get("fold_id", ""),
             "source_split_dir": metadata.get("source_split_dir", ""),
-            "ID": test_df["ID"].to_numpy() if "ID" in test_df.columns else np.full(row_count, np.nan),
+            "ID": sample_ids,
             "__row_id__": test_df["__row_id__"].to_numpy() if "__row_id__" in test_df.columns else np.arange(row_count),
             "__source_index__": test_df["__source_index__"].to_numpy()
             if "__source_index__" in test_df.columns
@@ -382,22 +394,22 @@ def build_feature_contributions(
         frame["train_value_matched_mean"] = matched_train_mean
         frame["test_value"] = test_values
         frame["feature_scale"] = components.feature_scales[feature]
-        frame["wx_v2_feature_score"] = feature_score
-        frame["wx_v2_feature_fraction"] = feature_fraction
+        frame["wx_feature_score"] = feature_score
+        frame["wx_feature_fraction"] = feature_fraction
         frame["presence_mismatch_fraction"] = presence_mismatch_fraction
         rows.append(frame)
 
     return pd.concat(rows, ignore_index=True) if rows else pd.DataFrame(columns=FEATURE_COLUMNS)
 
 
-def compute_wx_v2_for_frames(
+def compute_wx_for_frames(
     train_df: pd.DataFrame,
     test_df: pd.DataFrame,
     feature_columns: list[str],
     metadata: dict[str, Any] | None = None,
     target_col: str = "",
     configured_roles: dict[str, Any] | None = None,
-) -> WxV2Result:
+) -> WxResult:
     metadata = dict(metadata or {})
     configured_roles = dict(configured_roles or {})
     train_x = numeric_feature_frame(train_df, feature_columns)
@@ -406,10 +418,10 @@ def compute_wx_v2_for_frames(
     ot_result = solve_exact_ot(components.cost_matrix)
 
     sample_scores = base_sample_frame(test_df, target_col, metadata)
-    sample_scores["wx_v2_sample_score"] = ot_result.sample_scores
-    sample_scores["wx_v2_mass_contribution"] = ot_result.sample_mass_contributions
-    sample_scores["wx_v2_rank_desc"] = (
-        sample_scores["wx_v2_sample_score"].rank(method="first", ascending=False).astype(int)
+    sample_scores["wx_sample_score"] = ot_result.sample_scores
+    sample_scores["wx_mass_contribution"] = ot_result.sample_mass_contributions
+    sample_scores["wx_rank_desc"] = (
+        sample_scores["wx_sample_score"].rank(method="first", ascending=False).astype(int)
     )
 
     feature_contributions = build_feature_contributions(
@@ -437,12 +449,12 @@ def compute_wx_v2_for_frames(
         "train_size": int(len(train_df)),
         "test_size": int(len(test_df)),
         "feature_count": int(len(feature_columns)),
-        "wx_v2": float(ot_result.wx_v2),
-        "wx_v2_solver": "scipy_linprog_highs_exact",
-        "wx_v2_status": "ok",
-        "wx_v2_warning": metadata.get("wx_v2_warning", ""),
+        "wx": float(ot_result.wx),
+        "wx_solver": "scipy_linprog_highs_exact",
+        "wx_status": "ok",
+        "wx_warning": metadata.get("wx_warning", ""),
     }
-    return WxV2Result(split_row=split_row, sample_scores=sample_scores, feature_contributions=feature_contributions)
+    return WxResult(split_row=split_row, sample_scores=sample_scores, feature_contributions=feature_contributions)
 
 
 def load_split_metadata(row: pd.Series) -> tuple[dict[str, Any], list[str], dict[str, Any], str, Path, Path, Path | None]:
@@ -544,7 +556,7 @@ def failure_row_from(row: pd.Series, error: Exception) -> dict[str, Any]:
     }
 
 
-def compute_one_split(row: pd.Series) -> tuple[WxV2Result, Path | None]:
+def compute_one_split(row: pd.Series) -> tuple[WxResult, Path | None]:
     metadata, feature_columns, configured_roles, target_col, train_file, test_file, output_dir = load_split_metadata(row)
     train_df = read_csv(train_file)
     test_df = read_csv(test_file)
@@ -552,8 +564,8 @@ def compute_one_split(row: pd.Series) -> tuple[WxV2Result, Path | None]:
         raise ValueError("Train or test split is empty.")
     missing = sorted(set(feature_columns) - (set(train_df.columns) | set(test_df.columns)))
     if missing:
-        metadata["wx_v2_warning"] = f"feature columns missing from both train and test: {missing[:10]}"
-    result = compute_wx_v2_for_frames(
+        metadata["wx_warning"] = f"feature columns missing from both train and test: {missing[:10]}"
+    result = compute_wx_for_frames(
         train_df=train_df,
         test_df=test_df,
         feature_columns=feature_columns,
@@ -564,12 +576,12 @@ def compute_one_split(row: pd.Series) -> tuple[WxV2Result, Path | None]:
     return result, output_dir
 
 
-def write_split_outputs(result: WxV2Result, output_dir: Path | None) -> None:
+def write_split_outputs(result: WxResult, output_dir: Path | None) -> None:
     if output_dir is None:
         return
-    write_csv(pd.DataFrame([result.split_row]), output_dir / "ood_split_summary_wx_v2.csv", SPLIT_SUMMARY_COLUMNS)
-    write_csv(result.sample_scores, output_dir / "ood_sample_scores_wx_v2.csv", SAMPLE_COLUMNS)
-    write_csv(result.feature_contributions, output_dir / "ood_feature_contributions_wx_v2.csv", FEATURE_COLUMNS)
+    write_csv(pd.DataFrame([result.split_row]), output_dir / "ood_split_summary_wx.csv", SPLIT_SUMMARY_COLUMNS)
+    write_csv(result.sample_scores, output_dir / "ood_sample_scores_wx.csv", SAMPLE_COLUMNS)
+    write_csv(result.feature_contributions, output_dir / "ood_feature_contributions_wx.csv", FEATURE_COLUMNS)
 
 
 def main() -> None:
@@ -596,7 +608,7 @@ def main() -> None:
     for index, row in enumerate(matching_rows, start=1):
         method = clean_text(row.get("split_strategy")) or clean_text(row.get("method"))
         fold = clean_text(row.get("fold_id"))
-        print(f"[{index}/{len(matching_rows)}] Wx_v2 {row.get('alloy_family')} / {row.get('dataset_name')} / {row.get('property')} / {method} / {fold}")
+        print(f"[{index}/{len(matching_rows)}] Wx {row.get('alloy_family')} / {row.get('dataset_name')} / {row.get('property')} / {method} / {fold}")
         try:
             result, split_output_dir = compute_one_split(row)
             write_split_outputs(result, split_output_dir)
@@ -607,21 +619,21 @@ def main() -> None:
             failures.append(failure_row_from(row, exc))
             print(f"  ERROR: {exc!r}", file=sys.stderr)
             if args.strict:
-                write_csv(pd.DataFrame(failures), output_root / "wx_v2_failures.csv", FAILURE_COLUMNS)
+                write_csv(pd.DataFrame(failures), output_root / "wx_failures.csv", FAILURE_COLUMNS)
                 raise
 
-    write_csv(pd.DataFrame(split_rows), output_root / "wx_v2_split_summary.csv", SPLIT_SUMMARY_COLUMNS)
+    write_csv(pd.DataFrame(split_rows), output_root / "wx_split_summary.csv", SPLIT_SUMMARY_COLUMNS)
     write_csv(
         pd.concat(sample_frames, ignore_index=True) if sample_frames else pd.DataFrame(columns=SAMPLE_COLUMNS),
-        output_root / "all_wx_v2_sample_scores.csv",
+        output_root / "all_wx_sample_scores.csv",
         SAMPLE_COLUMNS,
     )
     write_csv(
         pd.concat(feature_frames, ignore_index=True) if feature_frames else pd.DataFrame(columns=FEATURE_COLUMNS),
-        output_root / "all_wx_v2_feature_contributions.csv",
+        output_root / "all_wx_feature_contributions.csv",
         FEATURE_COLUMNS,
     )
-    write_csv(pd.DataFrame(failures), output_root / "wx_v2_failures.csv", FAILURE_COLUMNS)
+    write_csv(pd.DataFrame(failures), output_root / "wx_failures.csv", FAILURE_COLUMNS)
 
     print(f"Scored splits: {len(split_rows)}")
     print(f"Failures: {len(failures)}")

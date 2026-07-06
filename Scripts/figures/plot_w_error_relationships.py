@@ -23,7 +23,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from Scripts.analysis import export_three_space_w_ood_report as three_space
 from Scripts.lib._raw_prediction_stats import read_prediction_csv, resolve_prediction_columns
-from src.data_processing.compute_wx_v2_mixed_ot import compute_one_split
+from src.data_processing.compute_wx_mixed_ot import compute_one_split
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -68,6 +68,7 @@ METHOD_COLORS = {
     "SY-cls": "#54a24b",
 }
 METHOD_ORDER = ["RandCV", "Extra.", "LOCO", "SX-sgl", "SX-cls", "SY-sgl", "SY-cls"]
+WX_MODES = ("wx_sample_score", "sliced_wx")
 HYBRID_METHOD_DIR_BY_SHORT = {
     "RandCV": "hybrid_extrapolation_random_cv",
     "LOCO": "hybrid_extrapolation_loco",
@@ -104,6 +105,7 @@ JOINED_OUTPUT_COLUMNS = [
     "prediction_file",
     "source_split_dir",
     "join_mode",
+    "wx_mode",
 ]
 COVERAGE_COLUMNS = [
     "scope",
@@ -139,6 +141,7 @@ PREDICTION_INVENTORY_COLUMNS = [
     "exists",
     "error_rows",
     "source_mode",
+    "wx_mode",
 ]
 FIGURE_MANIFEST_COLUMNS = ["figure_group", "task_id", "model", "method_short", "rep_space", "figure", "format"]
 STANDARD_YZ_SEVERITY_COLUMNS = [
@@ -217,7 +220,10 @@ def final_results_root() -> Path:
     )
 
 
-DEFAULT_STANDARD_W = Path("output") / "ood_xspace_scores" / "sample_w_reports_v2" / "three_space_sample_w_values.csv"
+DEFAULT_STANDARD_W_BY_MODE = {
+    "wx_sample_score": Path("output") / "ood_xspace_scores" / "sample_w_reports_wx" / "three_space_sample_w_values.csv",
+    "sliced_wx": Path("output") / "ood_xspace_scores" / "sample_w_reports" / "three_space_sample_w_values.csv",
+}
 DEFAULT_HYBRID_CACHE = Path("output") / "ood_xspace_scores" / "hybrid_w_error_cache"
 DEFAULT_EMBEDDING_DIR = three_space.DEFAULT_EMBEDDING_DATA_DIR
 DEFAULT_OOD_OUTPUT = final_results_root() / "OOD" / "w_error_relationship"
@@ -262,7 +268,12 @@ def parse_max_relative_error_pct(value: object) -> float | None:
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Plot per-sample W versus per-sample prediction errors.")
     parser.add_argument("--scope", choices=["ood", "hybrid", "both"], default="both")
-    parser.add_argument("--standard-w-table", default=str(DEFAULT_STANDARD_W))
+    parser.add_argument("--wx-mode", choices=list(WX_MODES), default="wx_sample_score")
+    parser.add_argument(
+        "--standard-w-table",
+        default=None,
+        help="Standard OOD three-space W table. Defaults by --wx-mode.",
+    )
     parser.add_argument("--hybrid-cache-root", default=str(DEFAULT_HYBRID_CACHE))
     parser.add_argument("--embedding-data-dir", default=str(DEFAULT_EMBEDDING_DIR))
     parser.add_argument("--ood-output", default=str(DEFAULT_OOD_OUTPUT))
@@ -280,7 +291,10 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], choices=["png", "pdf", "svg"])
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.standard_w_table is None:
+        args.standard_w_table = str(DEFAULT_STANDARD_W_BY_MODE[args.wx_mode])
+    return args
 
 
 def read_csv(path: Path) -> pd.DataFrame:
@@ -429,7 +443,13 @@ def filter_hybrid_subset(frame: pd.DataFrame, subset: str) -> pd.DataFrame:
     return frame[frame["test_set"].astype(str).str.lower().eq(subset.lower())].copy()
 
 
-def prepare_w_table(frame: pd.DataFrame, *, scope: str, hybrid_subset: str | None = None) -> pd.DataFrame:
+def prepare_w_table(
+    frame: pd.DataFrame,
+    *,
+    scope: str,
+    hybrid_subset: str | None = None,
+    wx_mode: str = "wx_sample_score",
+) -> pd.DataFrame:
     result = frame.copy()
     if "case_key" not in result.columns:
         result["case_key"] = [
@@ -437,6 +457,7 @@ def prepare_w_table(frame: pd.DataFrame, *, scope: str, hybrid_subset: str | Non
             for _, row in result.iterrows()
         ]
     result["scope"] = scope
+    result["wx_mode"] = wx_mode
     result["task_key"] = result["case_key"].astype(str)
     result["alloy_family"] = result["alloy_family"].map(normalize_family)
     result["task_id"] = [task_id_from_values(row["alloy_family"], row["property"]) for _, row in result.iterrows()]
@@ -468,6 +489,7 @@ def prepare_w_table(frame: pd.DataFrame, *, scope: str, hybrid_subset: str | Non
         "ID",
         "sample_order",
         "test_set",
+        "wx_mode",
         "space",
         "source_split_dir",
         "sample_w_contribution",
@@ -1054,7 +1076,14 @@ def hybrid_order_labels_from_split_dir(source_split_dir: Path, row_count: int) -
     return labels
 
 
-def collect_prediction_errors(scope: str, *, hybrid_subset: str | None = None, case_contains: str | None = None, max_sources: int | None = None) -> tuple[pd.DataFrame, pd.DataFrame]:
+def collect_prediction_errors(
+    scope: str,
+    *,
+    hybrid_subset: str | None = None,
+    case_contains: str | None = None,
+    max_sources: int | None = None,
+    wx_mode: str = "wx_sample_score",
+) -> tuple[pd.DataFrame, pd.DataFrame]:
     sources = collect_summary_prediction_sources(scope, case_contains=case_contains)
     sources.extend(collect_confidence_prediction_sources(scope, case_contains=case_contains))
     sources = deduplicate_sources(sources)
@@ -1077,6 +1106,7 @@ def collect_prediction_errors(scope: str, *, hybrid_subset: str | None = None, c
                 "exists": source.prediction_file.exists(),
                 "error_rows": int(len(errors)),
                 "source_mode": source.source_mode,
+                "wx_mode": wx_mode,
             }
         )
         if not errors.empty:
@@ -1181,7 +1211,7 @@ def ensure_hybrid_w_table(subset: str, cache_root: Path, embedding_data_dir: Pat
     sample_frames: list[pd.DataFrame] = []
     failures: list[dict[str, object]] = []
     for index, row in split_summary.iterrows():
-        print(f"[{index + 1}/{len(split_summary)}] compute hybrid Wx_v2 {row['alloy_family']} {row['property']} {row['method']} {row['fold_id']}")
+        print(f"[{index + 1}/{len(split_summary)}] compute hybrid Wx {row['alloy_family']} {row['property']} {row['method']} {row['fold_id']}")
         try:
             result, _ = compute_one_split(row)
             split_rows.append(result.split_row)
@@ -1192,26 +1222,26 @@ def ensure_hybrid_w_table(subset: str, cache_root: Path, embedding_data_dir: Pat
     wx_split = pd.DataFrame(split_rows)
     wx_samples = pd.concat(sample_frames, ignore_index=True, sort=False) if sample_frames else pd.DataFrame()
     write_csv(split_summary, subset_root / "hybrid_split_summary.csv")
-    write_csv(wx_split, subset_root / "wx_v2_split_summary.csv")
-    write_csv(wx_samples, subset_root / "all_wx_v2_sample_scores.csv")
-    write_csv(pd.DataFrame(failures), subset_root / "wx_v2_failures.csv")
+    write_csv(wx_split, subset_root / "wx_split_summary.csv")
+    write_csv(wx_samples, subset_root / "all_wx_sample_scores.csv")
+    write_csv(pd.DataFrame(failures), subset_root / "wx_failures.csv")
     if wx_split.empty or wx_samples.empty:
-        raise RuntimeError(f"No hybrid Wx_v2 rows were computed for subset {subset}.")
+        raise RuntimeError(f"No hybrid Wx rows were computed for subset {subset}.")
     sample_values = wx_samples.rename(
         columns={
-            "wx_v2_sample_score": "sample_w_contribution",
-            "wx_v2_mass_contribution": "sample_w_mass_contribution",
-            "wx_v2_rank_desc": "sample_w_rank_desc",
+            "wx_sample_score": "sample_w_contribution",
+            "wx_mass_contribution": "sample_w_mass_contribution",
+            "wx_rank_desc": "sample_w_rank_desc",
         }
     ).copy()
     sample_values["ood_score"] = sample_values["sample_w_contribution"]
     sample_values["ood_percentile_vs_train"] = np.nan
     split_for_three = split_summary.merge(
-        wx_split[["source_split_dir", "wx_v2"]],
+        wx_split[["source_split_dir", "wx"]],
         on="source_split_dir",
         how="left",
     )
-    split_for_three["sliced_wasserstein"] = pd.to_numeric(split_for_three["wx_v2"], errors="coerce")
+    split_for_three["wx"] = pd.to_numeric(split_for_three["wx"], errors="coerce")
     split_for_three_path = subset_root / "hybrid_split_summary_for_three_space.csv"
     write_csv(split_for_three, split_for_three_path)
     three_space_values = three_space.build_three_space_sample_values(sample_values, split_for_three_path, embedding_data_dir)
@@ -2413,9 +2443,14 @@ def run_standard(args: argparse.Namespace) -> None:
     w_path = Path(args.standard_w_table)
     if not w_path.exists():
         raise FileNotFoundError(f"Missing standard OOD W table: {w_path}")
-    w_table = prepare_w_table(read_csv(w_path), scope="ood")
+    w_table = prepare_w_table(read_csv(w_path), scope="ood", wx_mode=args.wx_mode)
     yz_severity = build_standard_yz_severity_summary(w_table)
-    errors, inventory = collect_prediction_errors("ood", case_contains=args.case_contains, max_sources=args.max_sources)
+    errors, inventory = collect_prediction_errors(
+        "ood",
+        case_contains=args.case_contains,
+        max_sources=args.max_sources,
+        wx_mode=args.wx_mode,
+    )
     run_one_output(
         w_table,
         errors,
@@ -2443,7 +2478,7 @@ def run_hybrid(args: argparse.Namespace) -> None:
             force=args.force_recompute_hybrid_w,
             case_contains=args.case_contains,
         )
-        w_table = prepare_w_table(read_csv(w_path), scope="hybrid", hybrid_subset=subset)
+        w_table = prepare_w_table(read_csv(w_path), scope="hybrid", hybrid_subset=subset, wx_mode=args.wx_mode)
         prepared_tables[subset] = w_table
         write_hybrid_yz_severity_outputs(w_table, Path(args.hybrid_output) / subset, args.formats, args.dpi)
         errors, inventory = collect_prediction_errors(
@@ -2451,6 +2486,7 @@ def run_hybrid(args: argparse.Namespace) -> None:
             hybrid_subset=subset,
             case_contains=args.case_contains,
             max_sources=args.max_sources,
+            wx_mode=args.wx_mode,
         )
         run_one_output(
             w_table,

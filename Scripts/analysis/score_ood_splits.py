@@ -371,6 +371,12 @@ def sliced_wasserstein_distance_and_sample_scores(
     test_scaled: np.ndarray,
     directions: np.ndarray,
 ) -> tuple[float, np.ndarray, np.ndarray]:
+    """Legacy ``sliced_wx`` comparison mode for X-space W.
+
+    The default Wx mode is the mixed-distance exact OT implementation in
+    ``src.data_processing.compute_wx_mixed_ot``. This helper remains available
+    only for explicit sliced-Wasserstein comparisons.
+    """
     if len(train_scaled) == 0 or len(test_scaled) == 0:
         return float("nan"), np.full(len(test_scaled), np.nan), np.full(len(test_scaled), np.nan)
 

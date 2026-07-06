@@ -1241,13 +1241,24 @@ def base_sample_rows_from_test(split_row: pd.Series, test_df: pd.DataFrame, spac
 
 def x_space_long_samples(sample_values: pd.DataFrame, split_summary: pd.DataFrame) -> pd.DataFrame:
     x = add_case_fields(sample_values).copy()
-    split_w = split_summary[
-        ["source_split_dir", "sliced_wasserstein"]
-    ].drop_duplicates("source_split_dir", keep="first")
+    if "wx" in split_summary.columns:
+        split_w = split_summary[["source_split_dir", "wx"]].drop_duplicates("source_split_dir", keep="first")
+    elif "sliced_wasserstein" in split_summary.columns:
+        split_w = (
+            split_summary[["source_split_dir", "sliced_wasserstein"]]
+            .rename(columns={"sliced_wasserstein": "wx"})
+            .drop_duplicates("source_split_dir", keep="first")
+        )
+    else:
+        raise ValueError("Split summary must contain wx for X-space W.")
     x = x.merge(split_w, on="source_split_dir", how="left")
     x["space"] = "X-space"
     x["space_label"] = "X-space"
-    x["split_w"] = pd.to_numeric(x["sliced_wasserstein"], errors="coerce")
+    if "sample_w_contribution" not in x.columns and "wx_sample_score" in x.columns:
+        x["sample_w_contribution"] = x["wx_sample_score"]
+    if "sample_w_mass_contribution" not in x.columns and "wx_mass_contribution" in x.columns:
+        x["sample_w_mass_contribution"] = x["wx_mass_contribution"]
+    x["split_w"] = pd.to_numeric(x["wx"], errors="coerce")
     x["sample_w_mass_contribution"] = pd.to_numeric(x.get("sample_w_mass_contribution"), errors="coerce")
     x["status"] = "ok"
     keep_cols = [
@@ -1367,11 +1378,12 @@ def build_three_space_sample_values(
         "source_split_dir",
         "train_file",
         "test_file",
-        "sliced_wasserstein",
     ]
     missing = [column for column in required if column not in split_summary.columns]
     if missing:
         raise ValueError(f"{split_summary_path} is missing required columns: {missing}")
+    if "wx" not in split_summary.columns and "sliced_wasserstein" not in split_summary.columns:
+        raise ValueError(f"{split_summary_path} must contain wx for X-space W.")
 
     x_rows = x_space_long_samples(sample_values, split_summary)
     yz_rows = yz_space_long_samples(split_summary, embedding_data_dir)
