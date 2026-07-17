@@ -1,7 +1,34 @@
 defaults:
   include_matbench: true
-  thresholds: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50]
+  thresholds: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
+  jump_detection_thresholds: [0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50, 0.55, 0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
   sliced_projections: 128
+
+jump_detection:
+  min_abs_delta_wx: 0.15
+  min_rel_delta_wx: 0.30
+  drop_max_threshold: 0.50
+  report_only_min_threshold: 0.55
+  matbench_top_tail_threshold: 0.05
+  matbench_extreme_fraction: 0.20
+
+fine_sensitivity_comparison:
+  start: 0.05
+  stop: 0.95
+  step: 0.01
+  major_tick_step_pct: 5
+  drop_max_threshold: 0.50
+  report_only_min_threshold: 0.55
+  sliced_projections: 128
+
+samplewise_sensitivity:
+  start: 0.05
+  stop: 0.95
+  step_samples: 1
+  min_abs_delta_wx: 0.15
+  min_rel_delta_wx: 0.30
+  sliced_projections: 128
+  removal_passes: 1
 
 outlier_sets:
   steel_core:
@@ -39,6 +66,50 @@ outlier_sets:
     flag_column: is_hea_jump_overlap_id
     reason: exact ID overlap between the HEA UTS and YS jump entrant sets
 
+  hea_uts_35_40_jump_drop:
+    alloy_family: HEA
+    action: drop
+    property: UTS(MPa)
+    ids: [165, 308, 436, 315, 489, 217, 4, 234, 28, 286, 254, 350, 17, 320, 67, 82, 152, 145, 364, 445, 233, 409, 391, 21]
+    reason: drop-sensitivity set for HEA UTS samples newly entering the top-tail between 35% and 40%
+
+  hea_ys_20_25_jump_drop:
+    alloy_family: HEA
+    action: drop
+    property: YS(MPa)
+    ids: [491, 410, 22, 166, 12, 264, 203, 139, 261, 4, 269, 275, 350, 392, 253, 403, 196, 436, 233, 191, 165, 455, 470, 27, 240]
+    reason: drop-sensitivity set for HEA YS samples newly entering the top-tail between 20% and 25%
+
+  matbench_top5_x_extremes:
+    alloy_family: MatbenchSteels
+    action: flag_top_tail_x_extremes
+    property: yield strength
+    top_tail_threshold: 0.05
+    extreme_fraction: 0.20
+    flag_column: is_matbench_top5_x_extreme
+    reason: Matbench Steel top-5% target-tail samples with largest standardized X-space distance from the background centroid
+
+  steel_uts_10_15_jump_drop:
+    alloy_family: Steel
+    action: drop
+    property: UTS(MPa)
+    ids: [14, 40, 72, 73, 74, 75, 89, 92, 93, 109, 142, 143, 144, 152, 168, 214, 224, 259, 260, 308, 309, 311, 312, 342, 344, 345, 422, 477, 492, 562, 563, 568, 569, 588]
+    reason: drop-sensitivity set for Steel UTS samples newly entering the top-tail between 10% and 15%
+
+  steel_uts_30_35_jump_drop:
+    alloy_family: Steel
+    action: drop
+    property: UTS(MPa)
+    ids: [1, 36, 46, 49, 55, 58, 67, 68, 78, 132, 137, 138, 156, 162, 163, 179, 192, 194, 196, 285, 294, 298, 325, 433, 486, 516, 532, 545, 605, 609, 613, 621, 632, 655]
+    reason: drop-sensitivity set for Steel UTS samples newly entering the top-tail between 30% and 35%
+
+  matbench_top5_x_extremes_drop:
+    alloy_family: MatbenchSteels
+    action: drop
+    property: yield strength
+    ids: [231, 246, 247]
+    reason: drop-sensitivity set for Matbench Steel top-5% X-space extreme samples
+
 policies:
   none:
     description: baseline analysis without filtering or flagging
@@ -60,7 +131,33 @@ policies:
     use_sets: [hea_uts_35_40_jump, hea_ys_20_25_jump, hea_jump_overlap]
     output_suffix: xspace_flag_hea_jump_samples
 
+  hea_drop_jump_entrants:
+    description: drop HEA UTS and YS jump entrants for sensitivity analysis
+    use_sets: [hea_uts_35_40_jump_drop, hea_ys_20_25_jump_drop]
+    output_suffix: xspace_drop_hea_jump_entrants
+
   steel_core_plus_flag_hea_jump:
     description: drop Steel core outliers and flag HEA jump entrants
     use_sets: [steel_core, hea_uts_35_40_jump, hea_ys_20_25_jump, hea_jump_overlap]
     output_suffix: xspace_drop_steel_core_flag_hea_jump
+
+  all_curated_outliers:
+    description: drop HEA jump entrants plus Steel core and high-Cr/HNS sensitivity groups
+    use_sets: [hea_uts_35_40_jump_drop, hea_ys_20_25_jump_drop, steel_core, steel_hns]
+    output_suffix: xspace_drop_all_curated_outliers
+
+  matbench_flag_top5_x_extremes:
+    description: flag Matbench Steel top-5% X-space extreme samples without dropping
+    use_sets: [matbench_top5_x_extremes]
+    output_suffix: xspace_flag_matbench_top5_x_extremes
+
+  drop_jump_drivers_focus_tasks:
+    description: drop jump-driving samples for HEA UTS, HEA YS, Steel UTS, and Matbench Steel sensitivity analysis
+    use_sets: [hea_uts_35_40_jump_drop, hea_ys_20_25_jump_drop, steel_uts_10_15_jump_drop, steel_uts_30_35_jump_drop, matbench_top5_x_extremes_drop]
+    output_suffix: xspace_drop_jump_drivers_focus_tasks
+
+  drop_auto_detected_jump_drivers:
+    description: auto-detect 5%-95% Wx jumps and drop removable jump-driving samples at thresholds up to 50%
+    use_sets: []
+    auto_detect_jump_drivers: true
+    output_suffix: xspace_drop_auto_detected_jump_drivers

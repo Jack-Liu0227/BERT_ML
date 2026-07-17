@@ -529,8 +529,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--backend",
-        choices=["auto", "api", "local"],
-        default="auto",
+        choices=["auto", "api"],
+        default="api",
         help=(
             "Backend selection. `auto` prefers API when a key is available, "
             "otherwise falls back to the local model."
@@ -538,8 +538,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--model_version",
-        choices=["latest", "v2", "v2.5", "v2.6"],
-        default=None,
+        choices=["v2.5"],
+        default="v2.5",
         help=(
             "Compatibility flag. Local mode only supports `v2`, while API mode "
             "ignores this value and always uses TabPFN-2.5-Plus."

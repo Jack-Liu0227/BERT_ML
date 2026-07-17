@@ -30,18 +30,6 @@ DEFAULT_OOD_SETTINGS: Dict[str, Any] = {
 }
 
 
-TABPFN_OOD_CONFIGS_LOCAL_NUMERIC: Dict[str, Dict[str, Any]] = {
-    alloy_type: {
-        **config,
-        **DEFAULT_OOD_SETTINGS,
-    }
-    for alloy_type, config in get_tabpfn_configs(
-        backend="local",
-        feature_mode="numeric",
-    ).items()
-}
-
-
 TABPFN_OOD_CONFIGS_API_TEXT: Dict[str, Dict[str, Any]] = {
     alloy_type: {
         **config,
@@ -67,12 +55,11 @@ TABPFN_OOD_CONFIGS_API_NUMERIC: Dict[str, Dict[str, Any]] = {
 
 
 TABPFN_OOD_CONFIGS_BY_BACKEND: Dict[str, Dict[str, Dict[str, Any]]] = {
-    "local:numeric": TABPFN_OOD_CONFIGS_LOCAL_NUMERIC,
     "api:text": TABPFN_OOD_CONFIGS_API_TEXT,
     "api:numeric": TABPFN_OOD_CONFIGS_API_NUMERIC,
 }
 
-TABPFN_OOD_CONFIGS = TABPFN_OOD_CONFIGS_LOCAL_NUMERIC
+TABPFN_OOD_CONFIGS = TABPFN_OOD_CONFIGS_API_TEXT
 
 
 OOD_METHOD_BATCH_DEFAULTS: Dict[str, Dict[str, Any]] = {
@@ -204,7 +191,7 @@ TABPFN_OOD_BATCH_CONFIGS: Dict[str, Dict[str, Any]] = _build_batch_configs()
 
 def get_tabpfn_ood_config(
     alloy_type: str,
-    backend: str = "local",
+    backend: str = "api",
     feature_mode: str | None = None,
     base_path: str = ".",
 ) -> Dict[str, Any]:
@@ -226,7 +213,7 @@ def get_tabpfn_ood_config(
 
 
 def get_tabpfn_ood_configs(
-    backend: str = "local",
+    backend: str = "api",
     feature_mode: str | None = None,
     base_path: str = ".",
 ) -> Dict[str, Dict[str, Any]]:
@@ -240,7 +227,7 @@ def get_tabpfn_ood_configs(
 
 
 def get_all_tabpfn_ood_alloys(
-    backend: str = "local",
+    backend: str = "api",
     feature_mode: str | None = None,
     base_path: str = ".",
 ) -> List[str]:

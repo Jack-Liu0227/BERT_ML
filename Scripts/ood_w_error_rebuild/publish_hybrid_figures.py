@@ -52,6 +52,12 @@ def clean_managed_figure_outputs(output_dir: Path) -> None:
             shutil.rmtree(path)
 
 
+def clean_yz_severity_output(output_dir: Path) -> None:
+    path = output_dir / "yz_severity_map"
+    if path.exists():
+        shutil.rmtree(path)
+
+
 def property_to_target_col(value: object) -> str:
     text = str(value)
     if "UTS" in text.upper():
@@ -154,7 +160,7 @@ def yz_rows_for_source(
     test = test.copy()
     test["join_id"] = frame_join_ids(test)
 
-    ordered_ids = source_samples[["ID", "join_id", "sample_order"]].drop_duplicates("join_id", keep="first")
+    ordered_ids = source_samples[["ID", "join_id"]].drop_duplicates("join_id", keep="first")
     base = ordered_ids.merge(test, on="join_id", how="left", suffixes=("", "_test"), sort=False)
 
     rows: list[pd.DataFrame] = []
@@ -206,10 +212,13 @@ def yz_space_joined(samples: pd.DataFrame, w_inventory: pd.DataFrame, embedding_
     meta_cols = [column for column in samples.columns if column not in {"space", "sample_w_contribution", "sample_w_mass_contribution", "split_w"}]
     merged = samples[meta_cols].merge(
         yz_values,
-        on=["source_split_dir", "test_set", "ID", "join_id", "sample_order"],
+        on=["source_split_dir", "test_set", "join_id"],
         how="inner",
+        suffixes=("", "_w"),
         sort=False,
     )
+    if "ID_w" in merged.columns:
+        merged = merged.drop(columns=["ID_w"])
     return merged
 
 
@@ -251,6 +260,7 @@ def build_and_write_figures(
     formats: list[str],
     dpi: int,
     include_hybrid_yz_severity: bool,
+    include_standard_yz_severity: bool = False,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     clean_managed_figure_outputs(output_dir)
     joined = build_three_space_joined(samples, w_inventory, embedding_data_dir)
@@ -267,6 +277,9 @@ def build_and_write_figures(
     if include_hybrid_yz_severity:
         yz_figures = plotter.write_hybrid_yz_severity_outputs(joined, output_dir, formats, dpi)
         figures = pd.concat([figures, yz_figures], ignore_index=True, sort=False)
+    if include_standard_yz_severity:
+        yz_figures = plotter.write_standard_yz_severity_outputs(joined, output_dir, formats, dpi)
+        figures = pd.concat([figures, yz_figures], ignore_index=True, sort=False)
     write_publish_tables(
         input_csv_dir=input_csv_dir,
         output_dir=output_dir,
@@ -275,6 +288,21 @@ def build_and_write_figures(
         figures=figures,
     )
     return joined, phase_wide, figures
+
+
+def read_subset_three_space_joined(
+    *,
+    full_root: Path,
+    subset: str,
+    embedding_data_dir: Path,
+    max_rows: int | None = None,
+) -> pd.DataFrame:
+    csv_dir = hybrid_csv_dir(full_root, subset)
+    samples = read_csv(csv_dir / "w_error_samples_long.csv")
+    if max_rows is not None:
+        samples = samples.head(max_rows).copy()
+    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    return build_three_space_joined(samples, w_inventory, embedding_data_dir)
 
 
 def publish_ood(
@@ -300,6 +328,7 @@ def publish_ood(
         formats=formats,
         dpi=dpi,
         include_hybrid_yz_severity=False,
+        include_standard_yz_severity=True,
     )
     audit = {
         "status": "ok",
@@ -312,6 +341,37 @@ def publish_ood(
         "embedding_data_dir": str(embedding_data_dir),
     }
     write_json(audit, output_dir / "csv" / "publish_audit_summary.json")
+    return audit
+
+
+def publish_ood_yz_severity(
+    *,
+    full_root: Path,
+    output_dir: Path,
+    embedding_data_dir: Path,
+    formats: list[str],
+    dpi: int,
+    max_rows: int | None = None,
+) -> dict[str, object]:
+    clean_yz_severity_output(output_dir)
+    csv_dir = ood_csv_dir(full_root)
+    samples = read_csv(csv_dir / "w_error_samples_long.csv")
+    if max_rows is not None:
+        samples = samples.head(max_rows).copy()
+    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    joined = build_three_space_joined(samples, w_inventory, embedding_data_dir)
+    figures = plotter.write_standard_yz_severity_outputs(joined, output_dir, formats, dpi)
+    audit = {
+        "status": "ok",
+        "scope": "ood",
+        "mode": "yz_severity_only",
+        "input_rows": int(len(samples)),
+        "three_space_rows": int(len(joined)),
+        "yz_severity_figures": int(len(figures)),
+        "spaces": sorted(str(value) for value in joined["space"].dropna().unique()),
+        "embedding_data_dir": str(embedding_data_dir),
+    }
+    write_json(audit, output_dir / "yz_severity_map" / "csv" / "publish_yz_severity_audit_summary.json")
     return audit
 
 
@@ -341,17 +401,99 @@ def publish_hybrid_subset(
         dpi=dpi,
         include_hybrid_yz_severity=True,
     )
+    set_ab_figures = pd.DataFrame(columns=plotter.FIGURE_MANIFEST_COLUMNS)
+    if subset == "combined":
+        set_a_joined = read_subset_three_space_joined(
+            full_root=full_root,
+            subset="test_extrapolation_high20",
+            embedding_data_dir=embedding_data_dir,
+            max_rows=max_rows,
+        )
+        set_b_joined = read_subset_three_space_joined(
+            full_root=full_root,
+            subset="test_inner_ood",
+            embedding_data_dir=embedding_data_dir,
+            max_rows=max_rows,
+        )
+        set_ab_figures = plotter.write_hybrid_set_ab_yz_random80_outputs(
+            set_a_joined,
+            set_b_joined,
+            output_dir / "yz_severity_map",
+            formats,
+            dpi,
+            random80_w_table=set_b_joined,
+        )
+        figures = pd.concat([figures, set_ab_figures], ignore_index=True, sort=False)
+        write_csv(figures, output_dir / "csv" / "figure_manifest.csv")
     audit = {
         "status": "ok",
         "subset": subset,
         "input_rows": int(len(samples)),
         "three_space_rows": int(len(joined)),
         "figures": int(len(figures)),
+        "set_ab_yz_figures": int(len(set_ab_figures)),
         "models": sorted(str(value) for value in joined["model"].dropna().unique()),
         "spaces": sorted(str(value) for value in joined["space"].dropna().unique()),
         "embedding_data_dir": str(embedding_data_dir),
     }
     write_json(audit, output_dir / "csv" / "publish_audit_summary.json")
+    return audit
+
+
+def publish_hybrid_yz_severity(
+    *,
+    full_root: Path,
+    output_root: Path,
+    subset: str,
+    embedding_data_dir: Path,
+    formats: list[str],
+    dpi: int,
+    max_rows: int | None = None,
+) -> dict[str, object]:
+    output_dir = output_root / subset
+    clean_yz_severity_output(output_dir)
+    combined_joined = read_subset_three_space_joined(
+        full_root=full_root,
+        subset=subset,
+        embedding_data_dir=embedding_data_dir,
+        max_rows=max_rows,
+    )
+    figures = plotter.write_hybrid_yz_severity_outputs(combined_joined, output_dir, formats, dpi)
+    set_ab_figures = pd.DataFrame(columns=plotter.FIGURE_MANIFEST_COLUMNS)
+    if subset == "combined":
+        set_a_joined = read_subset_three_space_joined(
+            full_root=full_root,
+            subset="test_extrapolation_high20",
+            embedding_data_dir=embedding_data_dir,
+            max_rows=max_rows,
+        )
+        set_b_joined = read_subset_three_space_joined(
+            full_root=full_root,
+            subset="test_inner_ood",
+            embedding_data_dir=embedding_data_dir,
+            max_rows=max_rows,
+        )
+        set_ab_figures = plotter.write_hybrid_set_ab_yz_random80_outputs(
+            set_a_joined,
+            set_b_joined,
+            output_dir / "yz_severity_map",
+            formats,
+            dpi,
+            random80_w_table=set_b_joined,
+        )
+        figures = pd.concat([figures, set_ab_figures], ignore_index=True, sort=False)
+    audit = {
+        "status": "ok",
+        "scope": "hybrid",
+        "subset": subset,
+        "mode": "yz_severity_only",
+        "combined_three_space_rows": int(len(combined_joined)),
+        "yz_severity_figures": int(len(figures)),
+        "set_ab_yz_figures": int(len(set_ab_figures)),
+        "spaces": sorted(str(value) for value in combined_joined["space"].dropna().unique()),
+        "embedding_data_dir": str(embedding_data_dir),
+    }
+    write_json(audit, output_dir / "yz_severity_map" / "csv" / "publish_yz_severity_audit_summary.json")
     return audit
 
 
@@ -365,30 +507,52 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], choices=["png", "pdf", "svg"])
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--max-rows", type=int, default=None)
+    parser.add_argument("--only-yz-severity", action="store_true")
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
     if args.scope == "ood":
-        audit = publish_ood(
-            full_root=args.full_root,
-            output_dir=args.output_root or plotter.DEFAULT_OOD_OUTPUT,
-            embedding_data_dir=args.embedding_data_dir,
-            formats=args.formats,
-            dpi=args.dpi,
-            max_rows=args.max_rows,
-        )
+        if args.only_yz_severity:
+            audit = publish_ood_yz_severity(
+                full_root=args.full_root,
+                output_dir=args.output_root or plotter.DEFAULT_OOD_OUTPUT,
+                embedding_data_dir=args.embedding_data_dir,
+                formats=args.formats,
+                dpi=args.dpi,
+                max_rows=args.max_rows,
+            )
+        else:
+            audit = publish_ood(
+                full_root=args.full_root,
+                output_dir=args.output_root or plotter.DEFAULT_OOD_OUTPUT,
+                embedding_data_dir=args.embedding_data_dir,
+                formats=args.formats,
+                dpi=args.dpi,
+                max_rows=args.max_rows,
+            )
     else:
-        audit = publish_hybrid_subset(
-            full_root=args.full_root,
-            output_root=args.output_root or DEFAULT_HYBRID_FINAL_ROOT,
-            subset=args.subset,
-            embedding_data_dir=args.embedding_data_dir,
-            formats=args.formats,
-            dpi=args.dpi,
-            max_rows=args.max_rows,
-        )
+        if args.only_yz_severity:
+            audit = publish_hybrid_yz_severity(
+                full_root=args.full_root,
+                output_root=args.output_root or DEFAULT_HYBRID_FINAL_ROOT,
+                subset=args.subset,
+                embedding_data_dir=args.embedding_data_dir,
+                formats=args.formats,
+                dpi=args.dpi,
+                max_rows=args.max_rows,
+            )
+        else:
+            audit = publish_hybrid_subset(
+                full_root=args.full_root,
+                output_root=args.output_root or DEFAULT_HYBRID_FINAL_ROOT,
+                subset=args.subset,
+                embedding_data_dir=args.embedding_data_dir,
+                formats=args.formats,
+                dpi=args.dpi,
+                max_rows=args.max_rows,
+            )
     print(json.dumps(audit, ensure_ascii=False, indent=2))
 
 

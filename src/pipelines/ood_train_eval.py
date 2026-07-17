@@ -591,7 +591,10 @@ class OODMLTrainingPipeline(MLTrainingPipeline):
         self.train_val_data = self.inner_train_data
         self.test_data = self.inner_val_data
         try:
-            if self.args.use_optuna:
+            frozen_model_params = getattr(self.args, "frozen_model_params", None)
+            if frozen_model_params is not None:
+                self._last_model_params = dict(frozen_model_params)
+            elif self.args.use_optuna:
                 self._run_optuna()
             else:
                 self._run_standard_training()
@@ -689,6 +692,9 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
         _save_scalers(self.args.result_dir, self.scaler_X, self.scaler_y)
 
     def _load_selected_model_config(self) -> Dict[str, Any] | None:
+        frozen_model_config = getattr(self.args, "frozen_model_config", None)
+        if frozen_model_config is not None:
+            return dict(frozen_model_config)
         if not self.best_model_path or not Path(self.best_model_path).exists():
             return None
         loaded_object = torch.load(self.best_model_path, map_location="cpu", weights_only=False)
@@ -851,7 +857,12 @@ class OODNNTrainingPipeline(NNTrainingPipeline):
         self.train_val_data = self.inner_train_data
         self.test_data = self.inner_val_data
         try:
-            if self.args.use_optuna:
+            # A frozen architecture is used directly for the final outer
+            # refit.  Skipping the provisional inner run avoids selecting a
+            # replacement architecture from the new training subset.
+            if getattr(self.args, "frozen_model_config", None) is not None:
+                pass
+            elif self.args.use_optuna:
                 self._run_optuna()
             else:
                 self._run_standard_training()
@@ -947,14 +958,42 @@ def build_nn_args(base_args: Any) -> SimpleNamespace:
     )
 
 
+def apply_frozen_nn_parameters(nn_args: Any, frozen_parameters: Dict[str, Any]) -> None:
+    frozen_args = frozen_parameters.get("args", {}) or {}
+    for name in (
+        "emb_hidden_dim",
+        "feature1_hidden_dim",
+        "feature2_hidden_dim",
+        "other_features_hidden_dim",
+        "hidden_dims",
+        "dropout_rate",
+        "epochs",
+        "batch_size",
+        "learning_rate",
+        "weight_decay",
+        "patience",
+        "use_lr_scheduler",
+        "lr_scheduler_patience",
+        "lr_scheduler_factor",
+    ):
+        if name in frozen_args:
+            setattr(nn_args, name, frozen_args[name])
+    nn_args.frozen_model_config = dict(frozen_parameters.get("model_config", {})) or None
+    nn_args.use_optuna = False
+    nn_args.cross_validate = False
+
+
 def run_ood_training(
     base_args: Any,
     train_feature_file: str,
     test_feature_file: str,
     test_set_feature_files: Dict[str, str] | None = None,
+    frozen_parameters: Dict[str, Any] | None = None,
 ) -> None:
     if getattr(base_args, "use_nn", False):
         nn_args = build_nn_args(base_args)
+        if frozen_parameters:
+            apply_frozen_nn_parameters(nn_args, frozen_parameters)
         OODNNTrainingPipeline(nn_args, train_feature_file, test_feature_file, test_set_feature_files).run()
         return
 
@@ -966,4 +1005,8 @@ def run_ood_training(
         ml_args = build_ml_args(base_args)
         ml_args.model_type = model_name
         ml_args.result_dir = model_result_dir
+        if frozen_parameters:
+            ml_args.frozen_model_params = dict(frozen_parameters.get("model_params", frozen_parameters))
+            ml_args.use_optuna = False
+            ml_args.cross_validate = False
         OODMLTrainingPipeline(ml_args, train_feature_file, test_feature_file, test_set_feature_files).run()

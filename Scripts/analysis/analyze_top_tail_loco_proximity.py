@@ -42,8 +42,58 @@ DEFAULT_SPLITS_ROOT = Path("output") / "ood_splits"
 DEFAULT_OUTPUT_PARENT = Path("output") / "top_tail_loco_proximity"
 DEFAULT_OUTPUT_ROOT = Path("output") / "top_tail_loco_proximity" / "xspace"
 DEFAULT_CONFIG_PATH = Path("configs") / "analysis" / "top_tail_loco_proximity_outliers.yaml"
-DEFAULT_THRESHOLDS = (0.05, 0.10, 0.15, 0.20, 0.25, 0.30, 0.35, 0.40, 0.45, 0.50)
+DEFAULT_FINE_COMPARISON_ROOT = DEFAULT_OUTPUT_PARENT / "sensitivity_comparison_1pct"
+DEFAULT_THRESHOLDS = tuple(i / 100 for i in range(5, 100, 5))
+DEFAULT_JUMP_DETECTION_THRESHOLDS = tuple(i / 100 for i in range(5, 100, 5))
 CASE_COLUMNS = ["alloy_family", "dataset_name", "property"]
+DYNAMIC_OUTLIER_ACTIONS = {"flag_top_tail_x_extremes"}
+AUTO_JUMP_POLICY_NAME = "drop_auto_detected_jump_drivers"
+SENSITIVITY_FOCUS_CASES = {
+    "HEA__hea__UTS_MPa": {
+        "title": "HEA / UTS(MPa)",
+        "policies": ["none", AUTO_JUMP_POLICY_NAME],
+        "highlights": [(35, 40)],
+        "annotation": "Auto-drop set: detected HEA UTS jump entrants up to 50%",
+    },
+    "HEA__hea__YS_MPa": {
+        "title": "HEA / YS(MPa)",
+        "policies": ["none", AUTO_JUMP_POLICY_NAME],
+        "highlights": [(20, 25)],
+        "annotation": "Auto-drop set: detected HEA YS jump entrants up to 50%",
+    },
+    "Steel__steel__UTS_MPa": {
+        "title": "Steel / UTS(MPa)",
+        "policies": ["none", AUTO_JUMP_POLICY_NAME],
+        "highlights": [(10, 15), (30, 35)],
+        "annotation": "Auto-drop set: detected Steel UTS jump entrants up to 50%",
+    },
+    "MatbenchSteels__matbench_steels_ood__yield_strength": {
+        "title": "Matbench Steel / yield strength",
+        "policies": ["none", AUTO_JUMP_POLICY_NAME],
+        "highlights": [(5, 5)],
+        "annotation": "Auto-drop set: Matbench top-5% X-space extremes",
+    },
+}
+SENSITIVITY_POLICY_LABELS = {
+    "none": "baseline",
+    AUTO_JUMP_POLICY_NAME: "auto-drop jump drivers",
+    "drop_jump_drivers_focus_tasks": "drop jump-driving samples",
+    "hea_drop_jump_entrants": "drop HEA jump entrants",
+    "steel_core": "drop Steel core",
+    "steel_core_plus_hns": "drop Steel core+HNS",
+    "all_curated_outliers": "drop all curated",
+    "matbench_flag_top5_x_extremes": "flag Matbench top-5% X extremes",
+}
+SENSITIVITY_POLICY_COLORS = {
+    "none": "#222222",
+    AUTO_JUMP_POLICY_NAME: "#d95f02",
+    "drop_jump_drivers_focus_tasks": "#d95f02",
+    "hea_drop_jump_entrants": "#d95f02",
+    "steel_core": "#4c78a8",
+    "steel_core_plus_hns": "#59a14f",
+    "all_curated_outliers": "#b07aa1",
+    "matbench_flag_top5_x_extremes": "#e15759",
+}
 
 
 @dataclass(frozen=True)
@@ -95,6 +145,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--formats", nargs="+", default=["png"], choices=["png", "pdf", "svg"])
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--no-figures", action="store_true")
+    parser.add_argument("--write-sensitivity-comparison", action="store_true")
+    parser.add_argument("--comparison-only", action="store_true")
+    parser.add_argument("--comparison-input-parent", default=str(DEFAULT_OUTPUT_PARENT))
+    parser.add_argument("--comparison-root", default=str(DEFAULT_OUTPUT_PARENT / "sensitivity_comparison"))
+    parser.add_argument("--fine-comparison-only", action="store_true")
+    parser.add_argument("--fine-comparison-root", default=str(DEFAULT_FINE_COMPARISON_ROOT))
     return parser.parse_args()
 
 
@@ -156,7 +212,16 @@ def resolve_outlier_policy(config: dict[str, Any], policy_name: str) -> dict[str
     policy["sets"] = resolved_sets
     policy["has_drop"] = any(str(item.get("action", "")).lower() == "drop" for item in resolved_sets)
     policy["has_flag"] = any(str(item.get("action", "")).lower() == "flag" for item in resolved_sets)
+    policy["has_dynamic"] = any(str(item.get("action", "")).lower() in DYNAMIC_OUTLIER_ACTIONS for item in resolved_sets)
+    policy["auto_detect_jump_drivers"] = bool(policy.get("auto_detect_jump_drivers", False))
     return policy
+
+
+def outlier_set_applies(item: dict[str, Any], alloy_family: str, property_name: str) -> bool:
+    if str(item.get("alloy_family", "")) != str(alloy_family):
+        return False
+    item_property = item.get("property")
+    return item_property is None or str(item_property) == str(property_name)
 
 
 def apply_outlier_policy(
@@ -171,12 +236,11 @@ def apply_outlier_policy(
         return result, manifest_rows
     ids = pd.to_numeric(result["ID"], errors="coerce")
     for item in list(policy.get("sets") or []):
-        if str(item.get("alloy_family", "")) != str(alloy_family):
-            continue
-        item_property = item.get("property")
-        if item_property is not None and str(item_property) != str(property_name):
+        if not outlier_set_applies(item, alloy_family, property_name):
             continue
         action = str(item.get("action", "")).lower()
+        if action in DYNAMIC_OUTLIER_ACTIONS:
+            continue
         target_ids = set(int(value) for value in list(item.get("ids") or []))
         matched = ids.isin(target_ids).fillna(False)
         matched_ids = sorted(int(value) for value in ids[matched].dropna().unique().tolist())
@@ -204,6 +268,20 @@ def apply_outlier_policy(
                 }
             )
     return result.reset_index(drop=True), manifest_rows
+
+
+def policy_forces_temporary(policy: dict[str, Any] | None, alloy_family: str, property_name: str) -> bool:
+    if not policy:
+        return False
+    return any(
+        str(item.get("action", "")).lower() == "drop"
+        and outlier_set_applies(item, alloy_family, property_name)
+        for item in list(policy.get("sets") or [])
+    ) or any(
+        str(item.get("action", "")).lower() in DYNAMIC_OUTLIER_ACTIONS
+        and outlier_set_applies(item, alloy_family, property_name)
+        for item in list(policy.get("sets") or [])
+    )
 
 
 def flag_columns(frame: pd.DataFrame) -> list[str]:
@@ -367,6 +445,317 @@ def compute_space_shift_metrics(
         "x_sliced_projections": int(max(1, sliced_projections)),
         "y_distance_method": "wasserstein_1_standardized_y",
     }
+
+
+def jump_detection_thresholds_from_config(config: dict[str, Any]) -> list[float]:
+    defaults = dict(config.get("defaults") or {})
+    configured = defaults.get("jump_detection_thresholds")
+    return [float(value) for value in list(configured or DEFAULT_JUMP_DETECTION_THRESHOLDS)]
+
+
+def fine_comparison_settings_from_config(config: dict[str, Any]) -> dict[str, float]:
+    settings = dict(config.get("fine_sensitivity_comparison") or {})
+    rules = jump_detection_rules_from_config(config)
+    defaults = dict(config.get("defaults") or {})
+    return {
+        "start": float(settings.get("start", 0.05)),
+        "stop": float(settings.get("stop", 0.95)),
+        "step": float(settings.get("step", 0.01)),
+        "major_tick_step_pct": float(settings.get("major_tick_step_pct", 5)),
+        "drop_max_threshold": float(settings.get("drop_max_threshold", rules["drop_max_threshold"])),
+        "report_only_min_threshold": float(
+            settings.get("report_only_min_threshold", rules["report_only_min_threshold"])
+        ),
+        "sliced_projections": float(settings.get("sliced_projections", defaults.get("sliced_projections", 128))),
+    }
+
+
+def fine_comparison_thresholds_from_config(config: dict[str, Any]) -> list[float]:
+    settings = fine_comparison_settings_from_config(config)
+    start_pct = int(round(settings["start"] * 100))
+    stop_pct = int(round(settings["stop"] * 100))
+    step_pct = int(round(settings["step"] * 100))
+    if step_pct <= 0:
+        raise ValueError("fine comparison threshold step must be positive")
+    if start_pct <= 0 or stop_pct >= 100 or start_pct > stop_pct:
+        raise ValueError("fine comparison thresholds must satisfy 0 < start <= stop < 1")
+    thresholds = [pct / 100 for pct in range(start_pct, stop_pct + 1, step_pct)]
+    if not thresholds or int(round(thresholds[-1] * 100)) != stop_pct:
+        raise ValueError("fine comparison threshold range must be exactly divisible by the configured step")
+    return thresholds
+
+
+def add_adjacent_shift_columns(frame: pd.DataFrame) -> pd.DataFrame:
+    if frame.empty:
+        result = frame.copy()
+        for column in ["delta_Wx_1pct", "relative_delta_Wx_1pct", "delta_Wy_1pct"]:
+            result[column] = pd.Series(dtype=float)
+        return result
+    required = {"case_key", "comparison_policy", "threshold_pct", "Wx", "Wy"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(f"fine comparison frame is missing columns: {sorted(missing)}")
+    result = frame.sort_values(
+        ["case_key", "comparison_policy", "threshold_pct"], kind="stable"
+    ).reset_index(drop=True)
+    grouped = result.groupby(["case_key", "comparison_policy"], sort=False, dropna=False)
+    result["delta_Wx_1pct"] = grouped["Wx"].diff()
+    result["relative_delta_Wx_1pct"] = result["delta_Wx_1pct"] / grouped["Wx"].shift(1)
+    result["delta_Wy_1pct"] = grouped["Wy"].diff()
+    return result
+
+
+def jump_detection_rules_from_config(config: dict[str, Any]) -> dict[str, float]:
+    rules = dict(config.get("jump_detection") or {})
+    return {
+        "min_abs_delta_wx": float(rules.get("min_abs_delta_wx", 0.15)),
+        "min_rel_delta_wx": float(rules.get("min_rel_delta_wx", 0.30)),
+        "drop_max_threshold": float(rules.get("drop_max_threshold", 0.50)),
+        "report_only_min_threshold": float(rules.get("report_only_min_threshold", 0.55)),
+        "matbench_top_tail_threshold": float(rules.get("matbench_top_tail_threshold", 0.05)),
+        "matbench_extreme_fraction": float(rules.get("matbench_extreme_fraction", 0.20)),
+    }
+
+
+def compute_space_shift_curve(
+    spec: TaskSpec,
+    frame: pd.DataFrame,
+    thresholds: list[float],
+    random_state: int,
+    sliced_projections: int,
+    mode: str,
+) -> pd.DataFrame:
+    feature_columns = fallback_feature_columns(frame, spec.target_col, spec.feature_columns)
+    rows: list[dict[str, Any]] = []
+    for threshold in thresholds:
+        top_tail, background = select_top_tail(frame, spec.target_col, threshold)
+        rows.append(
+            compute_space_shift_metrics(
+                top_tail=top_tail,
+                background=background,
+                feature_columns=feature_columns,
+                target_col=spec.target_col,
+                metadata={
+                    "alloy_family": spec.alloy_family,
+                    "dataset_name": spec.dataset_name,
+                    "property": spec.property_name,
+                    "target_col": spec.target_col,
+                    "case_key": case_key(spec.alloy_family, spec.dataset_name, spec.property_name),
+                    "threshold": float(threshold),
+                    "threshold_pct": threshold_to_pct(threshold),
+                    "mode": mode,
+                },
+                sliced_projections=sliced_projections,
+                random_state=random_state,
+            )
+        )
+    return pd.DataFrame(rows)
+
+
+def _id_set(frame: pd.DataFrame) -> set[int]:
+    if "ID" not in frame.columns:
+        return set()
+    return set(pd.to_numeric(frame["ID"], errors="coerce").dropna().astype(int).tolist())
+
+
+def entrant_ids_between_thresholds(
+    frame: pd.DataFrame,
+    target_col: str,
+    lower_threshold: float,
+    upper_threshold: float,
+) -> list[int]:
+    upper_top, _ = select_top_tail(frame, target_col, upper_threshold)
+    if lower_threshold <= 0:
+        return sorted(_id_set(upper_top))
+    lower_top, _ = select_top_tail(frame, target_col, lower_threshold)
+    return sorted(_id_set(upper_top) - _id_set(lower_top))
+
+
+def top_tail_x_extreme_ids(
+    spec: TaskSpec,
+    frame: pd.DataFrame,
+    threshold: float,
+    extreme_fraction: float,
+) -> tuple[list[int], dict[int, float]]:
+    feature_columns = fallback_feature_columns(frame, spec.target_col, spec.feature_columns)
+    top_tail, background = select_top_tail(frame, spec.target_col, threshold)
+    top_scaled, background_scaled = _background_scaled_x(top_tail, background, feature_columns)
+    centroid = background_scaled.mean(axis=0)
+    distances = np.linalg.norm(top_scaled - centroid, axis=1)
+    extreme_count = max(1, min(len(top_tail), int(round(len(top_tail) * float(extreme_fraction)))))
+    order = np.argsort(-distances, kind="stable")[:extreme_count]
+    ids: list[int] = []
+    distance_by_id: dict[int, float] = {}
+    for index in order:
+        sample_id = pd.to_numeric(top_tail.iloc[int(index)].get("ID"), errors="coerce")
+        if pd.isna(sample_id):
+            continue
+        int_id = int(sample_id)
+        ids.append(int_id)
+        distance_by_id[int_id] = finite_float(distances[int(index)])
+    return sorted(ids), distance_by_id
+
+
+def detect_wx_jumps(
+    curve: pd.DataFrame,
+    rules: dict[str, float],
+) -> pd.DataFrame:
+    if curve.empty:
+        return pd.DataFrame()
+    work = curve.sort_values("threshold", kind="stable").reset_index(drop=True)
+    rows: list[dict[str, Any]] = []
+    for index in range(1, len(work)):
+        previous = work.iloc[index - 1]
+        current = work.iloc[index]
+        previous_wx = finite_float(previous.get("Wx"))
+        current_wx = finite_float(current.get("Wx"))
+        delta_wx = current_wx - previous_wx
+        relative_delta = delta_wx / previous_wx if math.isfinite(previous_wx) and abs(previous_wx) > 1e-12 else float("inf")
+        is_candidate = (
+            math.isfinite(delta_wx)
+            and delta_wx >= rules["min_abs_delta_wx"]
+            and relative_delta >= rules["min_rel_delta_wx"]
+        )
+        if not is_candidate:
+            continue
+        upper_threshold = float(current["threshold"])
+        status = "removable" if upper_threshold <= rules["drop_max_threshold"] else "candidate"
+        if upper_threshold >= rules["report_only_min_threshold"]:
+            status = "high_threshold_report_only"
+        rows.append(
+            {
+                "alloy_family": current.get("alloy_family"),
+                "dataset_name": current.get("dataset_name"),
+                "property": current.get("property"),
+                "target_col": current.get("target_col"),
+                "case_key": current.get("case_key"),
+                "lower_threshold": float(previous["threshold"]),
+                "upper_threshold": upper_threshold,
+                "lower_threshold_pct": int(previous["threshold_pct"]),
+                "upper_threshold_pct": int(current["threshold_pct"]),
+                "lower_top_tail_size": int(previous["top_tail_size"]),
+                "upper_top_tail_size": int(current["top_tail_size"]),
+                "lower_background_size": int(previous["background_size"]),
+                "upper_background_size": int(current["background_size"]),
+                "lower_Wx": previous_wx,
+                "upper_Wx": current_wx,
+                "delta_Wx": finite_float(delta_wx),
+                "relative_delta_Wx": finite_float(relative_delta),
+                "jump_status": status,
+                "jump_reason": "wx_delta_threshold",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def auto_detect_jump_driver_policy(
+    config: dict[str, Any],
+    policy: dict[str, Any],
+    specs: list[TaskSpec],
+    raw_task_frames: dict[str, pd.DataFrame],
+    random_state: int,
+    sliced_projections: int,
+    detection_thresholds: list[float] | None = None,
+    detection_rules: dict[str, float] | None = None,
+) -> tuple[dict[str, Any], pd.DataFrame, pd.DataFrame]:
+    if not bool(policy.get("auto_detect_jump_drivers")):
+        return policy, pd.DataFrame(), pd.DataFrame()
+    thresholds = list(detection_thresholds) if detection_thresholds is not None else jump_detection_thresholds_from_config(config)
+    rules = dict(detection_rules) if detection_rules is not None else jump_detection_rules_from_config(config)
+    detected_jump_parts: list[pd.DataFrame] = []
+    driver_rows: list[dict[str, Any]] = []
+    dynamic_sets: list[dict[str, Any]] = []
+    focus_keys = set(SENSITIVITY_FOCUS_CASES)
+
+    for spec in specs:
+        current_key = case_key(spec.alloy_family, spec.dataset_name, spec.property_name)
+        if current_key not in focus_keys:
+            continue
+        frame = raw_task_frames[current_key]
+        curve = compute_space_shift_curve(
+            spec=spec,
+            frame=frame,
+            thresholds=thresholds,
+            random_state=random_state,
+            sliced_projections=sliced_projections,
+            mode="baseline",
+        )
+        jumps = detect_wx_jumps(curve, rules)
+
+        removable_ids: set[int] = set()
+        for _, jump in jumps.iterrows():
+            entrants = entrant_ids_between_thresholds(
+                frame,
+                spec.target_col,
+                float(jump["lower_threshold"]),
+                float(jump["upper_threshold"]),
+            )
+            if str(jump["jump_status"]) == "removable":
+                removable_ids.update(entrants)
+            for sample_id in entrants:
+                driver_rows.append(
+                    {
+                        **{column: jump.get(column) for column in jumps.columns},
+                        "ID": int(sample_id),
+                        "driver_action": "drop" if str(jump["jump_status"]) == "removable" else "report_only",
+                    }
+                )
+
+        if current_key == "MatbenchSteels__matbench_steels_ood__yield_strength":
+            ids, distance_by_id = top_tail_x_extreme_ids(
+                spec,
+                frame,
+                rules["matbench_top_tail_threshold"],
+                rules["matbench_extreme_fraction"],
+            )
+            removable_ids.update(ids)
+            matbench_row = {
+                "alloy_family": spec.alloy_family,
+                "dataset_name": spec.dataset_name,
+                "property": spec.property_name,
+                "target_col": spec.target_col,
+                "case_key": current_key,
+                "lower_threshold": 0.0,
+                "upper_threshold": rules["matbench_top_tail_threshold"],
+                "lower_threshold_pct": 0,
+                "upper_threshold_pct": threshold_to_pct(rules["matbench_top_tail_threshold"]),
+                "lower_top_tail_size": 0,
+                "upper_top_tail_size": threshold_count(len(frame), rules["matbench_top_tail_threshold"]),
+                "lower_background_size": len(frame),
+                "upper_background_size": len(frame) - threshold_count(len(frame), rules["matbench_top_tail_threshold"]),
+                "lower_Wx": float("nan"),
+                "upper_Wx": finite_float(curve.loc[curve["threshold"].eq(rules["matbench_top_tail_threshold"]), "Wx"].iloc[0]) if not curve.empty else float("nan"),
+                "delta_Wx": float("nan"),
+                "relative_delta_Wx": float("nan"),
+                "jump_status": "removable",
+                "jump_reason": "matbench_top5_x_extreme",
+            }
+            jumps = pd.concat([jumps, pd.DataFrame([matbench_row])], ignore_index=True)
+            for sample_id in ids:
+                driver_rows.append({**matbench_row, "ID": int(sample_id), "driver_action": "drop", "x_distance": distance_by_id.get(int(sample_id), float("nan"))})
+
+        if removable_ids:
+            dynamic_sets.append(
+                {
+                    "set_name": f"auto_detected_{current_key}",
+                    "alloy_family": spec.alloy_family,
+                    "property": spec.property_name,
+                    "action": "drop",
+                    "ids": sorted(removable_ids),
+                    "reason": "auto-detected removable Wx jump-driver samples",
+                }
+            )
+        if not jumps.empty:
+            detected_jump_parts.append(jumps)
+
+    resolved_policy = dict(policy)
+    resolved_sets = [dict(item) for item in list(policy.get("sets") or [])]
+    resolved_sets.extend(dynamic_sets)
+    resolved_policy["sets"] = resolved_sets
+    resolved_policy["has_drop"] = any(str(item.get("action", "")).lower() == "drop" for item in resolved_sets)
+    detected_jumps = pd.concat(detected_jump_parts, ignore_index=True) if detected_jump_parts else pd.DataFrame()
+    driver_ids = pd.DataFrame(driver_rows)
+    return resolved_policy, detected_jumps, driver_ids
 
 
 def _id_columns(frame: pd.DataFrame) -> list[str]:
@@ -611,6 +1000,69 @@ def fallback_feature_columns(frame: pd.DataFrame, target_col: str, configured: l
     return selected
 
 
+def apply_dynamic_outlier_policy(
+    frame: pd.DataFrame,
+    spec: TaskSpec,
+    policy: dict[str, Any],
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    result = frame.copy()
+    manifest_rows: list[dict[str, Any]] = []
+    if "ID" not in result.columns:
+        return result, manifest_rows
+    for item in list(policy.get("sets") or []):
+        action = str(item.get("action", "")).lower()
+        if action != "flag_top_tail_x_extremes":
+            continue
+        if not outlier_set_applies(item, spec.alloy_family, spec.property_name):
+            continue
+        flag_column = str(item.get("flag_column") or f"is_{item.get('set_name', 'top_tail_x_extreme')}")
+        threshold = float(item.get("top_tail_threshold", 0.05))
+        extreme_fraction = float(item.get("extreme_fraction", 0.20))
+        feature_columns = fallback_feature_columns(result, spec.target_col, spec.feature_columns)
+        top_tail, background = select_top_tail(result, spec.target_col, threshold)
+        top_scaled, background_scaled = _background_scaled_x(top_tail, background, feature_columns)
+        centroid = background_scaled.mean(axis=0)
+        distances = np.linalg.norm(top_scaled - centroid, axis=1)
+        extreme_count = max(1, min(len(top_tail), int(round(len(top_tail) * extreme_fraction))))
+        order = np.argsort(-distances, kind="stable")[:extreme_count]
+        top_ids = pd.to_numeric(top_tail.iloc[order]["ID"], errors="coerce").dropna().astype(int).tolist()
+        if flag_column not in result.columns:
+            result[flag_column] = False
+        result.loc[pd.to_numeric(result["ID"], errors="coerce").isin(top_ids), flag_column] = True
+        distance_by_id = {
+            int(pd.to_numeric(top_tail.iloc[index]["ID"], errors="coerce")): finite_float(distances[index])
+            for index in order
+            if math.isfinite(float(pd.to_numeric(top_tail.iloc[index]["ID"], errors="coerce")))
+        }
+        for sample_id in sorted(top_ids):
+            manifest_rows.append(
+                {
+                    "outlier_policy": str(policy.get("name", "")),
+                    "set_name": str(item.get("set_name", "")),
+                    "action": "flag",
+                    "alloy_family": spec.alloy_family,
+                    "property": spec.property_name,
+                    "ID": int(sample_id),
+                    "flag_column": flag_column,
+                    "reason": (
+                        f"{item.get('reason', '')}; top_tail_threshold={threshold:g}; "
+                        f"extreme_fraction={extreme_fraction:g}; x_distance={distance_by_id.get(int(sample_id), float('nan')):.6g}"
+                    ),
+                }
+            )
+    return result.reset_index(drop=True), manifest_rows
+
+
+def apply_task_outlier_policy(
+    frame: pd.DataFrame,
+    spec: TaskSpec,
+    policy: dict[str, Any],
+) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    static_frame, static_rows = apply_outlier_policy(frame, spec.alloy_family, spec.property_name, policy)
+    dynamic_frame, dynamic_rows = apply_dynamic_outlier_policy(static_frame, spec, policy)
+    return dynamic_frame, [*static_rows, *dynamic_rows]
+
+
 def run_actual_threshold(
     spec: TaskSpec,
     threshold: float,
@@ -630,7 +1082,7 @@ def run_actual_threshold(
         "case_key": case_key(spec.alloy_family, spec.dataset_name, spec.property_name),
         "split_id": spec.split_id,
     }
-    force_temporary = bool((policy or {}).get("has_drop"))
+    force_temporary = policy_forces_temporary(policy, spec.alloy_family, spec.property_name)
     if threshold_pct == 20 and existing_payload is not None and not force_temporary:
         top_tail = existing_payload.top_tail.copy()
         cluster_frames = {int(cluster_id): cluster_df.copy() for cluster_id, cluster_df in existing_payload.cluster_frames.items()}
@@ -676,7 +1128,7 @@ def run_space_shift_threshold(
         "case_key": case_key(spec.alloy_family, spec.dataset_name, spec.property_name),
         "split_id": spec.split_id,
     }
-    force_temporary = bool((policy or {}).get("has_drop"))
+    force_temporary = policy_forces_temporary(policy, spec.alloy_family, spec.property_name)
     if threshold_pct == 20 and existing_payload is not None and not force_temporary:
         top_tail = existing_payload.top_tail.copy()
         background = existing_payload.background.copy()
@@ -846,24 +1298,521 @@ def plot_space_shift_sweep(space_shift: pd.DataFrame, output_root: Path, formats
         work = group.sort_values("threshold_pct", kind="stable")
         x = work["top_tail_size"].to_numpy(dtype=float)
         labels = [f"{int(row.top_tail_size)}\n({int(row.threshold_pct)}%)" for row in work.itertuples()]
-        fig, ax = plt.subplots(figsize=(7.2, 4.6))
-        ax.plot(x, work["Wy"], marker="o", linewidth=1.8, color="#d95f02", label="Wy")
-        ax.plot(x, work["Wx"], marker="s", linewidth=1.8, color="#4c78a8", label="Wx")
-        ax.set_xticks(x)
-        ax.set_xticklabels(labels)
-        ax.set_xlabel("Top-tail sample count")
-        ax.set_ylabel("Wasserstein distance")
-        ax.set_title(f"{work.iloc[0]['alloy_family']} / {work.iloc[0]['property']}")
-        ax.legend(frameon=False)
-        ax.grid(axis="y", color="#e6e6e6")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        fig, axes = plt.subplots(2, 1, figsize=(7.4, 6.1), sharex=True)
+        series_specs = [
+            ("Wy", "#d95f02", "Y-space Wasserstein distance"),
+            ("Wx", "#4c78a8", "X-space sliced Wasserstein distance"),
+        ]
+        for ax, (column, color, ylabel) in zip(axes, series_specs):
+            ax.plot(x, work[column], marker="o", linewidth=1.8, color=color, label=column)
+            ax.set_ylabel(ylabel)
+            ax.legend(frameon=False, loc="upper left")
+            ax.grid(axis="y", color="#e6e6e6")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+        axes[-1].set_xticks(x)
+        axes[-1].set_xticklabels(labels)
+        axes[-1].set_xlabel("Top-tail sample count")
+        fig.suptitle(f"{work.iloc[0]['alloy_family']} / {work.iloc[0]['property']}", fontsize=12, fontweight="bold")
+        fig.tight_layout(rect=(0, 0, 1, 0.96))
         out = figure_dir / case_key(
             work.iloc[0]["alloy_family"],
             work.iloc[0]["dataset_name"],
             work.iloc[0]["property"],
         )
         save_figure(fig, out, formats, dpi)
+
+
+def policy_output_suffix(config: dict[str, Any], policy_name: str) -> str:
+    return str(resolve_outlier_policy(config, policy_name).get("output_suffix") or "xspace")
+
+
+def load_policy_space_shift(
+    config: dict[str, Any],
+    input_parent: Path,
+    policy_name: str,
+) -> pd.DataFrame:
+    csv_path = input_parent / policy_output_suffix(config, policy_name) / "csv" / "threshold_sweep_space_shift.csv"
+    if not csv_path.exists():
+        return pd.DataFrame()
+    frame = read_csv(csv_path)
+    frame["comparison_policy"] = policy_name
+    frame["comparison_label"] = SENSITIVITY_POLICY_LABELS.get(policy_name, policy_name)
+    return frame
+
+
+def plot_sensitivity_comparison(
+    config: dict[str, Any],
+    input_parent: Path,
+    comparison_root: Path,
+    formats: list[str],
+    dpi: int,
+) -> pd.DataFrame:
+    figure_dir = comparison_root / "figures"
+    clear_existing_figures(figure_dir, formats)
+    auto_dir = input_parent / policy_output_suffix(config, AUTO_JUMP_POLICY_NAME) / "csv"
+    detected_jumps = read_csv(auto_dir / "detected_wx_jumps_5_95.csv") if (auto_dir / "detected_wx_jumps_5_95.csv").exists() else pd.DataFrame()
+    detected_driver_ids = read_csv(auto_dir / "detected_jump_driver_ids.csv") if (auto_dir / "detected_jump_driver_ids.csv").exists() else pd.DataFrame()
+    policy_names = sorted({policy for spec in SENSITIVITY_FOCUS_CASES.values() for policy in spec["policies"]})
+    parts = [load_policy_space_shift(config, input_parent, policy_name) for policy_name in policy_names]
+    combined = pd.concat([part for part in parts if not part.empty], ignore_index=True) if any(not part.empty for part in parts) else pd.DataFrame()
+    if combined.empty:
+        raise FileNotFoundError(f"No threshold_sweep_space_shift.csv files found under {input_parent}")
+
+    plotted_rows: list[dict[str, Any]] = []
+    for focus_key, focus in SENSITIVITY_FOCUS_CASES.items():
+        fig, (ax_full, ax_zoom) = plt.subplots(
+            2,
+            1,
+            figsize=(7.6, 6.4),
+            sharex=True,
+            gridspec_kw={"height_ratios": [1.0, 1.18], "hspace": 0.08},
+        )
+        case_plotted = False
+        baseline = combined[
+            combined["case_key"].eq(focus_key)
+            & combined["comparison_policy"].eq("none")
+        ].sort_values("threshold_pct", kind="stable")
+        if baseline.empty:
+            plt.close(fig)
+            continue
+        baseline_top_tail_by_threshold = {
+            int(row.threshold_pct): float(row.top_tail_size)
+            for row in baseline.itertuples()
+        }
+        xticks = [float(row.threshold_pct) for row in baseline.itertuples()]
+        xticklabels = [f"{int(row.threshold_pct)}%" for row in baseline.itertuples()]
+        finite_display_values: list[float] = []
+        line_payloads: list[tuple[str, np.ndarray, np.ndarray]] = []
+        for policy_name in focus["policies"]:
+            work = combined[
+                combined["case_key"].eq(focus_key)
+                & combined["comparison_policy"].eq(policy_name)
+            ].sort_values("threshold_pct", kind="stable")
+            if work.empty:
+                continue
+            case_plotted = True
+            x = work["threshold_pct"].to_numpy(dtype=float)
+            y = work["Wx"].to_numpy(dtype=float)
+            finite_display_values.extend([float(value) for value in y if math.isfinite(float(value)) and float(value) <= 3.0])
+            line_payloads.append((policy_name, x, y))
+            for _, row in work.iterrows():
+                plotted_rows.append(
+                    {
+                        "case_key": focus_key,
+                        "policy": policy_name,
+                        "threshold_pct": int(row["threshold_pct"]),
+                        "top_tail_size": int(row["top_tail_size"]),
+                        "x_threshold_pct": int(row["threshold_pct"]),
+                        "baseline_top_tail_size": finite_float(baseline_top_tail_by_threshold.get(int(row["threshold_pct"]), float("nan"))),
+                        "Wx": finite_float(row["Wx"]),
+                        "Wy": finite_float(row["Wy"]),
+                    }
+                )
+        if not case_plotted:
+            plt.close(fig)
+            continue
+        zoom_max = max(1.0, (max(finite_display_values) if finite_display_values else 1.0) * 1.18)
+        zoom_max = min(max(zoom_max, 1.15), 3.0)
+        has_clipped_zoom_values = False
+        for policy_name, x, y in line_payloads:
+            color = SENSITIVITY_POLICY_COLORS.get(policy_name)
+            label = SENSITIVITY_POLICY_LABELS.get(policy_name, policy_name)
+            ax_full.plot(x, y, marker="o", linewidth=1.8, color=color, label=label)
+            y_zoom = np.array(
+                [
+                    float(value) if math.isfinite(float(value)) and float(value) <= zoom_max else np.nan
+                    for value in y
+                ],
+                dtype=float,
+            )
+            ax_zoom.plot(x, y_zoom, marker="o", linewidth=1.9, color=color, label=label)
+            clipped_x = [
+                float(x_value)
+                for x_value, y_value in zip(x, y)
+                if math.isfinite(float(y_value)) and float(y_value) > zoom_max
+            ]
+            if clipped_x:
+                has_clipped_zoom_values = True
+                ax_zoom.scatter(
+                    clipped_x,
+                    [zoom_max * 0.985] * len(clipped_x),
+                    marker="^",
+                    s=36,
+                    color=color,
+                    edgecolors="white",
+                    linewidths=0.4,
+                    zorder=4,
+                )
+        for highlight in list(focus.get("highlights") or []):
+            start, end = int(highlight[0]), int(highlight[1])
+            if start == end:
+                for ax in (ax_full, ax_zoom):
+                    ax.axvline(end, color="#d62728", linestyle="--", linewidth=1.0, alpha=0.75)
+            else:
+                for ax in (ax_full, ax_zoom):
+                    ax.axvspan(start, end, color="#d62728", alpha=0.10)
+                    ax.axvline(start, color="#d62728", linestyle="--", linewidth=0.9, alpha=0.65)
+                    ax.axvline(end, color="#d62728", linestyle="--", linewidth=0.9, alpha=0.65)
+        ax_full.text(
+            0.02,
+            0.98,
+            str(focus.get("annotation", "")),
+            transform=ax_full.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8.5,
+            color="#555555",
+        )
+        if has_clipped_zoom_values:
+            ax_zoom.text(
+                0.02,
+                0.96,
+                "Triangles mark values above the zoom range; see full range panel.",
+                transform=ax_zoom.transAxes,
+                va="top",
+                ha="left",
+                fontsize=8,
+                color="#666666",
+            )
+        ax_zoom.set_ylim(bottom=0.0, top=zoom_max)
+        ax_zoom.set_xticks(xticks)
+        ax_zoom.set_xticklabels(xticklabels)
+        ax_zoom.set_xlim(4, 96)
+        ax_zoom.set_xlabel("Top-tail threshold (%)")
+        ax_full.set_ylabel("Wx full range")
+        ax_zoom.set_ylabel("Wx zoomed low range")
+        ax_full.set_title(str(focus["title"]))
+        ax_full.legend(frameon=False, fontsize=8.5)
+        for ax in (ax_full, ax_zoom):
+            ax.grid(axis="y", color="#e6e6e6")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+        save_figure(fig, figure_dir / focus_key, formats, dpi)
+
+    csv_dir = comparison_root / "csv"
+    csv_dir.mkdir(parents=True, exist_ok=True)
+    for path in csv_dir.glob("*.csv"):
+        path.unlink()
+    summary = pd.DataFrame(plotted_rows)
+    write_csv(summary, csv_dir / "jump_driver_removal_wx.csv")
+    if not detected_jumps.empty:
+        write_csv(detected_jumps, csv_dir / "detected_wx_jumps_5_95.csv")
+    if not detected_driver_ids.empty:
+        write_csv(detected_driver_ids, csv_dir / "detected_jump_driver_ids.csv")
+    return summary
+
+
+def _fine_jump_annotation(case_jumps: pd.DataFrame) -> str:
+    if case_jumps.empty:
+        return "No removable 1% Wx interval detected at or below 50%."
+    removable = case_jumps[case_jumps["jump_status"].eq("removable")]
+    has_matbench_special = removable["jump_reason"].eq("matbench_top5_x_extreme").any()
+    ordinary = removable[~removable["jump_reason"].eq("matbench_top5_x_extreme")]
+    parts: list[str] = []
+    if not ordinary.empty:
+        labels = [
+            f"{int(row.lower_threshold_pct)}-{int(row.upper_threshold_pct)}%"
+            for row in ordinary.itertuples()
+        ]
+        parts.append("1% removable intervals: " + ", ".join(labels))
+    if has_matbench_special:
+        parts.append("Removable set: Matbench top-5% X-space extremes.")
+    return " ".join(parts) if parts else "No removable 1% Wx interval detected at or below 50%."
+
+
+def plot_fine_sensitivity_comparison(
+    combined: pd.DataFrame,
+    detected_jumps: pd.DataFrame,
+    comparison_root: Path,
+    formats: list[str],
+    dpi: int,
+    major_tick_step_pct: int = 5,
+) -> None:
+    if combined.empty:
+        raise ValueError("fine sensitivity comparison data is empty")
+    figure_dir = comparison_root / "figures"
+    clear_existing_figures(figure_dir, formats)
+    tick_step = max(1, int(major_tick_step_pct))
+
+    for focus_key, focus in SENSITIVITY_FOCUS_CASES.items():
+        case_data = combined[combined["case_key"].eq(focus_key)].copy()
+        if case_data.empty:
+            continue
+        fig, (ax_full, ax_zoom) = plt.subplots(
+            2,
+            1,
+            figsize=(8.4, 6.5),
+            sharex=True,
+            gridspec_kw={"height_ratios": [1.0, 1.18], "hspace": 0.08},
+        )
+        finite_display_values: list[float] = []
+        line_payloads: list[tuple[str, np.ndarray, np.ndarray]] = []
+        for policy_name in focus["policies"]:
+            work = case_data[case_data["comparison_policy"].eq(policy_name)].sort_values(
+                "threshold_pct", kind="stable"
+            )
+            if work.empty:
+                continue
+            x = pd.to_numeric(work["threshold_pct"], errors="coerce").to_numpy(dtype=float)
+            y = pd.to_numeric(work["Wx"], errors="coerce").to_numpy(dtype=float)
+            finite_display_values.extend(
+                [float(value) for value in y if math.isfinite(float(value)) and float(value) <= 3.0]
+            )
+            line_payloads.append((policy_name, x, y))
+
+        if not line_payloads:
+            plt.close(fig)
+            continue
+        zoom_max = max(1.0, (max(finite_display_values) if finite_display_values else 1.0) * 1.18)
+        zoom_max = min(max(zoom_max, 1.15), 3.0)
+        has_clipped_zoom_values = False
+        for policy_name, x, y in line_payloads:
+            color = SENSITIVITY_POLICY_COLORS.get(policy_name)
+            label = SENSITIVITY_POLICY_LABELS.get(policy_name, policy_name)
+            ax_full.plot(x, y, marker="o", markersize=2.4, linewidth=1.15, color=color, label=label)
+            y_zoom = np.array(
+                [
+                    float(value) if math.isfinite(float(value)) and float(value) <= zoom_max else np.nan
+                    for value in y
+                ],
+                dtype=float,
+            )
+            ax_zoom.plot(x, y_zoom, marker="o", markersize=2.4, linewidth=1.2, color=color, label=label)
+            major_mask = np.isclose(np.mod(x, tick_step), 0.0)
+            for ax, plotted_y in ((ax_full, y), (ax_zoom, y_zoom)):
+                visible = major_mask & np.isfinite(plotted_y)
+                ax.scatter(
+                    x[visible],
+                    plotted_y[visible],
+                    s=24,
+                    color=color,
+                    edgecolors="white",
+                    linewidths=0.5,
+                    zorder=4,
+                )
+            clipped_x = [
+                float(x_value)
+                for x_value, y_value in zip(x, y, strict=True)
+                if math.isfinite(float(y_value)) and float(y_value) > zoom_max
+            ]
+            if clipped_x:
+                has_clipped_zoom_values = True
+                ax_zoom.scatter(
+                    clipped_x,
+                    [zoom_max * 0.985] * len(clipped_x),
+                    marker="^",
+                    s=30,
+                    color=color,
+                    edgecolors="white",
+                    linewidths=0.4,
+                    zorder=5,
+                )
+
+        case_jumps = detected_jumps[detected_jumps["case_key"].eq(focus_key)].copy() if not detected_jumps.empty else pd.DataFrame()
+        for jump in case_jumps.itertuples():
+            lower = int(jump.lower_threshold_pct)
+            upper = int(jump.upper_threshold_pct)
+            status = str(jump.jump_status)
+            if status == "removable":
+                for ax in (ax_full, ax_zoom):
+                    if lower <= 0 or lower == upper:
+                        ax.axvline(upper, color="#d62728", linestyle="--", linewidth=1.0, alpha=0.8)
+                    else:
+                        ax.axvspan(lower, upper, color="#d62728", alpha=0.12)
+                        ax.axvline(lower, color="#d62728", linestyle="--", linewidth=0.8, alpha=0.7)
+                        ax.axvline(upper, color="#d62728", linestyle="--", linewidth=0.8, alpha=0.7)
+            else:
+                for ax in (ax_full, ax_zoom):
+                    ax.axvline(upper, color="#888888", linestyle=":", linewidth=0.8, alpha=0.55)
+
+        annotation = _fine_jump_annotation(case_jumps)
+        ax_full.text(
+            0.02,
+            0.98,
+            annotation,
+            transform=ax_full.transAxes,
+            va="top",
+            ha="left",
+            fontsize=8.5,
+            color="#555555",
+        )
+        if has_clipped_zoom_values:
+            ax_zoom.text(
+                0.02,
+                0.96,
+                "Triangles mark values above the zoom range; see full range panel.",
+                transform=ax_zoom.transAxes,
+                va="top",
+                ha="left",
+                fontsize=8,
+                color="#666666",
+            )
+
+        min_pct = int(pd.to_numeric(case_data["threshold_pct"], errors="coerce").min())
+        max_pct = int(pd.to_numeric(case_data["threshold_pct"], errors="coerce").max())
+        major_ticks = np.arange(
+            int(math.ceil(min_pct / tick_step) * tick_step),
+            max_pct + 1,
+            tick_step,
+            dtype=int,
+        )
+        minor_ticks = np.arange(min_pct, max_pct + 1, 1, dtype=int)
+        ax_zoom.set_xticks(major_ticks)
+        ax_zoom.set_xticklabels([f"{value}%" for value in major_ticks])
+        ax_zoom.set_xticks(minor_ticks, minor=True)
+        ax_zoom.set_xlim(min_pct - 0.5, max_pct + 0.5)
+        ax_zoom.set_ylim(bottom=0.0, top=zoom_max)
+        ax_zoom.set_xlabel("Top-tail threshold (%)")
+        ax_full.set_ylabel("Wx full range")
+        ax_zoom.set_ylabel("Wx zoomed low range")
+        ax_full.set_title(str(focus["title"]))
+        ax_full.legend(frameon=False, fontsize=8.5)
+        for ax in (ax_full, ax_zoom):
+            ax.grid(axis="y", color="#e6e6e6")
+            ax.spines["top"].set_visible(False)
+            ax.spines["right"].set_visible(False)
+        save_figure(fig, figure_dir / focus_key, formats, dpi)
+
+
+def fine_comparison_rules_from_config(config: dict[str, Any]) -> dict[str, float]:
+    rules = jump_detection_rules_from_config(config)
+    settings = fine_comparison_settings_from_config(config)
+    rules["drop_max_threshold"] = float(settings["drop_max_threshold"])
+    rules["report_only_min_threshold"] = float(settings["report_only_min_threshold"])
+    return rules
+
+
+def run_fine_sensitivity_comparison(args: argparse.Namespace, config: dict[str, Any]) -> pd.DataFrame:
+    settings = fine_comparison_settings_from_config(config)
+    thresholds = fine_comparison_thresholds_from_config(config)
+    rules = fine_comparison_rules_from_config(config)
+    sliced_projections = int(
+        args.sliced_projections
+        if args.sliced_projections is not None
+        else settings["sliced_projections"]
+    )
+    defaults = dict(config.get("defaults") or {})
+    include_matbench = bool(defaults.get("include_matbench", True)) and not bool(args.exclude_matbench)
+    payloads = [
+        build_cluster_frames_from_hybrid_manifest(path)
+        for path in discover_hybrid_manifests(
+            Path(args.splits_root),
+            args.case_contains,
+            args.limit,
+            include_matbench=include_matbench,
+        )
+    ]
+    payloads = [
+        payload
+        for payload in payloads
+        if case_key(payload.alloy_family, payload.dataset_name, payload.property_name)
+        in SENSITIVITY_FOCUS_CASES
+    ]
+    if not payloads:
+        raise SystemExit("No sensitivity focus tasks matched the fine-comparison filters.")
+    specs = [task_spec_from_payload(payload) for payload in payloads]
+    payload_by_case = {
+        case_key(payload.alloy_family, payload.dataset_name, payload.property_name): payload
+        for payload in payloads
+    }
+    raw_task_frames = {
+        case_key(spec.alloy_family, spec.dataset_name, spec.property_name): load_task_dataframe(spec)
+        for spec in specs
+    }
+    baseline_policy = resolve_outlier_policy(config, "none")
+    auto_policy = resolve_outlier_policy(config, AUTO_JUMP_POLICY_NAME)
+    auto_policy, detected_jumps, detected_driver_ids = auto_detect_jump_driver_policy(
+        config=config,
+        policy=auto_policy,
+        specs=specs,
+        raw_task_frames=raw_task_frames,
+        random_state=int(args.random_state),
+        sliced_projections=sliced_projections,
+        detection_thresholds=thresholds,
+        detection_rules=rules,
+    )
+    filtered_task_frames = {
+        case_key(spec.alloy_family, spec.dataset_name, spec.property_name): apply_task_outlier_policy(
+            raw_task_frames[case_key(spec.alloy_family, spec.dataset_name, spec.property_name)],
+            spec,
+            auto_policy,
+        )[0]
+        for spec in specs
+    }
+
+    rows: list[dict[str, Any]] = []
+    for spec in specs:
+        current_key = case_key(spec.alloy_family, spec.dataset_name, spec.property_name)
+        payload = payload_by_case[current_key]
+        policy_frames = [
+            ("none", baseline_policy, raw_task_frames[current_key]),
+            (AUTO_JUMP_POLICY_NAME, auto_policy, filtered_task_frames[current_key]),
+        ]
+        for policy_name, policy, frame in policy_frames:
+            for threshold in thresholds:
+                row = run_space_shift_threshold(
+                    spec=spec,
+                    threshold=float(threshold),
+                    random_state=int(args.random_state),
+                    sliced_projections=sliced_projections,
+                    existing_payload=payload,
+                    task_frame=frame,
+                    policy=policy,
+                )
+                row["comparison_policy"] = policy_name
+                row["comparison_label"] = SENSITIVITY_POLICY_LABELS.get(policy_name, policy_name)
+                row["policy"] = policy_name
+                row["x_threshold_pct"] = int(row["threshold_pct"])
+                rows.append(row)
+
+    combined = pd.DataFrame(rows)
+    baseline_sizes = (
+        combined[combined["comparison_policy"].eq("none")][
+            ["case_key", "threshold_pct", "top_tail_size"]
+        ]
+        .rename(columns={"top_tail_size": "baseline_top_tail_size"})
+        .drop_duplicates(["case_key", "threshold_pct"])
+    )
+    combined = combined.merge(
+        baseline_sizes,
+        on=["case_key", "threshold_pct"],
+        how="left",
+    )
+    combined = add_adjacent_shift_columns(combined)
+
+    comparison_root = Path(args.fine_comparison_root)
+    csv_dir = comparison_root / "csv"
+    write_csv(combined, csv_dir / "jump_driver_removal_wx_1pct.csv")
+    write_csv(detected_jumps, csv_dir / "detected_wx_jumps_1pct.csv")
+    write_csv(detected_driver_ids, csv_dir / "detected_jump_driver_ids_1pct.csv")
+    write_json(
+        {
+            "config_path": str(Path(args.config).resolve() if args.config else ""),
+            "thresholds": thresholds,
+            "threshold_start": float(settings["start"]),
+            "threshold_stop": float(settings["stop"]),
+            "threshold_step": float(settings["step"]),
+            "jump_detection_rules": rules,
+            "random_state": int(args.random_state),
+            "sliced_projections": sliced_projections,
+            "focus_cases": sorted(combined["case_key"].unique().tolist()),
+            "baseline_policy": "none",
+            "drop_policy": AUTO_JUMP_POLICY_NAME,
+            "output_root": str(comparison_root),
+        },
+        csv_dir / "analysis_config_resolved.json",
+    )
+    if not args.no_figures:
+        plot_fine_sensitivity_comparison(
+            combined=combined,
+            detected_jumps=detected_jumps,
+            comparison_root=comparison_root,
+            formats=list(args.formats),
+            dpi=int(args.dpi),
+            major_tick_step_pct=int(settings["major_tick_step_pct"]),
+        )
+    return combined
 
 
 def write_report(
@@ -960,15 +1909,26 @@ def run_analysis(args: argparse.Namespace) -> None:
         raise SystemExit(f"No hybrid_extrapolation_loco manifests found under {args.splits_root}")
     specs = [task_spec_from_payload(payload) for payload in payloads]
     payload_by_case = {case_key(p.alloy_family, p.dataset_name, p.property_name): p for p in payloads}
+    raw_task_frames = {
+        case_key(spec.alloy_family, spec.dataset_name, spec.property_name): load_task_dataframe(spec)
+        for spec in specs
+    }
+    policy, detected_jumps, detected_driver_ids = auto_detect_jump_driver_policy(
+        config=config,
+        policy=policy,
+        specs=specs,
+        raw_task_frames=raw_task_frames,
+        random_state=int(args.random_state),
+        sliced_projections=sliced_projections,
+    )
     task_frames: dict[str, pd.DataFrame] = {}
     outlier_rows: list[dict[str, Any]] = []
     outlier_counts: dict[str, dict[str, int]] = {}
     for spec in specs:
         current_key = case_key(spec.alloy_family, spec.dataset_name, spec.property_name)
-        processed_frame, current_rows = apply_outlier_policy(
-            load_task_dataframe(spec),
-            spec.alloy_family,
-            spec.property_name,
+        processed_frame, current_rows = apply_task_outlier_policy(
+            raw_task_frames[current_key],
+            spec,
             policy,
         )
         task_frames[current_key] = processed_frame
@@ -1035,6 +1995,9 @@ def run_analysis(args: argparse.Namespace) -> None:
     write_csv(sweep_summary, csv_dir / "threshold_sweep_summary.csv")
     write_csv(sample_all, csv_dir / "threshold_sweep_sample_level.csv")
     write_csv(space_shift, csv_dir / "threshold_sweep_space_shift.csv")
+    if bool(policy.get("auto_detect_jump_drivers")):
+        write_csv(detected_jumps, csv_dir / "detected_wx_jumps_5_95.csv")
+        write_csv(detected_driver_ids, csv_dir / "detected_jump_driver_ids.csv")
     write_csv(
         build_manifest_rows(specs, output_root, str(policy["name"]), config_path, outlier_counts),
         csv_dir / "analysis_manifest.csv",
@@ -1079,7 +2042,36 @@ def run_analysis(args: argparse.Namespace) -> None:
 
 
 def main() -> None:
-    run_analysis(parse_args())
+    args = parse_args()
+    config_path = Path(args.config).resolve() if args.config else None
+    config = load_analysis_config(config_path)
+    if args.fine_comparison_only:
+        summary = run_fine_sensitivity_comparison(args, config)
+        print(f"Fine sensitivity comparison rows: {len(summary)}")
+        print(f"Fine sensitivity comparison root: {Path(args.fine_comparison_root)}")
+        return
+    if args.comparison_only:
+        summary = plot_sensitivity_comparison(
+            config=config,
+            input_parent=Path(args.comparison_input_parent),
+            comparison_root=Path(args.comparison_root),
+            formats=list(args.formats),
+            dpi=int(args.dpi),
+        )
+        print(f"Sensitivity comparison rows: {len(summary)}")
+        print(f"Sensitivity comparison root: {Path(args.comparison_root)}")
+        return
+    run_analysis(args)
+    if args.write_sensitivity_comparison:
+        summary = plot_sensitivity_comparison(
+            config=config,
+            input_parent=Path(args.comparison_input_parent),
+            comparison_root=Path(args.comparison_root),
+            formats=list(args.formats),
+            dpi=int(args.dpi),
+        )
+        print(f"Sensitivity comparison rows: {len(summary)}")
+        print(f"Sensitivity comparison root: {Path(args.comparison_root)}")
 
 
 if __name__ == "__main__":

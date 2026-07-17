@@ -45,6 +45,103 @@ logger = logging.getLogger(__name__)
 TABPFN_AVAILABLE = True
 
 
+def _quantile_arrays(
+    raw: Any,
+    expected_n: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    if isinstance(raw, (list, tuple)):
+        arrays = [np.asarray(item, dtype=float).reshape(-1) for item in raw]
+        if len(arrays) != 3:
+            raise ValueError("TabPFN quantile output must contain q10, q50, and q90.")
+        q10, q50, q90 = arrays
+    else:
+        array = np.asarray(raw, dtype=float)
+        if array.shape == (3, expected_n):
+            q10, q50, q90 = array
+        elif array.shape == (expected_n, 3):
+            q10, q50, q90 = array.T
+        else:
+            raise ValueError(f"Unexpected TabPFN quantile output shape: {array.shape}")
+    if any(len(values) != expected_n for values in (q10, q50, q90)):
+        raise ValueError("TabPFN quantile output length does not match the test set.")
+    return q10, q50, q90
+
+
+def predict_mean_and_quantiles(model: Any, X: Any) -> Dict[str, np.ndarray]:
+    raw = model.predict(
+        X,
+        output_type="main",
+        quantiles=[0.1, 0.5, 0.9],
+    )
+    if not isinstance(raw, dict) or "mean" not in raw:
+        raise ValueError("TabPFN full prediction output is missing the predictive mean.")
+    mean = np.asarray(raw["mean"], dtype=float).reshape(-1)
+
+    if "quantiles" in raw:
+        q10, q50, q90 = _quantile_arrays(raw["quantiles"], expected_n=len(mean))
+    else:
+        quantile_values: list[np.ndarray] = []
+        for requested in (0.1, 0.5, 0.9):
+            matches = []
+            for key, value in raw.items():
+                text = str(key)
+                if not text.startswith("quantile_"):
+                    continue
+                try:
+                    level = float(text.removeprefix("quantile_"))
+                except ValueError:
+                    continue
+                if np.isclose(level, requested, rtol=0.0, atol=1e-12):
+                    matches.append(value)
+            if len(matches) != 1:
+                raise ValueError(
+                    f"TabPFN main prediction output must contain quantile_{requested}."
+                )
+            quantile_values.append(np.asarray(matches[0], dtype=float).reshape(-1))
+        q10, q50, q90 = quantile_values
+    if any(len(values) != len(mean) for values in (q10, q50, q90)):
+        raise ValueError("TabPFN full prediction quantiles do not match the mean length.")
+    if not all(np.all(np.isfinite(values)) for values in (mean, q10, q50, q90)):
+        raise ValueError("TabPFN predictive mean or quantiles contain NaN/Inf values.")
+    if np.any(q90 < q10):
+        raise ValueError("TabPFN q90 is below q10 for at least one sample.")
+    return {
+        "y_pred_mean": mean,
+        "q10": q10,
+        "q50": q50,
+        "q90": q90,
+        "uncertainty_score": np.maximum(q90 - q10, 0.0),
+    }
+
+
+def save_predictive_quantiles(
+    save_path: str | Path,
+    *,
+    ids: np.ndarray,
+    y_true: np.ndarray,
+    payload: Dict[str, np.ndarray],
+) -> pd.DataFrame:
+    frame = pd.DataFrame(
+        {
+            "ID": np.asarray(ids),
+            "y_true": np.asarray(y_true, dtype=float),
+            "y_pred_mean": np.asarray(payload["y_pred_mean"], dtype=float),
+            "q10": np.asarray(payload["q10"], dtype=float),
+            "q50": np.asarray(payload["q50"], dtype=float),
+            "q90": np.asarray(payload["q90"], dtype=float),
+            "uncertainty_score": np.asarray(
+                payload["uncertainty_score"],
+                dtype=float,
+            ),
+        }
+    )
+    path = Path(save_path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    frame.to_csv(path, index=False)
+    logger.info("Predictive quantiles saved to %s", path)
+    return frame
+
+
 def configure_logging(log_file: Optional[Path] = None) -> None:
     formatter = logging.Formatter("%(asctime)s - [%(levelname)s] - %(message)s")
     handlers: list[logging.Handler] = []
@@ -269,6 +366,7 @@ class TabPFNOODTrainer:
             preferred_model_version=self.model_version or TABPFN_MODEL_CONFIG.get("model_version"),
             backend=self.backend,
             feature_mode=self.feature_mode or TABPFN_MODEL_CONFIG.get("feature_mode"),
+            random_state=int(self.config["random_state"]),
         )
         logger.info(
             "Using model: %s (%s)",
@@ -294,12 +392,17 @@ class TabPFNOODTrainer:
 
             raise RuntimeError(
                 "TabPFN-2.5-Plus API fit failed. Make sure the `.env` file contains a valid "
-                "`TABPFN_API_KEY` or `PRIORLABS_API_KEY`."
+                f"`TABPFN_API_KEY` or `PRIORLABS_API_KEY`. Service detail: {e}"
             ) from e
         logger.info("Generating predictions for train/test splits")
-        y_pred_train = self.model.predict(self.X_train)
-        y_pred_test = self.model.predict(self.X_test)
+        y_pred_train = np.asarray(
+            self.model.predict(self.X_train, output_type="mean"),
+            dtype=float,
+        )
+        predictive_quantiles = predict_mean_and_quantiles(self.model, self.X_test)
+        y_pred_test = predictive_quantiles["y_pred_mean"]
         self.evaluate_regression(y_pred_train, y_pred_test)
+        self.results["predictive_quantiles"] = predictive_quantiles
         return self.results
 
     def _create_regressor(self) -> tuple[Any, Dict[str, Any]]:
@@ -309,6 +412,7 @@ class TabPFNOODTrainer:
             preferred_model_version=self.model_version or TABPFN_MODEL_CONFIG.get("model_version"),
             backend=self.backend,
             feature_mode=self.feature_mode or TABPFN_MODEL_CONFIG.get("feature_mode"),
+            random_state=int(self.config["random_state"]),
         )
         logger.info(
             "Using model: %s (%s)",
@@ -322,7 +426,7 @@ class TabPFNOODTrainer:
         X_train: pd.DataFrame,
         y_train: np.ndarray,
         X_test: pd.DataFrame,
-    ) -> tuple[Any, Dict[str, Any], np.ndarray, np.ndarray]:
+    ) -> tuple[Any, Dict[str, Any], np.ndarray, np.ndarray, Dict[str, np.ndarray]]:
         model, model_info = self._create_regressor()
         logger.info("Fitting model on %d training rows", len(y_train))
         try:
@@ -342,13 +446,17 @@ class TabPFNOODTrainer:
 
             raise RuntimeError(
                 "TabPFN-2.5-Plus API fit failed. Make sure the `.env` file contains a valid "
-                "`TABPFN_API_KEY` or `PRIORLABS_API_KEY`."
+                f"`TABPFN_API_KEY` or `PRIORLABS_API_KEY`. Service detail: {e}"
             ) from e
 
         logger.info("Generating predictions for train/test splits")
-        y_pred_train = model.predict(X_train)
-        y_pred_test = model.predict(X_test)
-        return model, model_info, np.asarray(y_pred_train), np.asarray(y_pred_test)
+        y_pred_train = np.asarray(
+            model.predict(X_train, output_type="mean"),
+            dtype=float,
+        )
+        predictive_quantiles = predict_mean_and_quantiles(model, X_test)
+        y_pred_test = predictive_quantiles["y_pred_mean"]
+        return model, model_info, y_pred_train, y_pred_test, predictive_quantiles
 
     def _build_result_payload(
         self,
@@ -403,8 +511,15 @@ class TabPFNOODTrainer:
             self.target_col,
             scale=True,
         )
-        model, model_info, y_pred_train, y_pred_test = self._fit_and_predict(X_train, y_train, X_test)
+        (
+            model,
+            model_info,
+            y_pred_train,
+            y_pred_test,
+            predictive_quantiles,
+        ) = self._fit_and_predict(X_train, y_train, X_test)
         result = self._build_result_payload(model_info, y_train, y_pred_train, y_test, y_pred_test)
+        result["predictive_quantiles"] = predictive_quantiles
         result["split_summary"] = prepared_split.summary
         result["split_artifacts"] = split_artifacts
         if fold_metadata:
@@ -449,6 +564,12 @@ class TabPFNOODTrainer:
             y_pred_test=y_pred_test,
             align_reference_csv=align_ref,
         )
+        save_predictive_quantiles(
+            result_dir / "predictions" / "predictive_quantiles.csv",
+            ids=ids_test,
+            y_true=y_test,
+            payload=predictive_quantiles,
+        )
         for test_set_name, payload in test_set_predictions.items():
             self._save_test_set_predictions(
                 save_path=result_dir / "predictions" / "test_sets" / f"{test_set_name}_predictions.csv",
@@ -469,6 +590,37 @@ class TabPFNOODTrainer:
             fold_metadata=fold_metadata,
         )
         return result
+
+    def run_canonical_split(
+        self,
+        prepared_split: PreparedSplit,
+        *,
+        result_dir: str | Path | None = None,
+        feature_cols: List[str] | None = None,
+        align_predictions: bool = False,
+        fold_metadata: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        """Train on an existing canonical split without creating a new split."""
+
+        locked_feature_cols = list(feature_cols or self.config.get("feature_cols", []))
+        test_sets = list(getattr(prepared_split, "test_sets", {}).values())
+        self.processor.configure_feature_columns(
+            [prepared_split.train_df, prepared_split.test_df, *test_sets],
+            locked_feature_cols,
+        )
+        all_ids = pd.concat(
+            [prepared_split.train_df[["ID"]], prepared_split.test_df[["ID"]]],
+            ignore_index=True,
+        )
+        self.raw_row_count = int(all_ids["ID"].nunique())
+        locked_result_dir = Path(result_dir) if result_dir is not None else self.result_dir
+        locked_result_dir.mkdir(parents=True, exist_ok=True)
+        return self._run_prepared_split(
+            prepared_split=prepared_split,
+            result_dir=locked_result_dir,
+            align_predictions=align_predictions,
+            fold_metadata=fold_metadata,
+        )
 
     def evaluate_regression(self, y_pred_train: np.ndarray, y_pred_test: np.ndarray) -> None:
         self.results = {
@@ -640,6 +792,7 @@ class TabPFNOODTrainer:
             "feature_mode_dirname": model_info["feature_mode_dirname"],
             "requested_backend": self.backend,
             "resolved_backend": self.resolved_backend,
+            "api_timeout_seconds": model_info.get("api_timeout_seconds"),
             "model_info": model_info,
             "train": result["train"],
             self.test_result_key: result[self.test_result_key],
@@ -696,6 +849,7 @@ class TabPFNOODTrainer:
             "feature_mode_dirname": model_info["feature_mode_dirname"],
             "requested_backend": self.backend,
             "resolved_backend": self.resolved_backend,
+            "api_timeout_seconds": model_info.get("api_timeout_seconds"),
             "model_info": model_info,
             "feature_cols": self.processor.available_feature_cols,
             "split_artifacts": split_artifacts,
@@ -873,6 +1027,12 @@ class TabPFNOODTrainer:
         self.save_predictions_csv(
             save_path=str(predictions_dir / "all_predictions.csv"),
             align_reference_csv=align_ref,
+        )
+        save_predictive_quantiles(
+            predictions_dir / "predictive_quantiles.csv",
+            ids=self.ids_test,
+            y_true=self.y_test,
+            payload=self.results["predictive_quantiles"],
         )
         self.save_metrics(str(metrics_dir / "metrics_summary.json"))
         self.save_manifest()
@@ -1127,8 +1287,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--all", action="store_true")
     parser.add_argument("--alloy_type", required=False, type=str)
     parser.add_argument("--target_col", required=False, type=str)
-    parser.add_argument("--backend", choices=["auto", "api", "local"], default="auto")
-    parser.add_argument("--model_version", choices=["latest", "v2", "v2.5", "v2.6"], default=None)
+    parser.add_argument("--backend", choices=["auto", "api"], default="api")
+    parser.add_argument("--model_version", choices=["v2.5"], default="v2.5")
     parser.add_argument("--feature_mode", choices=["numeric", "text"], default=None)
     parser.add_argument("--base_path", default=str(Path(__file__).resolve().parents[2]), type=str)
     parser.add_argument("--output_root", default=None, type=str)
@@ -1280,4 +1440,3 @@ if __name__ == "__main__":
     main()
 # python src\TabPFN\train_tabpfn_ood.py --all --backend api --feature_mode text
 # python src\TabPFN\train_tabpfn_ood.py --all --backend api --feature_mode numeric
-# python src\TabPFN\train_tabpfn_ood.py --all --backend local --feature_mode numeric --model_version v2

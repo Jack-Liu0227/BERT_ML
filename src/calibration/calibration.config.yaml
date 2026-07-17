@@ -1,0 +1,182 @@
+project_root: ../..
+output_root: output/calibration
+
+combined_summary: output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv
+
+source_roots:
+  - output/ood_results
+  - output/ood_results_TabPFN-2.5-Plus-Numeric
+  - output/ood_results_TabPFN-2.5-Plus-Text
+
+protocol_aliases:
+  Extrapolation: Extrapolation
+  LOCO: LOCO
+  RandomCV: RandomCV
+  SparseXsingle: SparseXsingle
+  SparseXcluster: SparseXcluster
+  SparseYsingle: SparseYsingle
+  SparseYcluster: SparseYcluster
+  target_extrapolation: Extrapolation
+  loco: LOCO
+  random_cv_baseline: RandomCV
+  sparse_x_single: SparseXsingle
+  sparse_x_cluster: SparseXcluster
+  sparse_y_single: SparseYsingle
+  sparse_y_cluster: SparseYcluster
+
+parameter_freeze:
+  default_version: v1
+  optuna_sampler_seed: 42
+  inner_cv_folds: 5
+
+parameter_selection:
+  mode: existing_results_only
+  source_protocol: RandomCV
+  candidate_fold: 0
+  fold_count: 5
+  inner_cv_folds: 9
+  random_seed: 42
+  metric: mean_mae
+  exclude_models:
+    - TabPFN-V2-Numeric
+  expected_task_count: 10
+  expected_model_count: 11
+  expected_entry_count: 110
+
+uncertainty:
+  minimum_repeats: 2
+  ensemble_seeds:
+    - 42
+    - 43
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49
+    - 50
+    - 51
+  prediction_sources: []
+
+full_pipeline:
+  split_root: output/ood_splits
+  result_layout: results/<task>/<protocol>/<split_id>/<model>
+  jobs: 1
+  traditional_seeds:
+    - 42
+    - 43
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49
+    - 50
+    - 51
+  mc_dropout_passes: 30
+  mc_dropout_seeds:
+    - 42
+    - 43
+    - 44
+    - 45
+    - 46
+    - 47
+    - 48
+    - 49
+    - 50
+    - 51
+    - 52
+    - 53
+    - 54
+    - 55
+    - 56
+    - 57
+    - 58
+    - 59
+    - 60
+    - 61
+    - 62
+    - 63
+    - 64
+    - 65
+    - 66
+    - 67
+    - 68
+    - 69
+    - 70
+    - 71
+  delete_temporary_checkpoints: true
+  tabpfn:
+    backend: api
+    requested_model_version: v2.5
+    requested_model_path: v2.5_default
+    effective_model_version: api_2.5_plus
+    numeric_source_root: output/ood_results_TabPFN-2.5-Plus-Numeric
+    text_source_root: output/ood_results_TabPFN-2.5-Plus-Text
+
+full_plot:
+  output_dir: figures/final
+  formats:
+    - png
+    - pdf
+    - svg
+  dpi: 300
+  bootstrap_iterations: 10000
+  bootstrap_seed: 20260715
+  include_task_appendix: true
+
+full_plot_gpt:
+  output_dir: figures/final_with_gpt
+  formats:
+    - png
+    - pdf
+    - svg
+  dpi: 300
+  bootstrap_iterations: 10000
+  bootstrap_seed: 20260715
+  include_task_appendix: true
+  prediction_inventory: output/w_error_relationship_full/OOD/csv/prediction_source_inventory.csv
+  combined_summary: output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv
+
+confidence:
+  method: quantile
+  lower_quantile: 0.3333333333333333
+  upper_quantile: 0.6666666666666666
+
+pilots:
+  ti:
+    tasks:
+      - Ti__titanium__El
+      - Ti__titanium__UTS_MPa
+    llmprop_mc_passes: 30
+    llmprop_mc_seeds:
+      - 42
+      - 43
+      - 44
+      - 45
+      - 46
+      - 47
+      - 48
+      - 49
+      - 50
+      - 51
+      - 52
+      - 53
+      - 54
+      - 55
+      - 56
+      - 57
+      - 58
+      - 59
+      - 60
+      - 61
+      - 62
+      - 63
+      - 64
+      - 65
+      - 66
+      - 67
+      - 68
+      - 69
+      - 70
+      - 71

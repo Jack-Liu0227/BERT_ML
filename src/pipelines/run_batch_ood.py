@@ -19,6 +19,8 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+import pandas as pd
+
 from src.feature_engineering.utils import set_seed
 from src.pipelines.batch_configs_ood import (
     ALLOY_CONFIGS_OOD,
@@ -170,6 +172,33 @@ def make_task_key(alloy_type: str, target_column: str, model_name: Optional[str]
     return f"{alloy_type}_{target_column}"
 
 
+def load_task_queue(path: str | Path) -> pd.DataFrame:
+    queue_path = Path(path)
+    if not queue_path.exists():
+        raise FileNotFoundError(f"OOD task queue not found: {queue_path}")
+    queue = pd.read_csv(queue_path, keep_default_na=False)
+    required = {"config_name", "alloy_type", "target_column"}
+    missing = required - set(queue.columns)
+    if missing:
+        raise ValueError(f"OOD task queue is missing required columns: {sorted(missing)}")
+    queue = queue.copy()
+    for column in required:
+        queue[column] = queue[column].astype(str)
+    if queue[list(required)].duplicated().any():
+        raise ValueError("OOD task queue contains duplicate config/alloy/target rows")
+    invalid = sorted(set(queue["config_name"]) - set(BATCH_CONFIGS_OOD))
+    if invalid:
+        raise ValueError(f"OOD task queue contains unknown configs: {invalid}")
+    return queue
+
+
+def build_task_queue_filter(queue: pd.DataFrame) -> set[tuple[str, str, str]]:
+    return {
+        (str(row["config_name"]), str(row["alloy_type"]), str(row["target_column"]))
+        for _, row in queue.iterrows()
+    }
+
+
 def is_llmprop_config(args: Any) -> bool:
     return bool(getattr(args, "use_llmprop", False))
 
@@ -263,7 +292,12 @@ def build_command(
         str(args.random_state),
         "--split_cache_dir",
         str(getattr(args, "split_cache_dir", "output/ood_splits")),
+        "--batch_config_name",
+        config_name,
     ]
+
+    if bool(getattr(args, "require_existing_splits", False)):
+        cmd.append("--require_existing_splits")
 
     _append_method_specific_args(cmd, args, method_meta)
 
@@ -438,6 +472,12 @@ def _nn_artifacts_complete(
     ]
     if not any(path.exists() and path.stat().st_size > 0 for path in checkpoint_candidates):
         return False
+    predictions_dir = run_root / "predictions"
+    if not any(
+        path.is_file() and path.stat().st_size > 0
+        for path in predictions_dir.glob("*all_predictions.csv")
+    ):
+        return False
     if require_hybrid_test_sets:
         return _metrics_file_complete(run_root / "final_evaluation_metrics.json", True)
     metric_candidates = [
@@ -551,14 +591,11 @@ def should_skip_completed_task(
     model_name: Optional[str] = None,
 ) -> bool:
     if progress_manager.is_task_completed(config_name, task_key):
-        if is_hybrid_config(args, method_meta):
-            if task_artifacts_complete(config_name, alloy_type, alloy_config, args, method_meta, model_name):
-                logger.info(f"[SKIP] {config_name} / {task_key} (progress=success, hybrid artifacts complete)")
-                return True
-            logger.info(f"[RERUN] {config_name} / {task_key} (progress=success but hybrid metrics are incomplete)")
-            return False
-        logger.info(f"[SKIP] {config_name} / {task_key} (progress=success)")
-        return True
+        if task_artifacts_complete(config_name, alloy_type, alloy_config, args, method_meta, model_name):
+            logger.info(f"[SKIP] {config_name} / {task_key} (progress=success, artifacts complete)")
+            return True
+        logger.info(f"[RERUN] {config_name} / {task_key} (progress=success but artifacts are missing or incomplete)")
+        return False
     if task_artifacts_complete(config_name, alloy_type, alloy_config, args, method_meta, model_name):
         logger.info(f"[SKIP] {config_name} / {task_key} (existing output artifacts)")
         if not dry_run:
@@ -608,6 +645,7 @@ def run_batch_config(
     progress_manager: ProgressManager,
     resume: bool,
     jobs: int = 1,
+    task_filter: set[tuple[str, str, str]] | None = None,
 ) -> Dict[str, str]:
     args = argparse.Namespace(**config)
     method_meta = get_ood_method_meta(args.ood_method)
@@ -633,6 +671,8 @@ def run_batch_config(
                 continue
 
         for target_column in targets:
+            if task_filter is not None and (config_name, alloy_type, target_column) not in task_filter:
+                continue
             alloy_config = alloy_base_config.copy()
             alloy_config["target_column"] = target_column
 
@@ -776,6 +816,9 @@ def create_argument_parser() -> argparse.ArgumentParser:
 
     parser.add_argument("--dry_run", action="store_true")
     parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--task_queue", type=str, default=None)
+    parser.add_argument("--progress_file", type=str, default=".batch_progress_ood.json")
+    parser.add_argument("--require_existing_splits", action="store_true")
     parser.add_argument(
         "--alloys",
         nargs="+",
@@ -824,7 +867,7 @@ def main() -> None:
     parser = create_argument_parser()
     args = parser.parse_args()
 
-    progress_manager = ProgressManager()
+    progress_manager = ProgressManager(args.progress_file)
     if args.show_progress:
         progress_manager.show_progress()
         return
@@ -832,14 +875,21 @@ def main() -> None:
         progress_manager.clear_progress(None if args.clear_progress == "__all__" else args.clear_progress)
         return
 
-    if not any([args.list, args.config, args.all]):
-        parser.error("one of --list, --config, --all, --show_progress, or --clear_progress is required")
+    if not any([args.list, args.config, args.all, args.task_queue]):
+        parser.error("one of --list, --config, --all, --task_queue, --show_progress, or --clear_progress is required")
 
     if args.list:
         list_configs()
         return
 
-    run_configs = args.config if args.config else list(BATCH_CONFIGS_OOD.keys())
+    task_queue = load_task_queue(args.task_queue) if args.task_queue else None
+    task_filter = build_task_queue_filter(task_queue) if task_queue is not None else None
+    if args.config:
+        run_configs = args.config
+    elif task_queue is not None:
+        run_configs = list(dict.fromkeys(task_queue["config_name"].astype(str)))
+    else:
+        run_configs = list(BATCH_CONFIGS_OOD.keys())
     invalid = [name for name in run_configs if name not in BATCH_CONFIGS_OOD]
     if invalid:
         raise ValueError(f"Invalid OOD batch configs: {', '.join(invalid)}")
@@ -876,6 +926,8 @@ def main() -> None:
         overrides = {key: getattr(args, key) for key in override_keys if getattr(args, key) is not None}
         if overrides:
             config = {**config, **overrides}
+        if args.require_existing_splits:
+            config = {**config, "require_existing_splits": True}
         all_results[config_name] = run_batch_config(
             config_name=config_name,
             config=config,
@@ -883,6 +935,7 @@ def main() -> None:
             progress_manager=progress_manager,
             resume=args.resume,
             jobs=args.jobs,
+            task_filter=task_filter,
         )
 
     logger.info("=" * 100)

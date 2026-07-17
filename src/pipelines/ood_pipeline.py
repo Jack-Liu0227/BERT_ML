@@ -71,6 +71,8 @@ def create_argument_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--use_llmprop", action="store_true", default=False)
     parser.add_argument("--split_cache_dir", type=str, default="output/ood_splits")
+    parser.add_argument("--require_existing_splits", action="store_true", default=False)
+    parser.add_argument("--batch_config_name", type=str, default=None)
     parser.add_argument("--llmprop_epochs", type=int, default=200)
     parser.add_argument("--llmprop_batch_size", type=int, default=64)
     parser.add_argument("--llmprop_lr", type=float, default=1e-3)
@@ -255,6 +257,104 @@ def _resolve_split_cache_dir(args: argparse.Namespace) -> Path:
     )
 
 
+def _load_required_split_manifest(args: argparse.Namespace) -> Dict[str, Any]:
+    cache_dir = _resolve_split_cache_dir(args)
+    manifest = load_cached_split_manifest(
+        cache_dir,
+        data_file=args.data_file,
+        target_column=args.target_column,
+        method_name=args.split_strategy,
+        method_params=_build_method_params(args),
+        random_state=args.random_state,
+    )
+    if manifest is None:
+        raise FileNotFoundError(
+            "Required canonical OOD split is missing. "
+            f"Expected manifest below: {cache_dir}"
+        )
+    return manifest
+
+
+def _prepared_split_from_cache_entry(
+    args: argparse.Namespace,
+    entry: Dict[str, Any],
+) -> PreparedSplit:
+    import json
+    import pandas as pd
+
+    summary = dict(entry.get("split_summary") or {})
+    summary_file = Path(str(entry.get("summary_file", "")))
+    if not summary and summary_file.exists():
+        summary = json.loads(summary_file.read_text(encoding="utf-8"))
+    test_sets = {
+        str(name): pd.read_csv(path)
+        for name, path in dict(entry.get("test_set_files") or {}).items()
+    }
+    return PreparedSplit(
+        split_strategy=args.split_strategy,
+        target_col=args.target_column,
+        train_df=pd.read_csv(entry["train_file"]),
+        test_df=pd.read_csv(entry["test_file"]),
+        summary=summary,
+        train_label=str(entry.get("train_label", "train")),
+        test_label=str(entry.get("test_label", "test")),
+        test_sets=test_sets,
+    )
+
+
+def _prepared_result_from_manifest(
+    args: argparse.Namespace,
+    manifest: Dict[str, Any],
+) -> PreparedSplit | List[PreparedFold]:
+    if not manifest.get("is_multi_fold"):
+        return _prepared_split_from_cache_entry(args, manifest["split"])
+    folds: List[PreparedFold] = []
+    for entry in manifest.get("folds", []):
+        folds.append(
+            PreparedFold(
+                fold_index=int(entry["fold_index"]),
+                held_out_cluster_id=int(entry.get("held_out_cluster_id", -1)),
+                split=_prepared_split_from_cache_entry(args, entry),
+                metadata=dict(entry.get("metadata") or {}),
+            )
+        )
+    if not folds:
+        raise ValueError("Canonical multi-fold manifest contains no folds")
+    return folds
+
+
+def prepare_pipeline_splits(
+    args: argparse.Namespace,
+) -> tuple[PreparedSplit | List[PreparedFold], Dict[str, Any]]:
+    if bool(getattr(args, "require_existing_splits", False)):
+        manifest = _load_required_split_manifest(args)
+        return _prepared_result_from_manifest(args, manifest), manifest
+
+    processor = create_ood_processor(
+        args.split_strategy,
+        args.data_file,
+        random_state=args.random_state,
+        processing_cols=args.processing_cols,
+    )
+    raw_df = processor.load_data()
+    prepared_result = processor.prepare(
+        df=raw_df,
+        target_col=args.target_column,
+        test_ratio=args.test_size,
+        outer_test_size=args.outer_test_size,
+        extrapolation_side=args.extrapolation_side,
+        sparse_candidate_pool_size=args.sparse_candidate_pool_size,
+        sparse_cluster_count=args.sparse_cluster_count,
+        sparse_samples_per_cluster=args.sparse_samples_per_cluster,
+        sparse_kde_bandwidth=args.sparse_kde_bandwidth,
+        sparse_neighbors_per_seed=args.sparse_neighbors_per_seed,
+        loco_cluster_count=args.loco_cluster_count,
+        baseline_num_folds=args.baseline_num_folds,
+        processing_cols=args.processing_cols,
+    )
+    return prepared_result, _get_or_create_split_manifest(args, prepared_result)
+
+
 def _get_or_create_split_manifest(
     args: argparse.Namespace,
     prepared_result: PreparedSplit | List[PreparedFold],
@@ -344,6 +444,22 @@ def _write_pipeline_manifest(
         "method_params": _build_method_params(args),
         "feature_files": feature_files,
         "split_artifacts": split_artifacts,
+        "execution": {
+            "entrypoint": (
+                "src.pipelines.run_batch_ood"
+                if getattr(args, "batch_config_name", None)
+                else "src.pipelines.ood_pipeline"
+            ),
+            "batch_config_name": getattr(args, "batch_config_name", None),
+            "python_executable": sys.executable,
+            "require_existing_splits": bool(
+                getattr(args, "require_existing_splits", False)
+            ),
+            "use_optuna": bool(getattr(args, "use_optuna", False)),
+            "n_trials": int(getattr(args, "n_trials", 0)),
+            "cross_validate": bool(getattr(args, "cross_validate", False)),
+            "num_folds": int(getattr(args, "num_folds", 0)),
+        },
     }
     if extra:
         manifest.update(extra)
@@ -500,6 +616,8 @@ def _run_single_split_flow(
     extra_manifest: Dict[str, Any] | None = None,
     cached_split_entry: Dict[str, Any] | None = None,
     canonical_manifest: Dict[str, Any] | None = None,
+    frozen_parameters: Dict[str, Any] | None = None,
+    precomputed_feature_files: Dict[str, Any] | None = None,
 ) -> Dict[str, Any]:
     split_dir = run_root / "split_data"
     if cached_split_entry is not None:
@@ -507,24 +625,41 @@ def _run_single_split_flow(
     else:
         split_artifacts = save_prepared_split(prepared_split, split_dir)
 
-    features_root = run_root / "features"
-    train_feature_file = _run_feature_generation(
-        split_artifacts["train_file"],
-        _build_feature_dir(features_root, prepared_split.train_label, args.embedding_type),
-        args,
-    )
-    test_feature_file = _run_feature_generation(
-        split_artifacts["test_file"],
-        _build_feature_dir(features_root, prepared_split.test_label, args.embedding_type),
-        args,
-    )
-    test_set_feature_files: Dict[str, str] = {}
-    for test_set_name, test_set_csv in split_artifacts.get("test_set_files", {}).items():
-        test_set_feature_files[test_set_name] = _run_feature_generation(
-            test_set_csv,
-            _build_feature_dir(features_root, test_set_name, args.embedding_type),
+    if precomputed_feature_files is not None:
+        train_feature_file = str(precomputed_feature_files["train"])
+        test_feature_file = str(precomputed_feature_files["test"])
+        test_set_feature_files = {
+            str(name): str(path)
+            for name, path in dict(precomputed_feature_files.get("test_sets", {})).items()
+        }
+        required_test_sets = set(split_artifacts.get("test_set_files", {}))
+        if required_test_sets.difference(test_set_feature_files):
+            raise ValueError(
+                "Precomputed feature cache is missing test sets: "
+                f"{sorted(required_test_sets.difference(test_set_feature_files))}"
+            )
+        for path in [train_feature_file, test_feature_file, *test_set_feature_files.values()]:
+            if not Path(path).exists():
+                raise FileNotFoundError(f"Precomputed feature file does not exist: {path}")
+    else:
+        features_root = run_root / "features"
+        train_feature_file = _run_feature_generation(
+            split_artifacts["train_file"],
+            _build_feature_dir(features_root, prepared_split.train_label, args.embedding_type),
             args,
         )
+        test_feature_file = _run_feature_generation(
+            split_artifacts["test_file"],
+            _build_feature_dir(features_root, prepared_split.test_label, args.embedding_type),
+            args,
+        )
+        test_set_feature_files = {}
+        for test_set_name, test_set_csv in split_artifacts.get("test_set_files", {}).items():
+            test_set_feature_files[test_set_name] = _run_feature_generation(
+                test_set_csv,
+                _build_feature_dir(features_root, test_set_name, args.embedding_type),
+                args,
+            )
 
     training_args = _clone_args_with_result_dir(args, run_root)
     run_ood_training(
@@ -532,6 +667,7 @@ def _run_single_split_flow(
         train_feature_file=train_feature_file,
         test_feature_file=test_feature_file,
         test_set_feature_files=test_set_feature_files,
+        frozen_parameters=frozen_parameters,
     )
 
     feature_files = {
@@ -558,6 +694,69 @@ def _run_single_split_flow(
         "feature_files": feature_files,
         "split_summary": prepared_split.summary,
     }
+
+
+def prepare_feature_files(
+    args: argparse.Namespace,
+    prepared_split: PreparedSplit,
+    cache_dir: str | Path,
+) -> Dict[str, Any]:
+    """Generate deterministic row features for a locked split without training."""
+
+    cache_root = Path(cache_dir)
+    split_artifacts = save_prepared_split(prepared_split, cache_root / "split_data")
+    features_root = cache_root / "features"
+    train_feature_file = _run_feature_generation(
+        split_artifacts["train_file"],
+        _build_feature_dir(features_root, prepared_split.train_label, args.embedding_type),
+        args,
+    )
+    test_feature_file = _run_feature_generation(
+        split_artifacts["test_file"],
+        _build_feature_dir(features_root, prepared_split.test_label, args.embedding_type),
+        args,
+    )
+    test_set_feature_files = {
+        name: _run_feature_generation(
+            source_path,
+            _build_feature_dir(features_root, name, args.embedding_type),
+            args,
+        )
+        for name, source_path in dict(split_artifacts.get("test_set_files", {})).items()
+    }
+    return {
+        "train": train_feature_file,
+        "test": test_feature_file,
+        "test_sets": test_set_feature_files,
+    }
+
+
+def run_prepared_split(
+    *,
+    args: argparse.Namespace,
+    prepared_split: PreparedSplit,
+    result_dir: str | Path,
+    frozen_parameters: Dict[str, Any] | None = None,
+    extra_manifest: Dict[str, Any] | None = None,
+    precomputed_feature_files: Dict[str, Any] | None = None,
+) -> Dict[str, Any]:
+    """Run the standard OOD feature/training flow on an already locked split.
+
+    This is intentionally separate from the CLI split-strategy path.  Callers
+    such as the training-size experiment can keep all test sets fixed without
+    re-running any split strategy inside the training loop.
+    """
+
+    run_root = Path(result_dir)
+    run_root.mkdir(parents=True, exist_ok=True)
+    return _run_single_split_flow(
+        args=args,
+        prepared_split=prepared_split,
+        run_root=run_root,
+        frozen_parameters=frozen_parameters,
+        extra_manifest=extra_manifest,
+        precomputed_feature_files=precomputed_feature_files,
+    )
 
 
 def _run_multi_fold_flow(
@@ -610,33 +809,14 @@ def main() -> None:
     validate_arguments(args)
     set_seed(args.random_state)
 
-    processor = create_ood_processor(
-        args.split_strategy,
-        args.data_file,
-        random_state=args.random_state,
-        processing_cols=args.processing_cols,
-    )
-    raw_df = processor.load_data()
-    prepared_result = processor.prepare(
-        df=raw_df,
-        target_col=args.target_column,
-        test_ratio=args.test_size,
-        outer_test_size=args.outer_test_size,
-        extrapolation_side=args.extrapolation_side,
-        sparse_candidate_pool_size=args.sparse_candidate_pool_size,
-        sparse_cluster_count=args.sparse_cluster_count,
-        sparse_samples_per_cluster=args.sparse_samples_per_cluster,
-        sparse_kde_bandwidth=args.sparse_kde_bandwidth,
-        sparse_neighbors_per_seed=args.sparse_neighbors_per_seed,
-        loco_cluster_count=args.loco_cluster_count,
-        baseline_num_folds=args.baseline_num_folds,
-        processing_cols=args.processing_cols,
-    )
-
+    method_meta = get_ood_method_meta(args.split_strategy)
+    prepared_result, canonical_manifest = prepare_pipeline_splits(args)
+    if bool(canonical_manifest.get("is_multi_fold")) != bool(
+        method_meta.get("is_multi_fold")
+    ):
+        raise ValueError("Canonical split fold mode does not match the selected OOD method")
     result_root = Path(args.result_dir)
     result_root.mkdir(parents=True, exist_ok=True)
-    method_meta = get_ood_method_meta(args.split_strategy)
-    canonical_manifest = _get_or_create_split_manifest(args, prepared_result)
 
     if args.use_llmprop:
         _run_llmprop_flow(

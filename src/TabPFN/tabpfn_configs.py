@@ -33,12 +33,12 @@ TABPFN_CONFIGS_BY_RUNTIME: Dict[tuple[str, str], Dict[str, Dict[str, Any]]] = {
     ("api", "text"): TABPFN_CONFIGS_API_TEXT,
 }
 
-# Backward-compatible default for legacy imports that do not pass a backend.
-TABPFN_CONFIGS = TABPFN_CONFIGS_LOCAL
+# All active TabPFN workflows are pinned to the API 2.5 Plus runtime.
+TABPFN_CONFIGS = TABPFN_CONFIGS_API_TEXT
 
 
 TABPFN_MODEL_CONFIG = {
-    "model_version": "v2",
+    "model_version": "v2.5",
     "feature_mode": None,
     "task_type": "regression",
     "metrics": {
@@ -49,7 +49,7 @@ TABPFN_MODEL_CONFIG = {
 
 
 def get_tabpfn_configs(
-    backend: str = "local",
+    backend: str = "api",
     feature_mode: str | None = None,
     base_path: str = ".",
 ) -> Dict[str, Dict[str, Any]]:
@@ -64,7 +64,7 @@ def get_tabpfn_configs(
 
 def get_tabpfn_config(
     alloy_type: str,
-    backend: str = "local",
+    backend: str = "api",
     feature_mode: str | None = None,
     base_path: str = ".",
 ) -> Dict[str, Any]:
@@ -90,7 +90,7 @@ def get_tabpfn_config(
 
 
 def get_all_alloy_types(
-    backend: str = "local",
+    backend: str = "api",
     base_path: str = ".",
 ) -> List[str]:
     return list(get_tabpfn_configs(backend=backend, base_path=base_path).keys())

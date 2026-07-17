@@ -15,12 +15,18 @@ except ImportError:  # pragma: no cover
 
 try:
     from tabpfn_client import TabPFNRegressor as ApiTabPFNRegressor
+    from tabpfn_client.constants import ModelVersion as ApiModelVersion
     from tabpfn_client import set_access_token
+    from tabpfn_client.client import ServiceClient as ApiServiceClient
+    import httpx
 
     TABPFN_API_CLIENT_AVAILABLE = True
 except ImportError:  # pragma: no cover
     ApiTabPFNRegressor = None
+    ApiModelVersion = None
     set_access_token = None
+    ApiServiceClient = None
+    httpx = None
     TABPFN_API_CLIENT_AVAILABLE = False
 
 try:
@@ -36,6 +42,7 @@ except ImportError:  # pragma: no cover
 
 TABPFN_API_KEY_ENV_VARS = ("TABPFN_API_KEY", "PRIORLABS_API_KEY")
 TABPFN_FEATURE_MODES = ("numeric", "text")
+DEFAULT_TABPFN_API_TIMEOUT_SECONDS = 300.0
 
 
 def load_tabpfn_env(base_path: str | Path = ".") -> None:
@@ -56,6 +63,24 @@ def get_tabpfn_api_key(base_path: str | Path = ".") -> Optional[str]:
     return None
 
 
+def configure_tabpfn_api_client_timeout() -> float:
+    raw = os.getenv(
+        "TABPFN_API_TIMEOUT_SECONDS",
+        str(DEFAULT_TABPFN_API_TIMEOUT_SECONDS),
+    )
+    try:
+        timeout_seconds = float(raw)
+    except ValueError as exc:
+        raise ValueError(f"Invalid TABPFN_API_TIMEOUT_SECONDS: {raw!r}") from exc
+    if not 0 < timeout_seconds <= 3600:
+        raise ValueError("TABPFN_API_TIMEOUT_SECONDS must be in (0, 3600].")
+    if ApiServiceClient is None or httpx is None:
+        raise ImportError("tabpfn-client/httpx is unavailable for API timeout configuration.")
+    ApiServiceClient.httpx_timeout_s = timeout_seconds
+    ApiServiceClient.httpx_client.timeout = httpx.Timeout(timeout_seconds)
+    return timeout_seconds
+
+
 def resolve_tabpfn_backend(
     *,
     base_path: str | Path = ".",
@@ -68,9 +93,11 @@ def resolve_tabpfn_backend(
             "Expected one of: auto, api, local."
         )
 
-    if backend == "auto":
-        return "api" if get_tabpfn_api_key(base_path) is not None else "local"
-    return backend
+    if backend == "local":
+        raise ValueError(
+            "Only TabPFN API 2.5 Plus is allowed; local TabPFN V2 is disabled."
+        )
+    return "api"
 
 
 def resolve_tabpfn_feature_mode(
@@ -89,11 +116,6 @@ def resolve_tabpfn_feature_mode(
             f"Unsupported TabPFN feature mode: {feature_mode}. "
             "Expected one of: numeric, text."
         )
-    if resolved_backend == "local" and normalized != "numeric":
-        raise ValueError(
-            "Local TabPFN V2 does not support text feature mode. "
-            "Use `--feature_mode numeric` for local, or switch to `--backend api`."
-        )
     return normalized
 
 
@@ -111,20 +133,19 @@ def get_tabpfn_runtime_config(
         feature_mode=feature_mode,
     )
 
-    if resolved_backend == "api":
-        model_name = "TabPFN-2.5-Plus"
-        model_dirname = "TabPFN-2.5-Plus"
-        effective_model_version = "api_2.5_plus"
-    else:
-        requested_version = preferred_model_version.strip().lower() if preferred_model_version else "v2"
-        if requested_version != "v2":
-            raise ValueError(
-                "Local TabPFN is fixed to `TabPFN V2`. "
-                "Use `--model_version v2` or omit the flag."
-            )
-        model_name = "TabPFN V2"
-        model_dirname = "TabPFN-V2"
-        effective_model_version = "v2"
+    requested_version = (
+        preferred_model_version.strip().lower()
+        if preferred_model_version
+        else "v2.5"
+    )
+    if requested_version not in {"v2.5", "api_2.5_plus"}:
+        raise ValueError(
+            "Only TabPFN API 2.5 Plus is allowed; use `--model_version v2.5` "
+            "or omit the model-version flag."
+        )
+    model_name = "TabPFN-2.5-Plus"
+    model_dirname = "TabPFN-2.5-Plus"
+    effective_model_version = "api_2.5_plus"
 
     feature_mode_dirname = resolved_feature_mode.title()
 
@@ -136,6 +157,7 @@ def get_tabpfn_runtime_config(
         "feature_mode": resolved_feature_mode,
         "feature_mode_dirname": feature_mode_dirname,
         "requested_model_version": preferred_model_version,
+        "requested_model_path": "v2.5_default",
         "preferred_model_version": effective_model_version,
         "effective_model_version": effective_model_version,
         "model_name": model_name,
@@ -150,6 +172,7 @@ def create_tabpfn_regressor(
     preferred_model_version: str | None = None,
     backend: str = "auto",
     feature_mode: str | None = None,
+    random_state: int | None = None,
 ) -> Tuple[Any, Dict[str, Any]]:
     runtime_config = get_tabpfn_runtime_config(
         base_path=base_path,
@@ -169,11 +192,27 @@ def create_tabpfn_regressor(
             )
         assert set_access_token is not None
         assert ApiTabPFNRegressor is not None
+        if ApiModelVersion is None:
+            raise ImportError(
+                "tabpfn-client is installed, but its ModelVersion enum is unavailable."
+            )
+        api_timeout_seconds = configure_tabpfn_api_client_timeout()
         set_access_token(api_key)
+        overrides = {"random_state": int(random_state)} if random_state is not None else {}
+        model = ApiTabPFNRegressor.create_default_for_version(
+            ApiModelVersion.V2_5,
+            **overrides,
+        )
+        if str(getattr(model, "model_path", "")) != "v2.5_default":
+            raise RuntimeError(
+                "TabPFN API client did not resolve the explicitly requested v2.5_default model."
+            )
         return (
-            ApiTabPFNRegressor(),
+            model,
             {
                 **runtime_config,
+                "random_state": random_state,
+                "api_timeout_seconds": api_timeout_seconds,
                 "api_key_env_var": next(
                     env_var
                     for env_var in TABPFN_API_KEY_ENV_VARS
@@ -189,18 +228,4 @@ def create_tabpfn_regressor(
                 "Add `TABPFN_API_KEY` or `PRIORLABS_API_KEY` to `.env`."
             )
 
-    if not TABPFN_LOCAL_AVAILABLE:
-        raise ImportError(
-            "Neither a TabPFN API backend nor a local tabpfn installation is available."
-        )
-
-    assert LocalTabPFNRegressor is not None
-    if LocalModelVersion is None:
-        raise ImportError(
-            "tabpfn is installed, but ModelVersion could not be imported."
-        )
-    version = getattr(LocalModelVersion, "V2")
-    return (
-        LocalTabPFNRegressor.create_default_for_version(version),
-        runtime_config,
-    )
+    raise RuntimeError("Only TabPFN API 2.5 Plus is allowed.")

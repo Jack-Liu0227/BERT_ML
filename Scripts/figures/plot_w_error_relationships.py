@@ -185,6 +185,8 @@ HYBRID_SET_AB_YZ_SEVERITY_COLUMNS = [
     "Wz",
     "Wy_random80",
     "Wz_random80",
+    "baseline_set",
+    "baseline_method",
     "Ry",
     "Rz",
     "n_folds_y",
@@ -379,6 +381,7 @@ def normalize_standard_method(value: object) -> str:
         "random_cv": "RandCV",
         "randomcv": "RandCV",
         "random_cv_baseline": "RandCV",
+        "random_cv_k5": "RandCV",
         "target_extrapolation": "Extra.",
         "extrapolation": "Extra.",
         "extra.": "Extra.",
@@ -1409,6 +1412,8 @@ def build_hybrid_set_ab_yz_severity_summary(
 
     result["Ry"] = result["Wy"] / result["Wy_random80"]
     result["Rz"] = result["Wz"] / result["Wz_random80"]
+    result["baseline_set"] = "SetB"
+    result["baseline_method"] = "RandCV"
     result["n_folds_y"] = pd.to_numeric(result["n_folds_y"], errors="coerce").fillna(0).astype(int)
     result["n_folds_z"] = pd.to_numeric(result["n_folds_z"], errors="coerce").fillna(0).astype(int)
     result = result[HYBRID_SET_AB_YZ_SEVERITY_COLUMNS]
@@ -2406,6 +2411,29 @@ def write_hybrid_yz_severity_outputs(
     return figures
 
 
+def write_standard_yz_severity_outputs(
+    w_table: pd.DataFrame,
+    output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+) -> pd.DataFrame:
+    yz_severity = build_standard_yz_severity_summary(w_table)
+    yz_output_dir = output_dir / "yz_severity_map"
+    write_csv(yz_severity, yz_output_dir / "csv" / "ood_yz_severity_summary.csv")
+    figures = pd.concat(
+        [
+            plot_standard_yz_severity_figures(yz_severity, yz_output_dir, formats, dpi),
+            plot_standard_yz_severity_overview(yz_severity, yz_output_dir, formats, dpi),
+            plot_standard_yz_core_protocol_overview(yz_severity, yz_output_dir, formats, dpi),
+        ],
+        ignore_index=True,
+        sort=False,
+    )
+    manifest_path = yz_output_dir / "csv" / "figure_manifest.csv"
+    write_csv(figures, manifest_path)
+    return figures
+
+
 def write_hybrid_set_ab_yz_random80_outputs(
     set_a_w_table: pd.DataFrame,
     set_b_w_table: pd.DataFrame,
@@ -2415,7 +2443,7 @@ def write_hybrid_set_ab_yz_random80_outputs(
     random80_w_table: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
     yz_severity = build_hybrid_set_ab_yz_severity_summary(set_a_w_table, set_b_w_table, random80_w_table)
-    write_csv(yz_severity, yz_output_dir / "csv" / "hybrid_yz_severity_setA_setB_random80_summary.csv")
+    write_csv(yz_severity, yz_output_dir / "csv" / "hybrid_set_ab_yz_severity_summary.csv")
     figures = pd.concat(
         [
             plot_hybrid_set_ab_yz_overview_random80_baseline(yz_severity, yz_output_dir, formats, dpi),

@@ -24,6 +24,7 @@ All active reproduction entrypoints are Python-only.
 | `batch_summarize_llmprop_ood_results.py` | Active OOD summary utility. |
 | `batch_summarize_combined_ood_reports.py` | Active combined reporting utility. |
 | `build_bestplus_tabpfn_triptych.py` | Active figure builder. |
+| `build_ood_figures_3_4.py` | Active Figure 3/4 audit, table, and plotting builder. |
 
 Helper modules beginning with `_` are implementation details used by active scripts.
 

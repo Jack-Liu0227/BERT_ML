@@ -129,3 +129,25 @@ datasets/Ti_alloys/Titanium data (Ti BERT).xlsx
 
 outputs/manual-xspace-w-ppt/
 tests/
+tests/*
+# !tests/test_ood_figures_3_4.py
+# !tests/test_visualize_top_tail_wx_wz_distribution.py
+# !tests/test_generate_zspace_embedding_background.py
+# !tests/
+# !tests/test_training_size_ood.py
+# !tests/test_training_size_ood_aggregation.py
+# !tests/test_training_size_ood_cli.py
+# !tests/test_figure4_training_size_plot.py
+# !tests/test_figure4_sweep.py
+# !tests/test_tabpfn_v1_refresh.py
+tmp_case*
+tmp_source*.csv
+paper/
+.playwright-mcp
+.pytest_cache
+.ruff_cache
+.codex-tasks
+.cache
+.agents
+archive/
+_paper_extract/

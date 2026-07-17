@@ -452,8 +452,8 @@ def build_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--show_progress", action="store_true")
     parser.add_argument("--clear_progress", type=str, nargs="?", const="__all__", metavar="CONFIG")
-    parser.add_argument("--backend", choices=["auto", "api", "local"], default="auto")
-    parser.add_argument("--model_version", choices=["latest", "v2", "v2.5", "v2.6"], default=None)
+    parser.add_argument("--backend", choices=["auto", "api"], default="api")
+    parser.add_argument("--model_version", choices=["v2.5"], default="v2.5")
     parser.add_argument("--feature_mode", choices=["numeric", "text"], default=None)
     parser.add_argument("--base_path", default=str(Path(__file__).resolve().parents[2]), type=str)
     return parser

@@ -335,10 +335,8 @@ def collect_rows(
                     continue
 
                 alloy_family, dataset_name, property_name, raw_ood_method, _ = relative_parts
-                expected_raw_ood_method = (
-                    expected_raw_ood_method_for_tracked_config(experiment_dir.name)
-                    if config_is_tracked
-                    else None
+                expected_raw_ood_method = expected_raw_ood_method_for_tracked_config(
+                    experiment_dir.name
                 )
                 if expected_raw_ood_method is not None and raw_ood_method != expected_raw_ood_method:
                     skipped_rows.append(
@@ -352,7 +350,7 @@ def collect_rows(
                             "batch_progress_task_key": build_progress_task_key(alloy_family, property_name),
                             "batch_progress_status": "legacy_non_k5_artifact",
                             "model_dir": str(model_dir),
-                            "reason": f"tracked k5 config expects raw method {expected_raw_ood_method}",
+                            "reason": f"formal k5 config expects raw method {expected_raw_ood_method}",
                         }
                     )
                     continue

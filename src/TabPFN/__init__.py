@@ -8,7 +8,6 @@ This module provides TabPFN-based models for predicting alloy properties.
 from .tabpfn_configs import (
     TABPFN_CONFIGS,
     TABPFN_CONFIGS_API,
-    TABPFN_CONFIGS_LOCAL,
     TABPFN_MODEL_CONFIG,
     get_tabpfn_configs,
     get_tabpfn_config,
@@ -29,7 +28,6 @@ from .train_tabpfn import (
 __all__ = [
     'TABPFN_CONFIGS',
     'TABPFN_CONFIGS_API',
-    'TABPFN_CONFIGS_LOCAL',
     'TABPFN_MODEL_CONFIG',
     'get_tabpfn_configs',
     'get_tabpfn_config',

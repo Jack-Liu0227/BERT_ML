@@ -1,0 +1,60 @@
+output_root: output/ood_figures_3_4
+
+discovery_roots:
+  prediction_inventory: output/w_error_relationship_full/OOD/csv/prediction_source_inventory.csv
+  combined_summary: output/ood_summary_reports/Combined/data/all_model_families_ood_summary.csv
+  uncertainty_root: output/new_results_withuncertainty
+  enable_uncertainty_scan: false
+
+model_family_aliases:
+  GPT-5.4: GPT
+  gpt-5.4: GPT
+
+confidence_tier_order:
+  - High
+  - Medium
+  - Low
+
+figure3:
+  required_sources:
+    - gpt_semantic
+    - traditional_uncertainty
+    - bert_uncertainty
+    - tabpfn_uncertainty
+  exclude_tasks_from_aggregate:
+    - Steel__steel__YS_MPa
+  sample_level_sources:
+    - name: non_gpt_calibration
+      path: output/calibration/calibration/sample_level_calibration.csv
+      required: false
+      confidence_source: uncertainty
+  al_uts_filter:
+    task_id_contains: Al-UTS
+    model_contains: GPT
+
+figure4:
+  required_sources:
+    - training_size_degradation
+  training_output_root: output/training_size_ood
+  frozen_parameters_path: output/calibration/parameter_freeze/frozen_model_params_v1.yaml
+  proximity_csv: output/top_tail_loco_proximity/xspace/csv/cluster_proximity_top20.csv
+  training_fractions:
+    - 0.2
+    - 0.4
+    - 0.6
+    - 0.8
+    - 1.0
+  repeats: 10
+  full_fraction_repeats: 1
+  random_seed: 20260707
+  random_cv_folds: 5
+  random_cv_fold_index: 2
+  model_seed: 42
+  bootstrap_iterations: 10000
+  require_complete_training_size: true
+  expected_run_count: 4510
+  expected_ratio_row_count: 9020
+  degradation_sources:
+    - name: training_size_degradation
+      path: output/training_size_ood/csv/degradation_ratio_by_repeat.csv
+      required: true

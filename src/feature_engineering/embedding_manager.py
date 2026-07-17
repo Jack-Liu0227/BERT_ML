@@ -244,7 +244,7 @@ class EmbeddingManager:
         
         return element_embedding
     
-    def get_process_embeddings(self, texts, batch_size=500):
+    def get_process_embeddings(self, texts, batch_size=32):
         """
         获取工艺描述的embedding，分批处理，支持多卡
         Args:
@@ -268,6 +268,7 @@ class EmbeddingManager:
                 last_hidden_state = hidden_states[-1]
                 embeddings = last_hidden_state[:, 0, :]  # shape: (batch, hidden)
                 all_embeddings.append(embeddings.cpu().numpy())
+                del inputs, outputs, hidden_states, last_hidden_state, embeddings
         return np.concatenate(all_embeddings, axis=0)
     
     def get_composition_embeddings(self, compositions):
@@ -369,4 +370,4 @@ class EmbeddingManager:
             hidden_states = outputs.hidden_states
             last_hidden_state = hidden_states[-1]
             embeddings = last_hidden_state[:, 0, :].cpu().numpy()
-        return embeddings 
+        return embeddings

@@ -1,0 +1,14 @@
+defaults:
+  include_matbench: true
+  test_fraction: 0.20
+  random_state: 42
+  target_strata: 20
+  start_fraction: 0.05
+  stop_fraction: 0.95
+  step_samples: 1
+  min_abs_delta_wx: 0.15
+  min_rel_delta_wx: 0.30
+  sliced_projections: 128
+  standardization_mode: fixed_full_data
+  tie_policy: group_leave_one_out
+  removal_passes: 1

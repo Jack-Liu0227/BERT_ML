@@ -4,6 +4,7 @@ Base evaluator for model evaluation
 
 import os
 import json
+import logging
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -196,8 +197,15 @@ class BaseEvaluator:
         # Adjust layout and save
         plt.suptitle(title, fontsize=14)
         plt.tight_layout()
-        plt.savefig(save_path, dpi=300, bbox_inches='tight')
-        plt.close()
+        try:
+            plt.savefig(save_path, dpi=300, bbox_inches='tight')
+        except MemoryError as exc:
+            logging.getLogger(__name__).warning(
+                "Skipping training-curve plot after a renderer memory error: %s",
+                exc,
+            )
+        finally:
+            plt.close()
 
     @staticmethod
     def plot_prediction_scatter(
@@ -313,4 +321,4 @@ class BaseEvaluator:
             model_name (str): Name of the model
             feature_names (list): List of feature names
         """
-        plot_feature_importance(model, model_name, feature_names, self.plots_dir) 
+        plot_feature_importance(model, model_name, feature_names, self.plots_dir)

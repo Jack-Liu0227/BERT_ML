@@ -127,6 +127,22 @@ class TabPFNOODDataProcessor:
             )
         return frame
 
+    def configure_feature_columns(
+        self,
+        frames: List[pd.DataFrame],
+        feature_cols: List[str],
+    ) -> None:
+        configured = [str(column) for column in feature_cols if str(column).strip()]
+        if not configured:
+            raise ValueError("At least one frozen TabPFN feature column is required")
+        for frame in frames:
+            missing = [column for column in configured if column not in frame.columns]
+            if missing:
+                raise ValueError(f"Canonical split is missing frozen feature columns: {missing}")
+        self.available_feature_cols = configured
+        reference = next(frame[configured] for frame in frames if not frame.empty)
+        self._set_feature_type_metadata(reference)
+
     def prepare_ood_result(
         self,
         feature_frame: pd.DataFrame,
