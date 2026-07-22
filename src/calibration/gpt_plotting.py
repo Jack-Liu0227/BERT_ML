@@ -49,6 +49,8 @@ METHOD_LABELS = {
     "GPT-5.4": "GPT-5.4",
 }
 TIER_RISK_SCORE = {"High": 1.0, "Medium": 2.0, "Low": 3.0}
+OVERVIEW_ADJACENT_HEATMAP_LIMIT = 1.25
+TASK_ADJACENT_HEATMAP_LIMIT = 4.0
 
 COMMON_TASKS = (
     "Al__aluminum__UTS_MPa",
@@ -578,6 +580,12 @@ def prepare_integrated_tables(
         high = float(tier_values["High"]) if pd.notna(tier_values["High"]) else np.nan
         medium = float(tier_values["Medium"]) if pd.notna(tier_values["Medium"]) else np.nan
         low = float(tier_values["Low"]) if pd.notna(tier_values["Low"]) else np.nan
+        medium_minus_high = (
+            medium - high if np.isfinite(high) and np.isfinite(medium) else np.nan
+        )
+        low_minus_medium = (
+            low - medium if np.isfinite(medium) and np.isfinite(low) else np.nan
+        )
         discrimination = low - high if np.isfinite(high) and np.isfinite(low) else np.nan
         spearman, reason = _tier_spearman(group)
         present_tiers = set(group["confidence_tier"].dropna().astype(str))
@@ -589,10 +597,16 @@ def prepare_integrated_tables(
             "High": high,
             "Medium": medium,
             "Low": low,
+            "medium_minus_high": medium_minus_high,
+            "low_minus_medium": low_minus_medium,
             "discrimination": discrimination,
             "tier_spearman_error": spearman,
             "sample_n": int(len(group)),
             "confidence_source": str(group["confidence_source"].iloc[0]),
+            "has_high_medium_pair": {"High", "Medium"}.issubset(present_tiers),
+            "has_medium_low_pair": {"Medium", "Low"}.issubset(present_tiers),
+            "has_high_low_pair": {"High", "Low"}.issubset(present_tiers),
+            "complete_three_tiers": set(TIER_ORDER).issubset(present_tiers),
         }
         task_rows.append(row)
         coverage_rows.append(
@@ -600,8 +614,6 @@ def prepare_integrated_tables(
                 **row,
                 "record_type": "case",
                 "tier_count": len(present_tiers),
-                "complete_three_tiers": set(TIER_ORDER).issubset(present_tiers),
-                "has_high_low_pair": {"High", "Low"}.issubset(present_tiers),
                 "tier_spearman_valid": np.isfinite(spearman),
                 "tier_spearman_validity_reason": reason,
                 "coverage_status": "included",
@@ -615,6 +627,8 @@ def prepare_integrated_tables(
         ["method", "protocol"], sort=False, dropna=False
     ):
         discrimination = pd.to_numeric(group["discrimination"], errors="coerce")
+        medium_minus_high = pd.to_numeric(group["medium_minus_high"], errors="coerce")
+        low_minus_medium = pd.to_numeric(group["low_minus_medium"], errors="coerce")
         spearman = pd.to_numeric(group["tier_spearman_error"], errors="coerce")
         protocol_rows.append(
             {
@@ -625,6 +639,16 @@ def prepare_integrated_tables(
                 else np.nan,
                 "discrimination_valid_count": int(discrimination.notna().sum()),
                 "discrimination_total_count": int(len(discrimination)),
+                "medium_minus_high_mean": float(medium_minus_high.mean())
+                if medium_minus_high.notna().any()
+                else np.nan,
+                "medium_minus_high_valid_count": int(medium_minus_high.notna().sum()),
+                "medium_minus_high_total_count": int(len(medium_minus_high)),
+                "low_minus_medium_mean": float(low_minus_medium.mean())
+                if low_minus_medium.notna().any()
+                else np.nan,
+                "low_minus_medium_valid_count": int(low_minus_medium.notna().sum()),
+                "low_minus_medium_total_count": int(len(low_minus_medium)),
                 "tier_spearman_mean": float(spearman.mean()) if spearman.notna().any() else np.nan,
                 "tier_spearman_valid_count": int(spearman.notna().sum()),
                 "tier_spearman_total_count": int(len(spearman)),
@@ -674,6 +698,12 @@ def prepare_integrated_tables(
             "protocol",
             "method",
             "selected_model",
+            "medium_minus_high",
+            "low_minus_medium",
+            "has_high_medium_pair",
+            "has_medium_low_pair",
+            "has_high_low_pair",
+            "complete_three_tiers",
             "tier_spearman_error",
             "tier_spearman_valid",
             "tier_spearman_validity_reason",
@@ -708,6 +738,26 @@ def _method_row_labels() -> dict[str, str]:
     return {method: METHOD_LABELS[method] for method in METHOD_ORDER}
 
 
+def _metric_annotations(
+    frame: pd.DataFrame,
+    *,
+    value_column: str,
+    valid_column: str,
+    total_column: str,
+) -> dict[tuple[str, str], str]:
+    annotations: dict[tuple[str, str], str] = {}
+    for row in frame.itertuples(index=False):
+        value = float(getattr(row, value_column))
+        valid = int(getattr(row, valid_column))
+        total = int(getattr(row, total_column))
+        annotations[(str(row.method), str(row.protocol))] = (
+            f"{value:.2f}\n{valid}/{total}"
+            if np.isfinite(value)
+            else f"NA\n{valid}/{total}"
+        )
+    return annotations
+
+
 def _plot_main(
     tables: dict[str, pd.DataFrame],
     output_dir: Path,
@@ -719,7 +769,11 @@ def _plot_main(
 
     method_tier = tables["method_tier_summary"]
     method_protocol = tables["method_protocol_summary"]
-    fig, axes = plt.subplots(2, 2, figsize=(7.2, 6.35), constrained_layout=True)
+    fig = plt.figure(figsize=(7.2, 6.15), constrained_layout=True)
+    grid = fig.add_gridspec(2, 2, height_ratios=(0.95, 1.05))
+    ax_a = fig.add_subplot(grid[0, 0])
+    ax_b = fig.add_subplot(grid[0, 1])
+    ax_c = fig.add_subplot(grid[1, :])
     pooled = method_tier[method_tier["protocol"].astype(str).eq("All")]
     x = np.arange(len(TIER_ORDER))
     for method in METHOD_ORDER:
@@ -729,7 +783,7 @@ def _plot_main(
         mean = group["normalized_mae_mean"].to_numpy(float)
         low = group["bootstrap_ci95_low"].to_numpy(float)
         high = group["bootstrap_ci95_high"].to_numpy(float)
-        axes[0, 0].plot(
+        ax_a.plot(
             x,
             mean,
             marker="o",
@@ -738,13 +792,13 @@ def _plot_main(
             color=METHOD_COLORS[method],
             label=METHOD_LABELS[method],
         )
-        axes[0, 0].fill_between(x, low, high, color=METHOD_COLORS[method], alpha=0.12)
-    axes[0, 0].axhline(1.0, color="#777777", linestyle="--", linewidth=0.8)
-    axes[0, 0].set_xticks(x, TIER_ORDER)
-    axes[0, 0].set_ylabel("Normalized MAE")
-    axes[0, 0].set_title("Confidence-tier error discrimination")
-    axes[0, 0].legend(frameon=False, ncol=2, fontsize=5.4)
-    axes[0, 0].grid(axis="y", alpha=0.22)
+        ax_a.fill_between(x, low, high, color=METHOD_COLORS[method], alpha=0.12)
+    ax_a.axhline(1.0, color="#777777", linestyle="--", linewidth=0.8)
+    ax_a.set_xticks(x, TIER_ORDER)
+    ax_a.set_ylabel("Normalized MAE")
+    ax_a.set_title("Confidence-tier error discrimination")
+    ax_a.legend(frameon=False, ncol=2, fontsize=5.4)
+    ax_a.grid(axis="y", alpha=0.22)
 
     discrimination_annotations = {
         (str(row.method), str(row.protocol)): (
@@ -756,7 +810,7 @@ def _plot_main(
     }
     discrimination = method_protocol.rename(columns={"method": "row", "protocol": "column"})
     image = _heatmap(
-        axes[0, 1],
+        ax_b,
         discrimination,
         row_order=METHOD_ORDER,
         column_order=PROTOCOL_ORDER,
@@ -768,7 +822,7 @@ def _plot_main(
         annotation=discrimination_annotations,
         row_labels=_method_row_labels(),
     )
-    fig.colorbar(image, ax=axes[0, 1], fraction=0.045, pad=0.02)
+    fig.colorbar(image, ax=ax_b, fraction=0.045, pad=0.02)
 
     spearman_annotations = {
         (str(row.method), str(row.protocol)): (
@@ -780,7 +834,7 @@ def _plot_main(
     }
     spearman = method_protocol.rename(columns={"method": "row", "protocol": "column"})
     image = _heatmap(
-        axes[1, 0],
+        ax_c,
         spearman,
         row_order=METHOD_ORDER,
         column_order=PROTOCOL_ORDER,
@@ -792,33 +846,65 @@ def _plot_main(
         annotation=spearman_annotations,
         row_labels=_method_row_labels(),
     )
-    fig.colorbar(image, ax=axes[1, 0], fraction=0.045, pad=0.02)
-
-    validity_annotations = {
-        (str(row.method), str(row.protocol)): (
-            f"{row.tier_spearman_valid_percent:.0f}%\n"
-            f"{int(row.tier_spearman_valid_count)}/{int(row.tier_spearman_total_count)}"
-        )
-        for row in method_protocol.itertuples()
-    }
-    validity = method_protocol.rename(columns={"method": "row", "protocol": "column"})
-    image = _heatmap(
-        axes[1, 1],
-        validity,
-        row_order=METHOD_ORDER,
-        column_order=PROTOCOL_ORDER,
-        value_column="tier_spearman_valid_percent",
-        vmin=0.0,
-        vmax=100.0,
-        cmap_name="Blues",
-        title="Valid tier Spearman coverage",
-        annotation=validity_annotations,
-        row_labels=_method_row_labels(),
-    )
-    fig.colorbar(image, ax=axes[1, 1], fraction=0.045, pad=0.02)
-    for label, ax in zip("ABCD", axes.ravel()):
+    fig.colorbar(image, ax=ax_c, fraction=0.025, pad=0.02)
+    for label, ax in zip("ABC", (ax_a, ax_b, ax_c)):
         ax.text(-0.12, 1.06, label, transform=ax.transAxes, fontsize=10, fontweight="bold")
     return _close_and_return(fig, output_dir / "calibration_main", formats, dpi)
+
+
+def _plot_adjacent_tier_diagnostics(
+    tables: dict[str, pd.DataFrame],
+    output_dir: Path,
+    *,
+    formats: tuple[str, ...],
+    dpi: int,
+) -> list[Path]:
+    from matplotlib import pyplot as plt
+
+    summary = tables["method_protocol_summary"]
+    heatmap_data = summary.rename(columns={"method": "row", "protocol": "column"})
+    fig, axes = plt.subplots(1, 2, figsize=(7.2, 4.25), constrained_layout=True)
+    specifications = (
+        (
+            "medium_minus_high_mean",
+            "medium_minus_high_valid_count",
+            "medium_minus_high_total_count",
+            "Medium-tier minus high-tier normalized MAE",
+        ),
+        (
+            "low_minus_medium_mean",
+            "low_minus_medium_valid_count",
+            "low_minus_medium_total_count",
+            "Low-tier minus medium-tier normalized MAE",
+        ),
+    )
+    for label, ax, (value, valid, total, title) in zip("AB", axes, specifications):
+        image = _heatmap(
+            ax,
+            heatmap_data,
+            row_order=METHOD_ORDER,
+            column_order=PROTOCOL_ORDER,
+            value_column=value,
+            vmin=-OVERVIEW_ADJACENT_HEATMAP_LIMIT,
+            vmax=OVERVIEW_ADJACENT_HEATMAP_LIMIT,
+            cmap_name="RdBu_r",
+            title=title,
+            annotation=_metric_annotations(
+                summary,
+                value_column=value,
+                valid_column=valid,
+                total_column=total,
+            ),
+            row_labels=_method_row_labels(),
+        )
+        fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02)
+        ax.text(-0.14, 1.05, label, transform=ax.transAxes, fontsize=10, fontweight="bold")
+    return _close_and_return(
+        fig,
+        output_dir / "calibration_adjacent_tier_diagnostics",
+        formats,
+        dpi,
+    )
 
 
 def _plot_by_protocol(
@@ -1010,11 +1096,70 @@ def _plot_task_appendix(
     return output_paths, task_dirs
 
 
+def _plot_adjacent_tier_task_appendix(
+    task_summary: pd.DataFrame,
+    output_root: Path,
+    *,
+    formats: tuple[str, ...],
+    dpi: int,
+) -> tuple[list[Path], dict[str, str]]:
+    from matplotlib import pyplot as plt
+
+    output_paths: list[Path] = []
+    task_outputs: dict[str, str] = {}
+    specifications = (
+        ("medium_minus_high", "Medium-tier minus high-tier normalized MAE"),
+        ("low_minus_medium", "Low-tier minus medium-tier normalized MAE"),
+    )
+    for task_id in COMMON_TASKS:
+        task = task_summary[task_summary["task_id"].astype(str).eq(task_id)].copy()
+        heatmap_data = task.rename(columns={"method": "row", "protocol": "column"})
+        fig, axes = plt.subplots(1, 2, figsize=(7.2, 4.25), constrained_layout=True)
+        for label, ax, (value_column, title) in zip("AB", axes, specifications):
+            annotations: dict[tuple[str, str], str] = {}
+            for row in task.itertuples(index=False):
+                value = float(getattr(row, value_column))
+                annotations[(str(row.method), str(row.protocol))] = (
+                    f"{value:.2f}\n1/1" if np.isfinite(value) else "NA\n0/1"
+                )
+            image = _heatmap(
+                ax,
+                heatmap_data,
+                row_order=METHOD_ORDER,
+                column_order=PROTOCOL_ORDER,
+                value_column=value_column,
+                vmin=-TASK_ADJACENT_HEATMAP_LIMIT,
+                vmax=TASK_ADJACENT_HEATMAP_LIMIT,
+                cmap_name="RdBu_r",
+                title=title,
+                annotation=annotations,
+                row_labels=_method_row_labels(),
+            )
+            fig.colorbar(image, ax=ax, fraction=0.035, pad=0.02)
+            ax.text(-0.14, 1.05, label, transform=ax.transAxes, fontsize=10, fontweight="bold")
+        fig.suptitle(task_id, y=1.02, fontsize=9)
+        task_dir = output_root / _safe_component(task_id)
+        base_path = task_dir / "calibration_adjacent_tier_diagnostics"
+        output_paths.extend(_close_and_return(fig, base_path, formats, dpi))
+        task_outputs[task_id] = str(
+            Path("by_task")
+            / _safe_component(task_id)
+            / "calibration_adjacent_tier_diagnostics.png"
+        )
+    return output_paths, task_outputs
+
+
 def _write_readme(path: Path) -> None:
     path.write_text(
         """# GPT-Integrated Calibration Figure Package
 
 This package compares six method series on eight tasks with complete seven-protocol coverage.
+
+The main overview figure has three panels: (A) High/Medium/Low normalized MAE curves, (B) Low-tier minus High-tier normalized MAE, and (C) tier-risk versus absolute-error Spearman correlation. Valid-case counts remain printed inside panels B and C and are retained in the audit CSV; there is no separate coverage panel.
+
+`overview/calibration_adjacent_tier_diagnostics` and the matching files under `by_task/` are supplementary two-panel diagnostics. They show Medium-tier minus High-tier normalized MAE and Low-tier minus Medium-tier normalized MAE without changing the main figure definition.
+
+The overview diagnostic uses a symmetric color range of -1.25 to 1.25 because it displays task-averaged differences. All by-task diagnostics use a shared -4 to 4 range so colors remain comparable across individual tasks. Exact values are always printed in the cells.
 
 - Traditional-best selects one of CatBoost, LightGBM, MLP, RF, or XGB for every task and protocol using the established paper rule: lowest OOD-test MAE, then lowest MAE standard deviation, highest R2, and model name.
 - BERT-best selects one of MatSciBERT, SciBERT, or SteelBERT with the same rule.
@@ -1023,7 +1168,7 @@ This package compares six method series on eight tasks with complete seven-proto
 - LLM-Prop and both TabPFN 2.5 Plus variants are shown separately.
 - GPT-5.4 uses its original semantic High, Medium, and Low confidence labels.
 
-Normalized MAE is the tier MAE divided by the overall MAE for the same task, protocol, and method. Confidence discrimination is Low-tier normalized MAE minus High-tier normalized MAE. Spearman correlation uses the shared tier-risk mapping High=1, Medium=2, Low=3 for every method.
+Normalized MAE is the tier MAE divided by the overall MAE for the same task, protocol, and method. The endpoint confidence discrimination is Low-tier normalized MAE minus High-tier normalized MAE. Supplementary adjacent-tier differences are Medium minus High and Low minus Medium. Spearman correlation uses the shared tier-risk mapping High=1, Medium=2, Low=3 for every method.
 
 Missing GPT tiers are not imputed. Curves use available tier cases, discrimination requires paired High and Low tiers, and correlation requires at least two distinct tiers. Exact counts are stored in `data/coverage_audit.csv`.
 
@@ -1147,6 +1292,10 @@ def build_gpt_calibration_figures(
     ]
     if int(gpt_coverage["complete_three_tiers"].sum()) != 39:
         raise ValueError("GPT complete three-tier case count changed.")
+    if int(gpt_coverage["has_high_medium_pair"].sum()) != 45:
+        raise ValueError("GPT paired High/Medium case count changed.")
+    if int(gpt_coverage["has_medium_low_pair"].sum()) != 47:
+        raise ValueError("GPT paired Medium/Low case count changed.")
     if int(gpt_coverage["has_high_low_pair"].sum()) != 40:
         raise ValueError("GPT paired High/Low case count changed.")
     tables["coverage_audit"] = _append_excluded_coverage(tables["coverage_audit"])
@@ -1220,7 +1369,16 @@ def build_gpt_calibration_figures(
         figure_paths.extend(_plot_main(tables, overview_dir, formats=formats, dpi=dpi))
         figure_paths.extend(_plot_by_protocol(tables, overview_dir, formats=formats, dpi=dpi))
         figure_paths.extend(_plot_by_method(tables, overview_dir, formats=formats, dpi=dpi))
+        figure_paths.extend(
+            _plot_adjacent_tier_diagnostics(
+                tables,
+                overview_dir,
+                formats=formats,
+                dpi=dpi,
+            )
+        )
         task_dirs: dict[str, str] = {}
+        task_adjacent_outputs: dict[str, str] = {}
         if include_task_appendix:
             task_paths, task_dirs = _plot_task_appendix(
                 tables["tier_detail"],
@@ -1229,6 +1387,13 @@ def build_gpt_calibration_figures(
                 dpi=dpi,
             )
             figure_paths.extend(task_paths)
+            adjacent_paths, task_adjacent_outputs = _plot_adjacent_tier_task_appendix(
+                tables["task_protocol_method_summary"],
+                by_task_dir,
+                formats=formats,
+                dpi=dpi,
+            )
+            figure_paths.extend(adjacent_paths)
         _write_readme(ready_dir / "README.md")
 
         protected_after = {
@@ -1248,7 +1413,9 @@ def build_gpt_calibration_figures(
             str(path.relative_to(ready_dir)): _validate_output_file(path, dpi)
             for path in figure_paths
         }
-        expected_logical = 3 + (len(COMMON_TASKS) if include_task_appendix else 0)
+        expected_logical = 4 + (
+            2 * len(COMMON_TASKS) if include_task_appendix else 0
+        )
         expected_files = expected_logical * len(formats)
         if len(figure_paths) != expected_files:
             raise ValueError(
@@ -1289,6 +1456,12 @@ def build_gpt_calibration_figures(
             "gpt_source_count_discovered": len(all_gpt_sources),
             "gpt_source_count_included": len(included_gpt_sources),
             "gpt_complete_three_tier_cases": int(gpt_coverage["complete_three_tiers"].sum()),
+            "gpt_high_medium_paired_cases": int(
+                gpt_coverage["has_high_medium_pair"].sum()
+            ),
+            "gpt_medium_low_paired_cases": int(
+                gpt_coverage["has_medium_low_pair"].sum()
+            ),
             "gpt_high_low_paired_cases": int(gpt_coverage["has_high_low_pair"].sum()),
             "summary_row_counts": observed_table_counts,
             "statistics": {
@@ -1296,6 +1469,14 @@ def build_gpt_calibration_figures(
                 "bootstrap_iterations": bootstrap_iterations,
                 "bootstrap_seed": bootstrap_seed,
                 "discrimination_definition": "Low normalized MAE - High normalized MAE",
+                "adjacent_tier_definitions": {
+                    "medium_minus_high": "Medium normalized MAE - High normalized MAE",
+                    "low_minus_medium": "Low normalized MAE - Medium normalized MAE",
+                },
+                "adjacent_heatmap_limits": {
+                    "overview": OVERVIEW_ADJACENT_HEATMAP_LIMIT,
+                    "by_task": TASK_ADJACENT_HEATMAP_LIMIT,
+                },
                 "tier_risk_mapping": TIER_RISK_SCORE,
                 "spearman_definition": "sample-level tier risk versus absolute error",
                 "missing_tier_policy": "retain missing; require paired High/Low for discrimination",
@@ -1305,6 +1486,7 @@ def build_gpt_calibration_figures(
             "logical_figure_count": expected_logical,
             "figure_output_count": len(figure_paths),
             "task_outputs": task_dirs,
+            "task_adjacent_outputs": task_adjacent_outputs,
             "protected_source_hashes": protected_before,
             "input_files": {
                 "prediction_inventory": {

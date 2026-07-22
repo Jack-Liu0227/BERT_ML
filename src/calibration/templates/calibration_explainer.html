@@ -1574,7 +1574,7 @@
             </div>
             <div class="layer-content" data-layer="evidence">
               <div class="layer-title">覆盖数字</div>
-              <p><span id="gptCoverageSentence">GPT 有 39/56 个完整三层案例、40/56 个 High/Low 可配对案例，以及 54/56 个有效 tier-Spearman 案例。</span> 每个缺失原因均记录在 coverage audit。</p>
+              <p><span id="gptCoverageSentence">GPT 有 39/56 个完整三层案例、45/56 个 High/Medium、47/56 个 Medium/Low、40/56 个 High/Low 可配对案例，以及 54/56 个有效 tier-Spearman 案例。</span> 每个缺失原因均记录在 coverage audit。</p>
             </div>
 
             <div class="tool">
@@ -1636,7 +1636,7 @@
           <div class="section-inner">
             <div class="section-kicker">08 / Results</div>
             <h2>最终结果应该怎样读</h2>
-            <p class="lead">先看 High-to-Low 曲线是否上升，再看每个协议的 Low-minus-High 热图，最后用 Spearman 和有效覆盖率判断趋势是否稳定、是否有足够数据。</p>
+            <p class="lead">先看 High-to-Low 曲线是否上升，再看每个协议的 Low-minus-High 热图，最后用 Spearman 和格内有效数判断趋势是否稳定、是否有足够数据。相邻层级差值放在独立诊断图中。</p>
 
             <div class="result-note">
               <strong>“按协议汇总”怎样得到：</strong>先在每个 task-protocol-method 内计算 tier normalized MAE，再对 8 个共同 task 做等权平均，不按各 task 的样本数加权。GPT 某个 tier 缺失时，该 tier 只平均具有有效值的 task，并在数据表中保留 observation count。
@@ -1646,7 +1646,9 @@
               <button type="button" data-figure="main" aria-selected="true">主结果图</button>
               <button type="button" data-figure="protocol" aria-selected="false">按协议汇总</button>
               <button type="button" data-figure="method" aria-selected="false">按方法汇总</button>
+              <button type="button" data-figure="adjacent" aria-selected="false">相邻层级诊断</button>
               <button type="button" data-figure="task" aria-selected="false">按任务对比</button>
+              <button type="button" data-figure="task-adjacent" aria-selected="false">逐任务相邻诊断</button>
             </div>
             <div class="task-figure-control" id="taskFigureControl">
               <label>选择任务<select id="resultTask"></select></label>
@@ -1655,7 +1657,7 @@
               <button type="button" id="openFigure" title="放大结果图">
                 <img id="resultFigure" src="assets/calibration_main.png" alt="GPT-integrated calibration 主结果图" />
               </button>
-              <p class="figure-caption" id="figureCaption">主图同时展示层级曲线、协议判别分数、Spearman 和有效覆盖率。</p>
+              <p class="figure-caption" id="figureCaption">主图由 A 层级曲线、B Low-minus-High 判别分数和 C Spearman 组成；B、C 格内保留有效数。</p>
             </div>
 
             <div class="result-note">
@@ -1697,7 +1699,7 @@
               <div class="verification-item"><strong id="verifyStatus">PASSED</strong><span>最终 full verification 状态</span></div>
               <div class="verification-item"><strong id="verifyUnits">1,650</strong><span>通过的完整运行单元</span></div>
               <div class="verification-item"><strong>55,386</strong><span>整合样本数，六方法各 9,231</span></div>
-              <div class="verification-item"><strong>33</strong><span>最终 GPT 图片文件，11 张逻辑图 x 3 格式</span></div>
+                <div class="verification-item"><strong>60</strong><span>最终 GPT 图片文件，20 张逻辑图 x 3 格式</span></div>
             </div>
 
             <div class="two-column">
@@ -1886,7 +1888,7 @@
 
         byId('gptDiscovered').textContent = integer(data.gpt.sources_discovered);
         byId('gptIncluded').textContent = integer(data.gpt.sources_included);
-        byId('gptCoverageSentence').textContent = `GPT 有 ${data.gpt.complete_three_tier_cases}/${data.gpt.case_total} 个完整三层案例、${data.gpt.high_low_paired_cases}/${data.gpt.case_total} 个 High/Low 可配对案例，以及 ${data.gpt.valid_spearman_cases}/${data.gpt.case_total} 个有效 tier-Spearman 案例。`;
+        byId('gptCoverageSentence').textContent = `GPT 有 ${data.gpt.complete_three_tier_cases}/${data.gpt.case_total} 个完整三层案例、${data.gpt.high_medium_paired_cases}/${data.gpt.case_total} 个 High/Medium、${data.gpt.medium_low_paired_cases}/${data.gpt.case_total} 个 Medium/Low、${data.gpt.high_low_paired_cases}/${data.gpt.case_total} 个 High/Low 可配对案例，以及 ${data.gpt.valid_spearman_cases}/${data.gpt.case_total} 个有效 tier-Spearman 案例。`;
 
         const calculate = () => {
           const yTrue = Number(byId('calcTrue').value);
@@ -1914,31 +1916,37 @@
         }).join('');
 
         const figures = {
-          main: { src: 'assets/calibration_main.png', alt: 'GPT-integrated calibration 主结果图', caption: '主图同时展示层级曲线、协议判别分数、Spearman 和有效覆盖率。' },
+          main: { src: 'assets/calibration_main.png', alt: 'GPT-integrated calibration 主结果图', caption: '主图由 A 层级曲线、B Low-minus-High 判别分数和 C Spearman 组成；B、C 格内保留有效数。' },
           protocol: { src: 'assets/calibration_by_protocol.png', alt: '按协议汇总的 calibration 图', caption: '逐协议比较六种方法的 High、Medium、Low 变化。' },
-          method: { src: 'assets/calibration_by_method.png', alt: '按方法汇总的 calibration 热图', caption: '比较方法与协议组合的判别分数和层级 Spearman。' }
+          method: { src: 'assets/calibration_by_method.png', alt: '按方法汇总的 calibration 热图', caption: '比较方法与协议组合的判别分数和层级 Spearman。' },
+          adjacent: { src: 'assets/calibration_adjacent_tier_diagnostics.png', alt: '相邻置信层级诊断热图', caption: '左图为 Medium-minus-High，右图为 Low-minus-Medium；每格显示差值和有效任务数，overview 色标为 ±1.25。' }
         };
         const taskFigureControl = byId('taskFigureControl');
         const resultTask = byId('resultTask');
         const taskFigureEntries = Object.entries(data.task_figures || {});
         resultTask.innerHTML = taskFigureEntries.map(([task]) => `<option value="${escapeHtml(task)}">${escapeHtml(task)}</option>`).join('');
 
+        let activeTaskFigure = 'task';
         const renderTaskFigure = () => {
           const task = resultTask.value;
-          const src = data.task_figures?.[task];
+          const isAdjacent = activeTaskFigure === 'task-adjacent';
+          const src = (isAdjacent ? data.task_adjacent_figures : data.task_figures)?.[task];
           if (!task || !src) return;
           byId('resultFigure').src = src;
-          byId('resultFigure').alt = `${task} calibration 按协议对比图`;
-          byId('figureCaption').textContent = `当前展示任务 ${task}：逐协议比较六种方法的 High、Medium、Low normalized MAE。`;
+          byId('resultFigure').alt = isAdjacent ? `${task} 相邻置信层级诊断图` : `${task} calibration 按协议对比图`;
+          byId('figureCaption').textContent = isAdjacent
+            ? `当前展示任务 ${task}：左图为 Medium-minus-High，右图为 Low-minus-Medium，逐协议比较六种方法；所有逐任务图统一使用 ±4 色标。`
+            : `当前展示任务 ${task}：逐协议比较六种方法的 High、Medium、Low normalized MAE。`;
         };
         resultTask.addEventListener('change', renderTaskFigure);
 
         document.querySelectorAll('[data-figure]').forEach((button) => {
           button.addEventListener('click', () => {
             const figureKey = button.dataset.figure;
-            const isTaskFigure = figureKey === 'task';
+            const isTaskFigure = figureKey === 'task' || figureKey === 'task-adjacent';
             taskFigureControl.classList.toggle('active', isTaskFigure);
             if (isTaskFigure) {
+              activeTaskFigure = figureKey;
               renderTaskFigure();
             } else {
               const figure = figures[figureKey];

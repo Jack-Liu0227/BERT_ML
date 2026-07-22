@@ -54,6 +54,34 @@ figure4:
   require_complete_training_size: true
   expected_run_count: 4510
   expected_ratio_row_count: 9020
+  expected_display_task_count: 8
+  exclude_tasks_from_display:
+    - HEA__hea__YS_MPa
+    - Steel__steel__YS_MPa
+  panel_a_drawio: output/training_size_ood/figures/sources/figure4_panel_a_source.drawio
+  sweep_column: training_fraction
+  representative_selection:
+    enabled: true
+    families:
+      - Traditional
+      - BERT
+    criterion: random_cv_mae
+    group_by:
+      - task_id
+      - training_fraction
+    tie_breakers:
+      - random_cv_mae_sd
+      - model
+    same_model_across_failure_axes: true
+  displayed_methods:
+    - Traditional-best
+    - BERT-best
+    - TabPFN Numeric
+    - TabPFN Text
+    - LLM-Prop
+  explainer:
+    enabled: true
+    output_dir: output/training_size_ood/explainer
   degradation_sources:
     - name: training_size_degradation
       path: output/training_size_ood/csv/degradation_ratio_by_repeat.csv

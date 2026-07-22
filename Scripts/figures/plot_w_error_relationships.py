@@ -12,8 +12,9 @@ import matplotlib
 matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt
-from matplotlib.colors import Normalize
+from matplotlib.colors import Normalize, to_rgba
 from matplotlib.lines import Line2D
+from matplotlib.patches import Rectangle
 import numpy as np
 import pandas as pd
 
@@ -24,6 +25,7 @@ if str(REPO_ROOT) not in sys.path:
 from Scripts.analysis import export_three_space_w_ood_report as three_space
 from Scripts.lib._raw_prediction_stats import read_prediction_csv, resolve_prediction_columns
 from src.data_processing.compute_wx_mixed_ot import compute_one_split
+from src.data_processing.yz_severity_audit import collapse_split_rows
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -67,6 +69,29 @@ METHOD_COLORS = {
     "SY-sgl": "#72b7b2",
     "SY-cls": "#54a24b",
 }
+NATURE_YZ_METHOD_COLORS = {
+    "RandCV": "#666666",
+    "Extra.": "#2F6DB0",
+    "LOCO": "#D62728",
+    "SX-sgl": "#F28E2B",
+    "SX-cls": "#C65D00",
+    "SY-sgl": "#2A9D8F",
+    "SY-cls": "#147D75",
+}
+EXCLUDED_YZ_TASKS = frozenset({"HEA-YS", "Steel-YS"})
+PURE_YZ_JOINT_HIGH_REGION = (8.0, 5.0)
+YZ_HIGH_SEVERITY_REGION_FACE = "#D7E3F0"
+YZ_HIGH_SEVERITY_REGION_EDGE = "#6B8097"
+YZ_TASK_ORDER = [
+    "Ti-UTS",
+    "Ti-El",
+    "Al-UTS",
+    "HEA-UTS",
+    "HEA-El",
+    "Steel-UTS",
+    "Steel-El",
+    "Matbench Steel-YS",
+]
 METHOD_ORDER = ["RandCV", "Extra.", "LOCO", "SX-sgl", "SX-cls", "SY-sgl", "SY-cls"]
 WX_MODES = ("wx_sample_score", "sliced_wx")
 HYBRID_METHOD_DIR_BY_SHORT = {
@@ -1293,28 +1318,100 @@ def ordered_methods(methods: Iterable[object]) -> list[str]:
     return sorted(method_text, key=lambda item: METHOD_ORDER.index(item) if item in METHOD_ORDER else 999)
 
 
-def build_yz_method_split_summary(w_table: pd.DataFrame, *, table_label: str) -> pd.DataFrame:
+def standard_ood_source_is_allowed(method_short: object, source_split_dir: object) -> bool:
+    method = normalize_standard_method(method_short)
+    path = str(source_split_dir).replace("\\", "/").lower()
+    required_markers = {
+        "LOCO": "loco_k5",
+        "RandCV": "random_cv_baseline",
+        "SX-sgl": "sparse_x_single_k5",
+        "SX-cls": "sparse_x_cluster_k5",
+        "SY-sgl": "sparse_y_single_k5",
+        "SY-cls": "sparse_y_cluster_k5",
+    }
+    if method in required_markers:
+        return required_markers[method] in path
+    if method == "Extra.":
+        return "target_extrapolation" in path or (
+            "strength_ood_extrapolation" in path and "hybrid_extrapolation" not in path
+        )
+    return False
+
+
+def select_canonical_split_rows(collapsed: pd.DataFrame, *, table_label: str) -> pd.DataFrame:
+    identity = ["task_key", "task_id", *CASE_COLUMNS, "method_short", "space", "fold_id"]
+    selected: list[pd.Series] = []
+    for key, group in collapsed.groupby(identity, dropna=False, sort=False):
+        canonical = group[group["is_canonical"].astype(bool)]
+        candidates = canonical if not canonical.empty else group
+        split_values = pd.to_numeric(candidates["split_w"], errors="coerce").dropna()
+        sample_counts = pd.to_numeric(candidates["sample_count"], errors="coerce").dropna()
+        if split_values.empty or sample_counts.empty:
+            continue
+        if not np.allclose(split_values.to_numpy(), split_values.iloc[0], atol=1e-10, rtol=1e-10):
+            label = ", ".join(f"{column}={value!r}" for column, value in zip(identity, key))
+            raise ValueError(f"{table_label} has conflicting canonical K5 split_w values for {label}")
+        if sample_counts.nunique() != 1:
+            label = ", ".join(f"{column}={value!r}" for column, value in zip(identity, key))
+            raise ValueError(f"{table_label} has conflicting canonical K5 test sizes for {label}")
+        selected.append(candidates.sort_values("source_split_dir", kind="stable").iloc[0])
+    return pd.DataFrame(selected).reset_index(drop=True)
+
+
+def build_yz_method_split_summary(
+    w_table: pd.DataFrame,
+    *,
+    table_label: str,
+    strict_k5: bool = False,
+) -> pd.DataFrame:
     if w_table.empty:
         return pd.DataFrame(columns=YZ_METHOD_SPLIT_COLUMNS)
-    required = ["task_key", "task_id", *CASE_COLUMNS, "method_short", "fold_id", "space", "split_w"]
+    required = [
+        "task_key",
+        "task_id",
+        *CASE_COLUMNS,
+        "method_short",
+        "fold_id",
+        "source_split_dir",
+        "space",
+        "split_w",
+    ]
     missing = [column for column in required if column not in w_table.columns]
     if missing:
         raise ValueError(f"{table_label} W table is missing Wy-Wz severity columns: {missing}")
     work = w_table.copy()
+    if "task_id" in work.columns:
+        work = work[~work["task_id"].astype(str).isin(EXCLUDED_YZ_TASKS)].copy()
     work["method_short"] = work["method_short"].map(normalize_standard_method)
     work = work[work["space"].isin(["Y-space", "Z-space"])].copy()
+    if strict_k5:
+        allowed = work.apply(
+            lambda row: standard_ood_source_is_allowed(row["method_short"], row["source_split_dir"]),
+            axis=1,
+        )
+        work = work[allowed].copy()
     if work.empty:
         return pd.DataFrame(columns=YZ_METHOD_SPLIT_COLUMNS)
     work["split_w"] = pd.to_numeric(work["split_w"], errors="coerce")
     work = work[work["split_w"].notna()].copy()
-    fold_cols = ["task_key", "task_id", *CASE_COLUMNS, "method_short", "space", "fold_id"]
-    fold_w = work.groupby(fold_cols, dropna=False, sort=False)["split_w"].mean().reset_index()
+    collapsed = collapse_split_rows(work)
+    fold_w = select_canonical_split_rows(collapsed, table_label=table_label)
+    if fold_w.empty:
+        return pd.DataFrame(columns=YZ_METHOD_SPLIT_COLUMNS)
+    fold_w["sample_count"] = pd.to_numeric(fold_w["sample_count"], errors="coerce")
+    fold_w = fold_w[fold_w["sample_count"].gt(0)].copy()
+    fold_w["weighted_split_w"] = fold_w["split_w"] * fold_w["sample_count"]
     group_cols = ["task_key", "task_id", *CASE_COLUMNS, "method_short", "space"]
     grouped = (
         fold_w.groupby(group_cols, dropna=False, sort=False)
-        .agg(split_w_mean=("split_w", "mean"), n_folds=("fold_id", "nunique"))
+        .agg(
+            weighted_split_w=("weighted_split_w", "sum"),
+            test_n=("sample_count", "sum"),
+            n_folds=("fold_id", "nunique"),
+        )
         .reset_index()
     )
+    grouped["split_w_mean"] = grouped["weighted_split_w"] / grouped["test_n"]
     pivot = grouped.pivot_table(
         index=["task_key", "task_id", *CASE_COLUMNS, "method_short"],
         columns="space",
@@ -1342,10 +1439,14 @@ def build_yz_method_split_summary(w_table: pd.DataFrame, *, table_label: str) ->
     return result[YZ_METHOD_SPLIT_COLUMNS].reset_index(drop=True)
 
 
-def build_standard_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
+def build_standard_yz_severity_summary(
+    w_table: pd.DataFrame, *, strict_k5: bool = True
+) -> pd.DataFrame:
     if w_table.empty:
         return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
-    result = build_yz_method_split_summary(w_table, table_label="Standard OOD")
+    result = build_yz_method_split_summary(
+        w_table, table_label="Standard OOD", strict_k5=strict_k5
+    )
     if result.empty:
         return pd.DataFrame(columns=STANDARD_YZ_SEVERITY_COLUMNS)
     random_base = result[result["method_short"].eq("RandCV")][["task_key", "Wy", "Wz"]].rename(
@@ -1368,7 +1469,7 @@ def build_standard_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_hybrid_yz_severity_summary(w_table: pd.DataFrame) -> pd.DataFrame:
-    return build_standard_yz_severity_summary(w_table)
+    return build_standard_yz_severity_summary(w_table, strict_k5=False)
 
 
 def build_hybrid_set_ab_yz_severity_summary(
@@ -1618,16 +1719,110 @@ def severity_axis_limits(values: pd.Series) -> tuple[float, float]:
     return max(lower, 1e-3), upper
 
 
+def filter_yz_severity_tasks(summary: pd.DataFrame) -> pd.DataFrame:
+    if summary.empty or "task_id" not in summary.columns:
+        return summary.copy()
+    result = summary[~summary["task_id"].astype(str).isin(EXCLUDED_YZ_TASKS)].copy()
+    result["_task_rank"] = result["task_id"].map({task: index for index, task in enumerate(YZ_TASK_ORDER)}).fillna(999)
+    if "method_short" in result.columns:
+        result["_method_rank"] = result["method_short"].map({method: index for index, method in enumerate(METHOD_ORDER)}).fillna(999)
+        result = result.sort_values(["_task_rank", "_method_rank", "task_id", "method_short"], kind="stable")
+        result = result.drop(columns=["_task_rank", "_method_rank"])
+    else:
+        result = result.sort_values(["_task_rank", "task_id"], kind="stable").drop(columns="_task_rank")
+    return result.reset_index(drop=True)
+
+
+def apply_nature_yz_rc() -> None:
+    plt.rcParams.update(
+        {
+            "font.family": "sans-serif",
+            "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans"],
+            "font.size": 8,
+            "axes.titlesize": 9,
+            "axes.labelsize": 8,
+            "axes.linewidth": 0.8,
+            "xtick.labelsize": 7,
+            "ytick.labelsize": 7,
+            "legend.fontsize": 7,
+            "pdf.fonttype": 42,
+            "ps.fonttype": 42,
+            "savefig.facecolor": "white",
+            "axes.facecolor": "white",
+        }
+    )
+
+
+def style_nature_yz_axis(ax: plt.Axes, *, xlabel: str, ylabel: str, title: str) -> None:
+    ax.set_xlabel(xlabel, labelpad=4)
+    ax.set_ylabel(ylabel, labelpad=4)
+    ax.set_title(title, loc="center", fontsize=11, fontweight="bold", pad=10)
+    ax.grid(False)
+    ax.spines["top"].set_visible(False)
+    ax.spines["right"].set_visible(False)
+    for side in ["left", "bottom"]:
+        ax.spines[side].set_color("#222222")
+        ax.spines[side].set_linewidth(1.05)
+    ax.tick_params(which="major", direction="out", length=4.0, width=0.9, colors="#222222", pad=3)
+    ax.tick_params(which="minor", direction="out", length=2.2, width=0.6, colors="#555555")
+
+
+def draw_yz_reference_lines(ax: plt.Axes) -> None:
+    line_style = (0, (3, 2))
+    ax.axvline(1.0, color="#8A8A8A", linewidth=0.9, linestyle=line_style, zorder=1)
+    ax.axhline(1.0, color="#8A8A8A", linewidth=0.9, linestyle=line_style, zorder=1)
+
+
+def draw_yz_high_severity_region(
+    ax: plt.Axes,
+    *,
+    ry_min: float,
+    rz_min: float,
+) -> Rectangle | None:
+    x_lower, x_upper = ax.get_xlim()
+    y_lower, y_upper = ax.get_ylim()
+    left = max(float(ry_min), float(x_lower))
+    bottom = max(float(rz_min), float(y_lower))
+    if left >= x_upper or bottom >= y_upper:
+        return None
+    region = Rectangle(
+        (left, bottom),
+        x_upper - left,
+        y_upper - bottom,
+        facecolor=to_rgba(YZ_HIGH_SEVERITY_REGION_FACE, 0.32),
+        edgecolor=YZ_HIGH_SEVERITY_REGION_EDGE,
+        linewidth=0.8,
+        zorder=1.5,
+        clip_on=True,
+    )
+    ax.add_patch(region)
+    return region
+
+
+def set_severity_ticks(ax: plt.Axes, x_values: pd.Series, y_values: pd.Series) -> None:
+    x_ticks = severity_multiplier_ticks(x_values)
+    y_ticks = severity_multiplier_ticks(y_values)
+    ax.set_xticks(x_ticks)
+    ax.set_yticks(y_ticks)
+    ax.set_xticklabels([f"{tick:g}" for tick in x_ticks])
+    ax.set_yticklabels([f"{tick:g}" for tick in y_ticks])
+    ax.set_xlim(*severity_axis_limits(x_values))
+    ax.set_ylim(*severity_axis_limits(y_values))
+
+
 def plot_standard_yz_severity_figures(
     summary: pd.DataFrame,
     output_dir: Path,
     formats: Iterable[str],
     dpi: int,
+    *,
+    scope_label: str = "Pure OOD",
 ) -> pd.DataFrame:
     manifest_rows: list[dict[str, object]] = []
     if summary.empty:
         return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
-    work = summary.copy()
+    apply_nature_yz_rc()
+    work = filter_yz_severity_tasks(summary)
     work["Ry"] = pd.to_numeric(work["Ry"], errors="coerce")
     work["Rz"] = pd.to_numeric(work["Rz"], errors="coerce")
     work = work[work["Ry"].gt(0) & work["Rz"].gt(0)].copy()
@@ -1638,17 +1833,17 @@ def plot_standard_yz_severity_figures(
         group = group.copy()
         group["_method_order"] = group["method_short"].map({method: index for index, method in enumerate(METHOD_ORDER)}).fillna(999)
         group = group.sort_values(["_method_order", "method_short"], kind="stable")
-        fig, ax = plt.subplots(figsize=(7.2, 5.4))
+        fig, ax = plt.subplots(figsize=(4.1, 3.2))
         for _, row in group.iterrows():
             method = clean_text(row["method_short"])
             ax.scatter(
                 row["Ry"],
                 row["Rz"],
-                s=90 if method == "RandCV" else 70,
-                color=METHOD_COLORS.get(method, "#333333"),
-                edgecolors="#333333" if method == "RandCV" else "#ffffff",
-                linewidths=1.0 if method == "RandCV" else 0.5,
-                alpha=0.86,
+                s=46 if method == "RandCV" else 38,
+                color=NATURE_YZ_METHOD_COLORS.get(method, "#333333"),
+                edgecolors="#222222" if method == "RandCV" else "#ffffff",
+                linewidths=0.75 if method == "RandCV" else 0.45,
+                alpha=0.92,
                 label=method,
                 zorder=3,
             )
@@ -1657,31 +1852,32 @@ def plot_standard_yz_severity_figures(
                 (row["Ry"], row["Rz"]),
                 xytext=(6, 5),
                 textcoords="offset points",
-                fontsize=8,
-                color="#333333",
+                fontsize=6.5,
+                color="#222222",
             )
         ax.set_xscale("log")
         ax.set_yscale("log")
-        x_ticks = severity_multiplier_ticks(group["Ry"])
-        y_ticks = severity_multiplier_ticks(group["Rz"])
-        ax.set_xticks(x_ticks)
-        ax.set_yticks(y_ticks)
-        ax.set_xticklabels([f"{tick:g}x" for tick in x_ticks])
-        ax.set_yticklabels([f"{tick:g}x" for tick in y_ticks])
-        ax.set_xlim(*severity_axis_limits(group["Ry"]))
-        ax.set_ylim(*severity_axis_limits(group["Rz"]))
-        ax.axvline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
-        ax.axhline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
-        ax.set_xlabel("R_y = Wy / Wy_random")
-        ax.set_ylabel("R_z = Wz / Wz_random")
-        ax.set_title(f"{task_id_text} pure OOD Wy-Wz severity map", loc="left", fontsize=13, fontweight="bold")
-        ax.grid(True, which="both", color="#e6e6e6", linewidth=0.7)
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
+        set_severity_ticks(ax, group["Ry"], group["Rz"])
+        draw_yz_reference_lines(ax)
+        style_nature_yz_axis(
+            ax,
+            xlabel=r"$R_y = W_y/W_y^{\mathrm{RandCV}}$",
+            ylabel=r"$R_z = W_z/W_z^{\mathrm{RandCV}}$",
+            title=f"{scope_label}: {task_id_text}",
+        )
         handles, labels = ax.get_legend_handles_labels()
         if handles:
-            ax.legend(handles, labels, loc="best", frameon=False, fontsize=8)
-        fig.tight_layout()
+            ax.legend(
+                handles,
+                labels,
+                loc="upper right",
+                frameon=False,
+                fontsize=6.5,
+                markerscale=0.82,
+                handletextpad=0.3,
+                labelspacing=0.25,
+            )
+        fig.tight_layout(pad=0.8)
         base = output_dir / "figures" / "yz_severity_map" / "by_task" / safe_filename(task_id_text) / "yz_severity_map"
         base.parent.mkdir(parents=True, exist_ok=True)
         for fmt in formats:
@@ -1705,11 +1901,19 @@ def plot_standard_yz_severity_figures(
 def task_marker_map(tasks: Iterable[object]) -> dict[str, str]:
     markers = ["o", "s", "^", "D", "P", "X", "v", "<", ">", "*", "h", "8"]
     task_text = [clean_text(task) or "unknown_task" for task in pd.Series(list(tasks)).dropna().unique()]
-    task_text = sorted(task_text)
+    rank = {task: index for index, task in enumerate(YZ_TASK_ORDER)}
+    task_text = sorted(task_text, key=lambda task: (rank.get(task, 999), task))
     return {task: markers[index % len(markers)] for index, task in enumerate(task_text)}
 
 
-def overview_label_rows(summary: pd.DataFrame, *, per_method: int = 2) -> pd.DataFrame:
+def row_major_legend_order(labels: list[str], ncol: int) -> list[int]:
+    """Reorder inputs so a column-filled Matplotlib legend reads row by row."""
+    if ncol <= 1 or len(labels) <= ncol:
+        return list(range(len(labels)))
+    return [index for column in range(ncol) for index in range(column, len(labels), ncol)]
+
+
+def overview_label_rows(summary: pd.DataFrame, *, per_method: int = 1, max_labels: int = 4) -> pd.DataFrame:
     if summary.empty:
         return summary.copy()
     work = summary.copy()
@@ -1734,7 +1938,10 @@ def overview_label_rows(summary: pd.DataFrame, *, per_method: int = 2) -> pd.Dat
         rows.extend([row for _, row in selected.iterrows()])
     if not rows:
         return work.iloc[0:0].copy()
-    return pd.DataFrame(rows).reset_index(drop=True)
+    result = pd.DataFrame(rows).drop_duplicates(subset=["task_id", "method_short"], keep="first")
+    result = result.assign(_score=result[["Ry", "Rz"]].max(axis=1))
+    result = result.sort_values("_score", ascending=False, kind="stable").head(max_labels)
+    return result.drop(columns="_score").reset_index(drop=True)
 
 
 CORE_YZ_PROTOCOLS = ("RandCV", "Extra.", "LOCO")
@@ -1768,11 +1975,14 @@ def plot_standard_yz_severity_overview_to_file(
     manifest_task_id: str,
     method_short: str,
     title: str,
+    baseline_label: str = "RandCV",
+    highlight_region: tuple[float, float] | None = None,
 ) -> pd.DataFrame:
     manifest_rows: list[dict[str, object]] = []
     if summary.empty:
         return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
-    work = summary.copy()
+    apply_nature_yz_rc()
+    work = filter_yz_severity_tasks(summary)
     work["Ry"] = pd.to_numeric(work["Ry"], errors="coerce")
     work["Rz"] = pd.to_numeric(work["Rz"], errors="coerce")
     work = work[work["Ry"].gt(0) & work["Rz"].gt(0)].copy()
@@ -1780,86 +1990,110 @@ def plot_standard_yz_severity_overview_to_file(
         return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
 
     marker_by_task = task_marker_map(work["task_id"])
-    fig, ax = plt.subplots(figsize=(10.5, 7.4))
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
     method_handles: dict[str, object] = {}
     task_handles: dict[str, object] = {}
     label_keys = {
         (clean_text(row["task_id"]) or "unknown_task", clean_text(row["method_short"]))
         for _, row in overview_label_rows(work).iterrows()
     }
+    x_limit_probe = severity_axis_limits(work["Ry"])[1]
+    y_limit_probe = severity_axis_limits(work["Rz"])[1]
     for _, row in work.iterrows():
         method = clean_text(row["method_short"])
         point_task_id = clean_text(row["task_id"]) or "unknown_task"
         marker = marker_by_task.get(point_task_id, "o")
-        color = METHOD_COLORS.get(method, "#333333")
+        color = NATURE_YZ_METHOD_COLORS.get(method, "#333333")
         point = ax.scatter(
             row["Ry"],
             row["Rz"],
-            s=74 if method == "RandCV" else 58,
+            s=46 if method == "RandCV" else 38,
             color=color,
             marker=marker,
-            alpha=0.78,
-            edgecolors="#333333" if method == "RandCV" else "#ffffff",
-            linewidths=0.8 if method == "RandCV" else 0.45,
+            alpha=0.9,
+            edgecolors="#222222" if method == "RandCV" else "#ffffff",
+            linewidths=0.75 if method == "RandCV" else 0.45,
             zorder=3,
         )
         method_handles.setdefault(method, point)
         task_handles.setdefault(
             point_task_id,
-            Line2D([0], [0], marker=marker, linestyle="None", color="#555555", markerfacecolor="#555555", label=point_task_id),
+            Line2D([0], [0], marker=marker, linestyle="None", color="#333333", markerfacecolor="#333333", markersize=5, label=point_task_id),
         )
         if (point_task_id, method) in label_keys:
+            near_right_edge = float(row["Ry"]) > x_limit_probe * 0.68
+            near_top_edge = float(row["Rz"]) > y_limit_probe * 0.78
             ax.annotate(
                 f"{point_task_id} {method}",
                 (row["Ry"], row["Rz"]),
-                xytext=(8, 8),
+                xytext=(-64 if near_right_edge else 8, -12 if near_top_edge else 8),
                 textcoords="offset points",
-                fontsize=7.5,
-                color="#333333",
-                arrowprops={"arrowstyle": "-", "color": "#777777", "linewidth": 0.5, "shrinkA": 0, "shrinkB": 3},
-                bbox={"boxstyle": "round,pad=0.16", "facecolor": "white", "edgecolor": "none", "alpha": 0.76},
+                fontsize=6.5,
+                color="#222222",
+                ha="right" if near_right_edge else "left",
+                va="top" if near_top_edge else "bottom",
+                arrowprops={"arrowstyle": "-", "color": "#777777", "linewidth": 0.45, "shrinkA": 0, "shrinkB": 3},
             )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    x_ticks = severity_multiplier_ticks(work["Ry"])
-    y_ticks = severity_multiplier_ticks(work["Rz"])
-    ax.set_xticks(x_ticks)
-    ax.set_yticks(y_ticks)
-    ax.set_xticklabels([f"{tick:g}x" for tick in x_ticks])
-    ax.set_yticklabels([f"{tick:g}x" for tick in y_ticks])
-    ax.set_xlim(*severity_axis_limits(work["Ry"]))
-    ax.set_ylim(*severity_axis_limits(work["Rz"]))
-    ax.axvline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
-    ax.axhline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
-    ax.set_xlabel("R_y = Wy / Wy_random")
-    ax.set_ylabel("R_z = Wz / Wz_random")
-    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
-    ax.grid(True, which="both", color="#e6e6e6", linewidth=0.7)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    set_severity_ticks(ax, work["Ry"], work["Rz"])
+    if highlight_region is not None:
+        draw_yz_high_severity_region(
+            ax,
+            ry_min=highlight_region[0],
+            rz_min=highlight_region[1],
+        )
+    draw_yz_reference_lines(ax)
+    style_nature_yz_axis(
+        ax,
+        xlabel=rf"$R_y = W_y/W_y^{{\mathrm{{{baseline_label}}}}}$",
+        ylabel=rf"$R_z = W_z/W_z^{{\mathrm{{{baseline_label}}}}}$",
+        title=title,
+    )
 
     ordered_method_labels = ordered_methods(method_handles.keys())
+    method_ncol = 2 if len(ordered_method_labels) > 4 else 1
     method_legend = ax.legend(
         [method_handles[label] for label in ordered_method_labels if label in method_handles],
         [label for label in ordered_method_labels if label in method_handles],
         loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
         frameon=False,
-        fontsize=8,
+        fontsize=6.4,
         title="Protocol",
+        title_fontsize=7,
+        ncol=method_ncol,
+        markerscale=0.78,
+        handletextpad=0.3,
+        labelspacing=0.26,
+        columnspacing=0.7,
+        borderaxespad=0.0,
     )
+    method_legend.get_title().set_fontweight("semibold")
     ax.add_artist(method_legend)
-    task_labels = sorted(task_handles)
-    ax.legend(
-        [task_handles[label] for label in task_labels],
-        task_labels,
-        loc="lower right",
+    task_rank = {task: index for index, task in enumerate(YZ_TASK_ORDER)}
+    task_labels = sorted(task_handles, key=lambda task: (task_rank.get(task, 999), task))
+    task_ncol = 2 if len(task_labels) > 4 else 1
+    task_legend_order = row_major_legend_order(task_labels, task_ncol)
+    task_legend = ax.legend(
+        [task_handles[task_labels[index]] for index in task_legend_order],
+        [task_labels[index] for index in task_legend_order],
+        loc="upper left",
+        bbox_to_anchor=(1.01, 0.52),
         frameon=False,
-        fontsize=7,
+        fontsize=6.2,
         title="Task",
-        ncol=2 if len(task_labels) > 6 else 1,
+        title_fontsize=7,
+        ncol=task_ncol,
+        markerscale=0.82,
+        handletextpad=0.25,
+        labelspacing=0.24,
+        columnspacing=0.65,
+        borderaxespad=0.0,
     )
-    fig.tight_layout(rect=(0, 0, 0.98, 1))
+    task_legend.get_title().set_fontweight("semibold")
+    fig.subplots_adjust(left=0.11, right=0.79, bottom=0.14, top=0.88)
 
     base = output_dir / "figures" / "yz_severity_map" / "overview" / figure_stem
     base.parent.mkdir(parents=True, exist_ok=True)
@@ -1896,7 +2130,8 @@ def plot_standard_yz_severity_overview(
         figure_group="yz_severity_map_overview",
         manifest_task_id="all_tasks",
         method_short="all_methods",
-        title="All-task pure OOD Wy-Wz severity map",
+        title="Pure OOD: Y-Z severity across tasks",
+        highlight_region=PURE_YZ_JOINT_HIGH_REGION,
     )
 
 
@@ -1915,7 +2150,27 @@ def plot_standard_yz_core_protocol_overview(
         figure_group="yz_severity_map_core_protocols",
         manifest_task_id="all_tasks_core_protocols",
         method_short="RandCV+Extra.+LOCO",
-        title="All-task pure OOD Wy-Wz severity map - core protocols",
+        title="Pure OOD: core protocols",
+        highlight_region=PURE_YZ_JOINT_HIGH_REGION,
+    )
+
+
+def plot_hybrid_yz_severity_overview(
+    summary: pd.DataFrame,
+    output_dir: Path,
+    formats: Iterable[str],
+    dpi: int,
+) -> pd.DataFrame:
+    return plot_standard_yz_severity_overview_to_file(
+        summary,
+        output_dir,
+        formats,
+        dpi,
+        figure_stem="yz_severity_map_all_tasks",
+        figure_group="hybrid_yz_severity_map_overview",
+        manifest_task_id="all_tasks_hybrid",
+        method_short="all_methods",
+        title="Hybrid OOD: Y-Z severity across tasks",
     )
 
 
@@ -1934,11 +2189,11 @@ def plot_hybrid_yz_core_protocol_overview(
         figure_group="hybrid_yz_severity_map_core_protocols",
         manifest_task_id="all_tasks_hybrid_core_protocols",
         method_short="RandCV+LOCO",
-        title="All-task hybrid Wy-Wz severity map - core protocols",
+        title="Hybrid OOD: core protocols",
     )
 
 
-def hybrid_set_ab_label_rows(summary: pd.DataFrame, *, per_method: int = 1, max_labels: int = 6) -> pd.DataFrame:
+def hybrid_set_ab_label_rows(summary: pd.DataFrame, *, per_method: int = 1, max_labels: int = 4) -> pd.DataFrame:
     if summary.empty:
         return summary.copy()
     work = summary.copy()
@@ -1986,12 +2241,13 @@ def plot_hybrid_set_ab_yz_overview_random80_baseline(
     figure_group: str = "hybrid_yz_severity_map_setA_setB_random80",
     manifest_task_id: str = "all_tasks_setA_setB",
     method_short: str = "all_methods",
-    title: str = "Hybrid SetA/SetB Wy-Wz severity map - 80% RandCV baseline",
+    title: str = "Hybrid OOD: Set A and Set B",
 ) -> pd.DataFrame:
     manifest_rows: list[dict[str, object]] = []
     if summary.empty:
         return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
-    work = summary.copy()
+    apply_nature_yz_rc()
+    work = filter_yz_severity_tasks(summary)
     work["Ry"] = pd.to_numeric(work["Ry"], errors="coerce")
     work["Rz"] = pd.to_numeric(work["Rz"], errors="coerce")
     work = work[work["Ry"].gt(0) & work["Rz"].gt(0)].copy()
@@ -1999,7 +2255,7 @@ def plot_hybrid_set_ab_yz_overview_random80_baseline(
         return pd.DataFrame(columns=FIGURE_MANIFEST_COLUMNS)
 
     set_markers = {"SetA": "o", "SetB": "^"}
-    fig, ax = plt.subplots(figsize=(10.5, 7.4))
+    fig, ax = plt.subplots(figsize=(7.2, 4.6))
     method_handles: dict[str, object] = {}
     label_rows = hybrid_set_ab_label_rows(work)
     label_ranks = {
@@ -2012,74 +2268,90 @@ def plot_hybrid_set_ab_yz_overview_random80_baseline(
         method = clean_text(row["method_short"])
         set_label = clean_text(row["set_label"]) or "Set"
         task_id = clean_text(row["task_id"]) or "unknown_task"
-        color = METHOD_COLORS.get(method, "#333333")
+        color = NATURE_YZ_METHOD_COLORS.get(method, "#333333")
         point = ax.scatter(
             row["Ry"],
             row["Rz"],
-            s=78 if method == "RandCV" else 60,
+            s=46 if method == "RandCV" else 38,
             color=color,
             marker=set_markers.get(set_label, "o"),
-            alpha=0.78,
-            edgecolors="#333333" if set_label == "SetB" or method == "RandCV" else "#ffffff",
-            linewidths=0.9 if set_label == "SetB" or method == "RandCV" else 0.45,
+            alpha=0.9,
+            edgecolors="#222222" if set_label == "SetB" or method == "RandCV" else "#ffffff",
+            linewidths=0.75 if set_label == "SetB" or method == "RandCV" else 0.45,
             zorder=3,
         )
         method_handles.setdefault(method, point)
         label_key = (task_id, method, set_label)
         if label_key in label_ranks:
             label_rank = label_ranks[label_key]
+            set_display = {"SetA": "Set A", "SetB": "Set B"}.get(set_label, set_label)
             near_right_edge = float(row["Ry"]) > x_limit_probe * 0.72
             near_top_edge = float(row["Rz"]) > y_limit_probe * 0.78
             x_offset = -88 if near_right_edge else 8
             y_offset = -16 - (label_rank % 3) * 8 if near_top_edge else 8 + (label_rank % 3) * 8
             ax.annotate(
-                f"{task_id} {method} {set_label}",
+                f"{task_id} {method} {set_display}",
                 (row["Ry"], row["Rz"]),
                 xytext=(x_offset, y_offset),
                 textcoords="offset points",
-                fontsize=7.3,
+                fontsize=6.5,
                 ha="right" if near_right_edge else "left",
                 va="top" if near_top_edge else "bottom",
-                color="#333333",
-                arrowprops={"arrowstyle": "-", "color": "#777777", "linewidth": 0.5, "shrinkA": 0, "shrinkB": 3},
-                bbox={"boxstyle": "round,pad=0.16", "facecolor": "white", "edgecolor": "none", "alpha": 0.76},
+                color="#222222",
+                arrowprops={"arrowstyle": "-", "color": "#777777", "linewidth": 0.45, "shrinkA": 0, "shrinkB": 3},
             )
 
     ax.set_xscale("log")
     ax.set_yscale("log")
-    x_ticks = severity_multiplier_ticks(work["Ry"])
-    y_ticks = severity_multiplier_ticks(work["Rz"])
-    ax.set_xticks(x_ticks)
-    ax.set_yticks(y_ticks)
-    ax.set_xticklabels([f"{tick:g}x" for tick in x_ticks])
-    ax.set_yticklabels([f"{tick:g}x" for tick in y_ticks])
-    ax.set_xlim(*severity_axis_limits(work["Ry"]))
-    ax.set_ylim(*severity_axis_limits(work["Rz"]))
-    ax.axvline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
-    ax.axhline(1.0, color="#999999", linewidth=0.8, linestyle="--", zorder=1)
-    ax.set_xlabel("R_y = Wy / Wy_random80")
-    ax.set_ylabel("R_z = Wz / Wz_random80")
-    ax.set_title(title, loc="left", fontsize=13, fontweight="bold")
-    ax.grid(True, which="both", color="#e6e6e6", linewidth=0.7)
-    ax.spines["top"].set_visible(False)
-    ax.spines["right"].set_visible(False)
+    set_severity_ticks(ax, work["Ry"], work["Rz"])
+    draw_yz_reference_lines(ax)
+    style_nature_yz_axis(
+        ax,
+        xlabel=r"$R_y = W_y/W_{y,\mathrm{RandCV},B}$",
+        ylabel=r"$R_z = W_z/W_{z,\mathrm{RandCV},B}$",
+        title=title,
+    )
 
     ordered_method_labels = ordered_methods(method_handles.keys())
+    method_ncol = 1
     method_legend = ax.legend(
         [method_handles[label] for label in ordered_method_labels if label in method_handles],
         [label for label in ordered_method_labels if label in method_handles],
         loc="upper left",
+        bbox_to_anchor=(1.01, 1.0),
         frameon=False,
-        fontsize=8,
+        fontsize=6.4,
         title="Protocol",
+        title_fontsize=7,
+        ncol=method_ncol,
+        markerscale=0.78,
+        handletextpad=0.3,
+        labelspacing=0.26,
+        columnspacing=0.7,
+        borderaxespad=0.0,
     )
+    method_legend.get_title().set_fontweight("semibold")
     ax.add_artist(method_legend)
     set_handles = [
-        Line2D([0], [0], marker=set_markers["SetA"], linestyle="None", color="#555555", markerfacecolor="#555555", label="SetA"),
-        Line2D([0], [0], marker=set_markers["SetB"], linestyle="None", color="#555555", markerfacecolor="#555555", label="SetB"),
+        Line2D([0], [0], marker=set_markers["SetA"], linestyle="None", color="#333333", markerfacecolor="#333333", markersize=5, label="Set A"),
+        Line2D([0], [0], marker=set_markers["SetB"], linestyle="None", color="#333333", markerfacecolor="#333333", markersize=5, label="Set B"),
     ]
-    ax.legend(set_handles, ["SetA", "SetB"], loc="lower right", frameon=False, fontsize=8, title="Set")
-    fig.tight_layout(rect=(0, 0, 0.98, 1))
+    subset_legend = ax.legend(
+        set_handles,
+        ["Set A", "Set B"],
+        loc="upper left",
+        bbox_to_anchor=(1.01, 0.46),
+        frameon=False,
+        fontsize=6.2,
+        title="Subset",
+        title_fontsize=7,
+        markerscale=0.82,
+        handletextpad=0.3,
+        labelspacing=0.25,
+        borderaxespad=0.0,
+    )
+    subset_legend.get_title().set_fontweight("semibold")
+    fig.subplots_adjust(left=0.11, right=0.82, bottom=0.14, top=0.88)
 
     base = output_dir / "figures" / "yz_severity_map" / "overview" / figure_stem
     base.parent.mkdir(parents=True, exist_ok=True)
@@ -2116,7 +2388,7 @@ def plot_hybrid_set_ab_yz_core_protocols_random80_baseline(
         figure_group="hybrid_yz_severity_map_setA_setB_random80_core_protocols",
         manifest_task_id="all_tasks_setA_setB_core_protocols",
         method_short="RandCV+LOCO",
-        title="Hybrid SetA/SetB Wy-Wz severity map - RandCV and LOCO",
+        title="Hybrid OOD: Set A and Set B, core protocols",
     )
 
 
@@ -2395,13 +2667,13 @@ def write_hybrid_yz_severity_outputs(
     formats: Iterable[str],
     dpi: int,
 ) -> pd.DataFrame:
-    yz_severity = build_hybrid_yz_severity_summary(w_table)
+    yz_severity = filter_yz_severity_tasks(build_hybrid_yz_severity_summary(w_table))
     yz_output_dir = output_dir / "yz_severity_map"
     write_csv(yz_severity, yz_output_dir / "csv" / "hybrid_yz_severity_summary.csv")
     figures = pd.concat(
         [
-            plot_standard_yz_severity_figures(yz_severity, yz_output_dir, formats, dpi),
-            plot_standard_yz_severity_overview(yz_severity, yz_output_dir, formats, dpi),
+            plot_standard_yz_severity_figures(yz_severity, yz_output_dir, formats, dpi, scope_label="Hybrid OOD"),
+            plot_hybrid_yz_severity_overview(yz_severity, yz_output_dir, formats, dpi),
             plot_hybrid_yz_core_protocol_overview(yz_severity, yz_output_dir, formats, dpi),
         ],
         ignore_index=True,
@@ -2417,7 +2689,7 @@ def write_standard_yz_severity_outputs(
     formats: Iterable[str],
     dpi: int,
 ) -> pd.DataFrame:
-    yz_severity = build_standard_yz_severity_summary(w_table)
+    yz_severity = filter_yz_severity_tasks(build_standard_yz_severity_summary(w_table))
     yz_output_dir = output_dir / "yz_severity_map"
     write_csv(yz_severity, yz_output_dir / "csv" / "ood_yz_severity_summary.csv")
     figures = pd.concat(
@@ -2442,7 +2714,9 @@ def write_hybrid_set_ab_yz_random80_outputs(
     dpi: int,
     random80_w_table: pd.DataFrame | None = None,
 ) -> pd.DataFrame:
-    yz_severity = build_hybrid_set_ab_yz_severity_summary(set_a_w_table, set_b_w_table, random80_w_table)
+    yz_severity = filter_yz_severity_tasks(
+        build_hybrid_set_ab_yz_severity_summary(set_a_w_table, set_b_w_table, random80_w_table)
+    )
     write_csv(yz_severity, yz_output_dir / "csv" / "hybrid_set_ab_yz_severity_summary.csv")
     figures = pd.concat(
         [

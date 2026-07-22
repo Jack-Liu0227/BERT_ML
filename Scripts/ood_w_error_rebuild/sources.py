@@ -26,7 +26,7 @@ ALLOWED_TABPFN_HYBRID_ROOTS = {
     "ood_hybrid_results_tabpfn-2.5-plus-numeric",
     "ood_hybrid_results_tabpfn-2.5-plus-text",
 }
-ALLOWED_TABPFN_OOD_METHOD_DIRS = {
+ALLOWED_OOD_METHOD_DIRS = {
     "loco_k5",
     "random_cv_baseline",
     "target_extrapolation",
@@ -35,6 +35,9 @@ ALLOWED_TABPFN_OOD_METHOD_DIRS = {
     "sparse_y_single_k5",
     "sparse_y_cluster_k5",
 }
+ALLOWED_TABPFN_OOD_METHOD_DIRS = ALLOWED_OOD_METHOD_DIRS
+FOLDED_K5_OOD_METHOD_DIRS = {"loco_k5", "random_cv_baseline"}
+EXPECTED_K5_FOLDS = {f"fold_{index}" for index in range(5)}
 
 
 @dataclass(frozen=True)
@@ -94,6 +97,47 @@ def is_allowed_tabpfn_source(source: "ResultSource") -> bool:
     if source.scope == "ood":
         return source.method_dir.lower() in ALLOWED_TABPFN_OOD_METHOD_DIRS
     return True
+
+
+def is_allowed_ood_source(source: "ResultSource") -> bool:
+    """Apply the canonical Pure OOD method allowlist to every model family."""
+
+    if not is_allowed_tabpfn_source(source):
+        return False
+    if source.scope != "ood":
+        return True
+    return source.method_dir.lower() in ALLOWED_OOD_METHOD_DIRS
+
+
+def validate_complete_k5_fold_groups(sources: list["ResultSource"]) -> None:
+    """Reject partial LOCO/RandCV groups instead of publishing incomplete K5 data."""
+
+    grouped: dict[tuple[object, ...], set[str]] = {}
+    for source in sources:
+        method_dir = source.method_dir.lower()
+        if source.scope != "ood" or method_dir not in FOLDED_K5_OOD_METHOD_DIRS:
+            continue
+        key = (
+            source.scope,
+            source.result_root,
+            source.task_key,
+            source.model,
+            source.source_kind,
+            method_dir,
+        )
+        grouped.setdefault(key, set()).add(source.fold_id)
+
+    failures: list[str] = []
+    for key, folds in grouped.items():
+        if folds == EXPECTED_K5_FOLDS:
+            continue
+        scope, result_root, task_key_value, model, source_kind, method_dir = key
+        failures.append(
+            f"scope={scope}, root={result_root}, task={task_key_value}, model={model}, "
+            f"source_kind={source_kind}, method={method_dir}, folds={sorted(folds)}"
+        )
+    if failures:
+        raise ValueError("incomplete K5 fold group: " + "; ".join(failures))
 
 
 def is_formal_prediction_file(path: Path) -> bool:
@@ -243,6 +287,16 @@ def _fewshot_scope_from_root_dir(root_dir: str) -> str:
     return "hybrid" if "hybrid_extrapolation" in root_dir.lower() else "ood"
 
 
+def _fewshot_ood_method_dir(root_dir: str, split_summary: dict[str, object]) -> str:
+    lower = root_dir.lower()
+    for method_dir in sorted(ALLOWED_OOD_METHOD_DIRS, key=len, reverse=True):
+        if method_dir in lower:
+            return method_dir
+    if "strength_ood_extrapolation" in lower and "hybrid_extrapolation" not in lower:
+        return "target_extrapolation"
+    return clean_text(split_summary.get("split_strategy"))
+
+
 def _fewshot_fold_id(prediction_file: Path) -> str:
     for parent in prediction_file.parents:
         if parent.name.lower().startswith("fold_"):
@@ -298,7 +352,11 @@ def make_fewshot_gpt54_source(root: Path, prediction_file: Path, *, scope: str) 
     if not train_file.exists() or not combined_test_file.exists():
         return None
     family, dataset, property_name = _fewshot_task_metadata(task_dir, split_summary)
-    method_dir = clean_text(split_summary.get("split_strategy")) or root_dir
+    method_dir = (
+        _fewshot_ood_method_dir(root_dir, split_summary)
+        if scope == "ood"
+        else clean_text(split_summary.get("split_strategy")) or root_dir
+    )
     method = normalize_method(method_dir, scope=scope)
     return ResultSource(
         scope=scope,
@@ -343,7 +401,7 @@ def discover_sources(
             source = make_source(scope, root, prediction_file)
             if source is None:
                 continue
-            if not is_allowed_tabpfn_source(source):
+            if not is_allowed_ood_source(source):
                 continue
             haystack = " ".join(
                 [
@@ -359,6 +417,7 @@ def discover_sources(
             sources.append(source)
             if limit is not None and len(sources) >= limit:
                 return sources
+    validate_complete_k5_fold_groups(sources)
     return sources
 
 
@@ -377,6 +436,8 @@ def discover_fewshot_gpt54_sources(
         source = make_fewshot_gpt54_source(root, prediction_file, scope=scope)
         if source is None:
             continue
+        if not is_allowed_ood_source(source):
+            continue
         haystack = " ".join(
             [
                 str(source.prediction_file),
@@ -391,6 +452,7 @@ def discover_fewshot_gpt54_sources(
         sources.append(source)
         if limit is not None and len(sources) >= limit:
             return sources
+    validate_complete_k5_fold_groups(sources)
     return sources
 
 

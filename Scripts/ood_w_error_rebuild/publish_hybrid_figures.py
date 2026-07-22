@@ -10,10 +10,20 @@ import pandas as pd
 
 from Scripts.analysis import export_three_space_w_ood_report as three_space
 from Scripts.figures import plot_w_error_relationships as plotter
+from src.data_processing.yz_severity_audit import classify_source
 
 from .common import REPO_ROOT, frame_join_ids, normalize_id, read_csv, write_csv, write_json
 
 DEFAULT_FULL_ROOT = REPO_ROOT / "output" / "w_error_relationship_full"
+DEFAULT_OOD_EMBEDDING_OVERRIDE_DIR = (
+    Path("D:/XJTU")
+    / "\u5df2\u5b8c\u6210\u8bba\u6587\u6570\u636e\u6c47\u603b"
+    / "Fewshot"
+    / "\u9884\u5904\u7406\u6c47\u603b\u6570\u636e"
+    / "_archive_cleanup_20260605"
+    / "OOD"
+    / "embedding_data"
+)
 DEFAULT_EMBEDDING_DATA_DIR = (
     Path("D:/XJTU")
     / "已完成论文数据汇总"
@@ -56,6 +66,59 @@ def clean_yz_severity_output(output_dir: Path) -> None:
     path = output_dir / "yz_severity_map"
     if path.exists():
         shutil.rmtree(path)
+
+
+def filter_standard_ood_sources(
+    samples: pd.DataFrame,
+    w_inventory: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    required = {"method", "source_split_dir"}
+    missing = sorted(required.difference(samples.columns))
+    if missing:
+        raise ValueError(f"Pure OOD samples are missing source filter columns: {missing}")
+
+    source_methods = samples[["method", "source_split_dir"]].drop_duplicates().copy()
+    source_methods["method_short"] = source_methods["method"].map(plotter.normalize_standard_method)
+    source_methods["allowed"] = source_methods.apply(
+        lambda row: plotter.standard_ood_source_is_allowed(
+            row["method_short"],
+            row["source_split_dir"],
+        ),
+        axis=1,
+    )
+    allowed_dirs = set(source_methods.loc[source_methods["allowed"], "source_split_dir"].astype(str))
+    filtered_samples = samples[samples["source_split_dir"].astype(str).isin(allowed_dirs)].copy()
+    filtered_inventory = w_inventory[
+        w_inventory["source_split_dir"].astype(str).isin(allowed_dirs)
+    ].copy()
+    return filtered_samples, filtered_inventory
+
+
+def select_canonical_standard_ood_sources(
+    samples: pd.DataFrame,
+    w_inventory: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    identity = [
+        column
+        for column in ["task_key", "method", "fold_id", "test_set"]
+        if column in samples.columns
+    ]
+    source_rows = samples[[*identity, "source_split_dir"]].drop_duplicates().copy()
+    source_rows["is_canonical"] = source_rows["source_split_dir"].map(
+        lambda value: bool(classify_source(value, None)["is_canonical"])
+    )
+
+    selected_dirs: set[str] = set()
+    for _, group in source_rows.groupby(identity, dropna=False, sort=False):
+        canonical = group[group["is_canonical"]]
+        candidates = canonical if not canonical.empty else group
+        selected_dirs.add(str(candidates.sort_values("source_split_dir", kind="stable").iloc[0]["source_split_dir"]))
+
+    selected_samples = samples[samples["source_split_dir"].astype(str).isin(selected_dirs)].copy()
+    selected_inventory = w_inventory[
+        w_inventory["source_split_dir"].astype(str).isin(selected_dirs)
+    ].copy()
+    return selected_samples, selected_inventory
 
 
 def property_to_target_col(value: object) -> str:
@@ -197,8 +260,23 @@ def yz_rows_for_source(
     return pd.concat(rows, ignore_index=True, sort=False)
 
 
-def yz_space_joined(samples: pd.DataFrame, w_inventory: pd.DataFrame, embedding_data_dir: Path) -> pd.DataFrame:
+def load_embedding_backgrounds(
+    embedding_data_dir: Path,
+    embedding_override_dir: Path | None = None,
+) -> dict[str, pd.DataFrame]:
     backgrounds = three_space.load_embedding_backgrounds(embedding_data_dir)
+    if embedding_override_dir is not None and embedding_override_dir.exists():
+        backgrounds.update(three_space.load_embedding_backgrounds(embedding_override_dir))
+    return backgrounds
+
+
+def yz_space_joined(
+    samples: pd.DataFrame,
+    w_inventory: pd.DataFrame,
+    embedding_data_dir: Path,
+    embedding_override_dir: Path | None = None,
+) -> pd.DataFrame:
+    backgrounds = load_embedding_backgrounds(embedding_data_dir, embedding_override_dir)
     inventory = inventory_by_source(w_inventory)
     yz_source_rows: list[pd.DataFrame] = []
     for key, group in samples.groupby(["source_split_dir", "test_set"], dropna=False, sort=False):
@@ -222,10 +300,15 @@ def yz_space_joined(samples: pd.DataFrame, w_inventory: pd.DataFrame, embedding_
     return merged
 
 
-def build_three_space_joined(samples: pd.DataFrame, w_inventory: pd.DataFrame, embedding_data_dir: Path) -> pd.DataFrame:
+def build_three_space_joined(
+    samples: pd.DataFrame,
+    w_inventory: pd.DataFrame,
+    embedding_data_dir: Path,
+    embedding_override_dir: Path | None = None,
+) -> pd.DataFrame:
     samples = ensure_plot_metadata(samples)
     x = x_space_joined(samples)
-    yz = yz_space_joined(samples, w_inventory, embedding_data_dir)
+    yz = yz_space_joined(samples, w_inventory, embedding_data_dir, embedding_override_dir)
     joined = pd.concat([x, yz], ignore_index=True, sort=False)
     for column in plotter.JOINED_OUTPUT_COLUMNS:
         if column not in joined.columns:
@@ -261,9 +344,15 @@ def build_and_write_figures(
     dpi: int,
     include_hybrid_yz_severity: bool,
     include_standard_yz_severity: bool = False,
+    embedding_override_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     clean_managed_figure_outputs(output_dir)
-    joined = build_three_space_joined(samples, w_inventory, embedding_data_dir)
+    joined = build_three_space_joined(
+        samples,
+        w_inventory,
+        embedding_data_dir,
+        embedding_override_dir,
+    )
     phase_wide = plotter.build_phase_diagram_samples_wide(joined.drop(columns=["__w_row_id"], errors="ignore"))
     figures = pd.concat(
         [
@@ -296,12 +385,15 @@ def read_subset_three_space_joined(
     subset: str,
     embedding_data_dir: Path,
     max_rows: int | None = None,
+    canonical_only: bool = False,
 ) -> pd.DataFrame:
     csv_dir = hybrid_csv_dir(full_root, subset)
     samples = read_csv(csv_dir / "w_error_samples_long.csv")
+    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    if canonical_only:
+        samples, w_inventory = select_canonical_standard_ood_sources(samples, w_inventory)
     if max_rows is not None:
         samples = samples.head(max_rows).copy()
-    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
     return build_three_space_joined(samples, w_inventory, embedding_data_dir)
 
 
@@ -313,18 +405,23 @@ def publish_ood(
     formats: list[str],
     dpi: int,
     max_rows: int | None = None,
+    embedding_override_dir: Path | None = DEFAULT_OOD_EMBEDDING_OVERRIDE_DIR,
 ) -> dict[str, object]:
     csv_dir = ood_csv_dir(full_root)
     samples = read_csv(csv_dir / "w_error_samples_long.csv")
+    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    source_rows_before_k5_filter = len(samples)
+    samples, w_inventory = filter_standard_ood_sources(samples, w_inventory)
+    source_rows_after_k5_filter = len(samples)
     if max_rows is not None:
         samples = samples.head(max_rows).copy()
-    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
     joined, _phase_wide, figures = build_and_write_figures(
         samples=samples,
         w_inventory=w_inventory,
         input_csv_dir=csv_dir,
         output_dir=output_dir,
         embedding_data_dir=embedding_data_dir,
+        embedding_override_dir=embedding_override_dir,
         formats=formats,
         dpi=dpi,
         include_hybrid_yz_severity=False,
@@ -334,11 +431,16 @@ def publish_ood(
         "status": "ok",
         "scope": "ood",
         "input_rows": int(len(samples)),
+        "source_rows_before_k5_filter": int(source_rows_before_k5_filter),
+        "source_rows_excluded_by_k5_filter": int(
+            source_rows_before_k5_filter - source_rows_after_k5_filter
+        ),
         "three_space_rows": int(len(joined)),
         "figures": int(len(figures)),
         "models": sorted(str(value) for value in joined["model"].dropna().unique()),
         "spaces": sorted(str(value) for value in joined["space"].dropna().unique()),
         "embedding_data_dir": str(embedding_data_dir),
+        "embedding_override_dir": str(embedding_override_dir) if embedding_override_dir else None,
     }
     write_json(audit, output_dir / "csv" / "publish_audit_summary.json")
     return audit
@@ -352,24 +454,41 @@ def publish_ood_yz_severity(
     formats: list[str],
     dpi: int,
     max_rows: int | None = None,
+    embedding_override_dir: Path | None = DEFAULT_OOD_EMBEDDING_OVERRIDE_DIR,
 ) -> dict[str, object]:
     clean_yz_severity_output(output_dir)
     csv_dir = ood_csv_dir(full_root)
     samples = read_csv(csv_dir / "w_error_samples_long.csv")
+    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    source_rows_before_k5_filter = len(samples)
+    samples, w_inventory = filter_standard_ood_sources(samples, w_inventory)
+    source_rows_after_k5_filter = len(samples)
+    samples, w_inventory = select_canonical_standard_ood_sources(samples, w_inventory)
+    canonical_source_rows = len(samples)
     if max_rows is not None:
         samples = samples.head(max_rows).copy()
-    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
-    joined = build_three_space_joined(samples, w_inventory, embedding_data_dir)
+    joined = build_three_space_joined(
+        samples,
+        w_inventory,
+        embedding_data_dir,
+        embedding_override_dir,
+    )
     figures = plotter.write_standard_yz_severity_outputs(joined, output_dir, formats, dpi)
     audit = {
         "status": "ok",
         "scope": "ood",
         "mode": "yz_severity_only",
         "input_rows": int(len(samples)),
+        "source_rows_before_k5_filter": int(source_rows_before_k5_filter),
+        "source_rows_excluded_by_k5_filter": int(
+            source_rows_before_k5_filter - source_rows_after_k5_filter
+        ),
+        "canonical_source_rows": int(canonical_source_rows),
         "three_space_rows": int(len(joined)),
         "yz_severity_figures": int(len(figures)),
         "spaces": sorted(str(value) for value in joined["space"].dropna().unique()),
         "embedding_data_dir": str(embedding_data_dir),
+        "embedding_override_dir": str(embedding_override_dir) if embedding_override_dir else None,
     }
     write_json(audit, output_dir / "yz_severity_map" / "csv" / "publish_yz_severity_audit_summary.json")
     return audit
@@ -457,6 +576,7 @@ def publish_hybrid_yz_severity(
         subset=subset,
         embedding_data_dir=embedding_data_dir,
         max_rows=max_rows,
+        canonical_only=True,
     )
     figures = plotter.write_hybrid_yz_severity_outputs(combined_joined, output_dir, formats, dpi)
     set_ab_figures = pd.DataFrame(columns=plotter.FIGURE_MANIFEST_COLUMNS)
@@ -466,12 +586,14 @@ def publish_hybrid_yz_severity(
             subset="test_extrapolation_high20",
             embedding_data_dir=embedding_data_dir,
             max_rows=max_rows,
+            canonical_only=True,
         )
         set_b_joined = read_subset_three_space_joined(
             full_root=full_root,
             subset="test_inner_ood",
             embedding_data_dir=embedding_data_dir,
             max_rows=max_rows,
+            canonical_only=True,
         )
         set_ab_figures = plotter.write_hybrid_set_ab_yz_random80_outputs(
             set_a_joined,
@@ -502,8 +624,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scope", choices=["ood", "hybrid"], default="hybrid")
     parser.add_argument("--full-root", type=Path, default=DEFAULT_FULL_ROOT)
     parser.add_argument("--output-root", type=Path, default=None)
-    parser.add_argument("--subset", choices=["combined"], default="combined")
+    parser.add_argument(
+        "--subset",
+        choices=["combined", "test_extrapolation_high20", "test_inner_ood"],
+        default="combined",
+    )
     parser.add_argument("--embedding-data-dir", type=Path, default=DEFAULT_EMBEDDING_DATA_DIR)
+    parser.add_argument(
+        "--ood-embedding-override-dir",
+        type=Path,
+        default=DEFAULT_OOD_EMBEDDING_OVERRIDE_DIR,
+        help="Optional Pure OOD embedding directory whose dataset files override the base directory.",
+    )
     parser.add_argument("--formats", nargs="+", default=["png", "pdf"], choices=["png", "pdf", "svg"])
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--max-rows", type=int, default=None)
@@ -522,6 +654,7 @@ def main() -> None:
                 formats=args.formats,
                 dpi=args.dpi,
                 max_rows=args.max_rows,
+                embedding_override_dir=args.ood_embedding_override_dir,
             )
         else:
             audit = publish_ood(
@@ -531,6 +664,7 @@ def main() -> None:
                 formats=args.formats,
                 dpi=args.dpi,
                 max_rows=args.max_rows,
+                embedding_override_dir=args.ood_embedding_override_dir,
             )
     else:
         if args.only_yz_severity:

@@ -179,10 +179,7 @@ def family_curve_summary(
     group_columns = ["model_family", "failure_axis", "training_fraction"]
     for keys, group in data.groupby(group_columns, dropna=False):
         point = _equal_task_mean(group)
-        draws = np.asarray(
-            [_hierarchical_mean_draw(group, rng) for _ in range(max(0, bootstrap_iterations))],
-            dtype=float,
-        )
+        draws = _hierarchical_mean_draws(group, rng, max(0, bootstrap_iterations))
         low, high = _percentile_interval(draws, point)
         rows.append(
             {
@@ -220,10 +217,7 @@ def sensitivity_summary(
     rows: list[dict[str, Any]] = []
     for keys, group in data.groupby(["model_family", "failure_axis"], dropna=False):
         point = _equal_task_sensitivity(group)
-        draws = np.asarray(
-            [_hierarchical_sensitivity_draw(group, rng) for _ in range(max(0, bootstrap_iterations))],
-            dtype=float,
-        )
+        draws = _hierarchical_sensitivity_draws(group, rng, max(0, bootstrap_iterations))
         low, high = _percentile_interval(draws, point)
         rows.append(
             {
@@ -231,6 +225,95 @@ def sensitivity_summary(
                 "failure_axis": keys[1],
                 "task_count": int(group["task_id"].nunique()),
                 "model_count": int(group[["task_id", "model"]].drop_duplicates().shape[0]),
+                "sensitivity": float(point),
+                "ci95_low": low,
+                "ci95_high": high,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def selected_method_curve_summary(
+    data: pd.DataFrame,
+    *,
+    bootstrap_iterations: int = 10_000,
+    random_seed: int = 20260707,
+) -> pd.DataFrame:
+    """Summarize curves after task/fraction representative-model selection."""
+    columns = [
+        "display_method",
+        "failure_axis",
+        "training_fraction",
+        "task_count",
+        "selected_model_count",
+        "mean_degradation_ratio",
+        "ci95_low",
+        "ci95_high",
+    ]
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    if "display_method" not in data.columns:
+        raise ValueError("Selected method summary requires display_method")
+
+    rng = np.random.default_rng(random_seed)
+    rows: list[dict[str, Any]] = []
+    group_columns = ["display_method", "failure_axis", "training_fraction"]
+    for keys, group in data.groupby(group_columns, dropna=False):
+        point = _equal_task_mean_selected(group)
+        draws = _hierarchical_selected_mean_draws(group, rng, max(0, bootstrap_iterations))
+        low, high = _percentile_interval(draws, point)
+        rows.append(
+            {
+                "display_method": keys[0],
+                "failure_axis": keys[1],
+                "training_fraction": float(keys[2]),
+                "task_count": int(group["task_id"].nunique()),
+                "selected_model_count": int(
+                    group[["task_id", "model"]].drop_duplicates().shape[0]
+                ),
+                "mean_degradation_ratio": float(point),
+                "ci95_low": low,
+                "ci95_high": high,
+            }
+        )
+    return pd.DataFrame(rows, columns=columns)
+
+
+def selected_method_sensitivity_summary(
+    data: pd.DataFrame,
+    *,
+    bootstrap_iterations: int = 10_000,
+    random_seed: int = 20260707,
+) -> pd.DataFrame:
+    """Summarize log-training-fraction sensitivity after model selection."""
+    columns = [
+        "display_method",
+        "failure_axis",
+        "task_count",
+        "selected_model_count",
+        "sensitivity",
+        "ci95_low",
+        "ci95_high",
+    ]
+    if data.empty:
+        return pd.DataFrame(columns=columns)
+    if "display_method" not in data.columns:
+        raise ValueError("Selected method sensitivity requires display_method")
+
+    rng = np.random.default_rng(random_seed)
+    rows: list[dict[str, Any]] = []
+    for keys, group in data.groupby(["display_method", "failure_axis"], dropna=False):
+        point = _equal_task_sensitivity_selected(group)
+        draws = _hierarchical_selected_sensitivity_draws(group, rng, max(0, bootstrap_iterations))
+        low, high = _percentile_interval(draws, point)
+        rows.append(
+            {
+                "display_method": keys[0],
+                "failure_axis": keys[1],
+                "task_count": int(group["task_id"].nunique()),
+                "selected_model_count": int(
+                    group[["task_id", "model"]].drop_duplicates().shape[0]
+                ),
                 "sensitivity": float(point),
                 "ci95_low": low,
                 "ci95_high": high,
@@ -376,6 +459,27 @@ def aggregate_experiment(
     }
 
 
+def _equal_task_mean_selected(group: pd.DataFrame) -> float:
+    task_values = (
+        group.groupby("task_id", dropna=False)["degradation_ratio"].mean()
+    )
+    return float(task_values.mean())
+
+
+def _equal_task_sensitivity_selected(group: pd.DataFrame) -> float:
+    values: list[float] = []
+    for _, task_group in group.groupby("task_id", dropna=False):
+        means = (
+            task_group.groupby("training_fraction", dropna=False)["degradation_ratio"]
+            .mean()
+            .reset_index()
+        )
+        sensitivity = _model_sensitivity(means)
+        if np.isfinite(sensitivity):
+            values.append(float(sensitivity))
+    return float(np.mean(values)) if values else float("nan")
+
+
 def _equal_task_mean(group: pd.DataFrame) -> float:
     model_means = (
         group.groupby(["task_id", "model"], dropna=False)["degradation_ratio"].mean().reset_index()
@@ -384,18 +488,135 @@ def _equal_task_mean(group: pd.DataFrame) -> float:
     return float(task_means.mean())
 
 
-def _hierarchical_mean_draw(group: pd.DataFrame, rng: np.random.Generator) -> float:
-    task_values: list[float] = []
-    tasks = group["task_id"].drop_duplicates().to_numpy()
-    for task_id in rng.choice(tasks, size=len(tasks), replace=True):
-        task_group = group[group["task_id"].eq(task_id)]
-        models = task_group["model"].drop_duplicates().to_numpy()
-        model_values: list[float] = []
-        for model in rng.choice(models, size=len(models), replace=True):
-            values = task_group[task_group["model"].eq(model)]["degradation_ratio"].to_numpy(dtype=float)
-            model_values.append(float(rng.choice(values, size=len(values), replace=True).mean()))
-        task_values.append(float(np.mean(model_values)))
-    return float(np.mean(task_values))
+def _hierarchical_mean_draws(
+    group: pd.DataFrame,
+    rng: np.random.Generator,
+    iterations: int,
+) -> np.ndarray:
+    if iterations <= 0:
+        return np.asarray([], dtype=float)
+    task_draws: list[np.ndarray] = []
+    for _, task_group in group.groupby("task_id", dropna=False):
+        model_draws: list[np.ndarray] = []
+        for _, model_group in task_group.groupby("model", dropna=False):
+            values = model_group["degradation_ratio"].to_numpy(dtype=float)
+            indices = rng.integers(0, len(values), size=(iterations, len(values)))
+            model_draws.append(values[indices].mean(axis=1))
+        model_matrix = np.column_stack(model_draws)
+        model_indices = rng.integers(
+            0,
+            model_matrix.shape[1],
+            size=(iterations, model_matrix.shape[1]),
+        )
+        task_draws.append(
+            np.take_along_axis(model_matrix, model_indices, axis=1).mean(axis=1)
+        )
+    return _resample_task_draws(task_draws, rng, iterations)
+
+
+def _hierarchical_selected_mean_draws(
+    group: pd.DataFrame,
+    rng: np.random.Generator,
+    iterations: int,
+) -> np.ndarray:
+    if iterations <= 0:
+        return np.asarray([], dtype=float)
+    task_draws: list[np.ndarray] = []
+    for _, task_group in group.groupby("task_id", dropna=False):
+        values = (
+            task_group.groupby("repeat_id", dropna=False)["degradation_ratio"]
+            .mean()
+            .to_numpy(dtype=float)
+        )
+        indices = rng.integers(0, len(values), size=(iterations, len(values)))
+        task_draws.append(values[indices].mean(axis=1))
+    return _resample_task_draws(task_draws, rng, iterations)
+
+
+def _hierarchical_sensitivity_draws(
+    group: pd.DataFrame,
+    rng: np.random.Generator,
+    iterations: int,
+) -> np.ndarray:
+    if iterations <= 0:
+        return np.asarray([], dtype=float)
+    task_draws: list[np.ndarray] = []
+    for _, task_group in group.groupby("task_id", dropna=False):
+        model_draws: list[np.ndarray] = []
+        for _, model_group in task_group.groupby("model", dropna=False):
+            sensitivity_draws = _bootstrap_sensitivity_draws(model_group, rng, iterations)
+            if sensitivity_draws.size:
+                model_draws.append(sensitivity_draws)
+        if not model_draws:
+            continue
+        model_matrix = np.column_stack(model_draws)
+        model_indices = rng.integers(
+            0,
+            model_matrix.shape[1],
+            size=(iterations, model_matrix.shape[1]),
+        )
+        task_draws.append(
+            np.take_along_axis(model_matrix, model_indices, axis=1).mean(axis=1)
+        )
+    return _resample_task_draws(task_draws, rng, iterations)
+
+
+def _hierarchical_selected_sensitivity_draws(
+    group: pd.DataFrame,
+    rng: np.random.Generator,
+    iterations: int,
+) -> np.ndarray:
+    if iterations <= 0:
+        return np.asarray([], dtype=float)
+    task_draws = [
+        draws
+        for _, task_group in group.groupby("task_id", dropna=False)
+        if (draws := _bootstrap_sensitivity_draws(task_group, rng, iterations)).size
+    ]
+    return _resample_task_draws(task_draws, rng, iterations)
+
+
+def _bootstrap_sensitivity_draws(
+    group: pd.DataFrame,
+    rng: np.random.Generator,
+    iterations: int,
+) -> np.ndarray:
+    fractions: list[float] = []
+    fraction_draws: list[np.ndarray] = []
+    for fraction, fraction_group in group.groupby("training_fraction"):
+        values = (
+            fraction_group.groupby("repeat_id", dropna=False)["degradation_ratio"]
+            .mean()
+            .to_numpy(dtype=float)
+        )
+        if not values.size or not np.isfinite(float(fraction)) or float(fraction) <= 0:
+            continue
+        indices = rng.integers(0, len(values), size=(iterations, len(values)))
+        fractions.append(float(fraction))
+        fraction_draws.append(values[indices].mean(axis=1))
+    if len(fractions) < 2:
+        return np.asarray([], dtype=float)
+    y = np.column_stack(fraction_draws)
+    x = np.log(np.asarray(fractions, dtype=float))
+    centered = x - x.mean()
+    denominator = float(np.sum(centered**2))
+    return -(y @ centered) / denominator
+
+
+def _resample_task_draws(
+    task_draws: list[np.ndarray],
+    rng: np.random.Generator,
+    iterations: int,
+) -> np.ndarray:
+    if not task_draws:
+        return np.asarray([], dtype=float)
+    task_matrix = np.column_stack(task_draws)
+    task_indices = rng.integers(
+        0,
+        task_matrix.shape[1],
+        size=(iterations, task_matrix.shape[1]),
+    )
+    return np.take_along_axis(task_matrix, task_indices, axis=1).mean(axis=1)
 
 
 def _equal_task_sensitivity(group: pd.DataFrame) -> float:
@@ -408,32 +629,6 @@ def _equal_task_sensitivity(group: pd.DataFrame) -> float:
     if frame.empty:
         return float("nan")
     return float(frame.groupby("task_id")["sensitivity"].mean().mean())
-
-
-def _hierarchical_sensitivity_draw(group: pd.DataFrame, rng: np.random.Generator) -> float:
-    tasks = group["task_id"].drop_duplicates().to_numpy()
-    task_values: list[float] = []
-    for task_id in rng.choice(tasks, size=len(tasks), replace=True):
-        task_group = group[group["task_id"].eq(task_id)]
-        models = task_group["model"].drop_duplicates().to_numpy()
-        model_values: list[float] = []
-        for model in rng.choice(models, size=len(models), replace=True):
-            model_group = task_group[task_group["model"].eq(model)]
-            fraction_rows: list[dict[str, float]] = []
-            for fraction, fraction_group in model_group.groupby("training_fraction"):
-                values = fraction_group["degradation_ratio"].to_numpy(dtype=float)
-                fraction_rows.append(
-                    {
-                        "training_fraction": float(fraction),
-                        "degradation_ratio": float(rng.choice(values, size=len(values), replace=True).mean()),
-                    }
-                )
-            value = _model_sensitivity(pd.DataFrame(fraction_rows))
-            if np.isfinite(value):
-                model_values.append(value)
-        if model_values:
-            task_values.append(float(np.mean(model_values)))
-    return float(np.mean(task_values)) if task_values else float("nan")
 
 
 def _model_sensitivity(group: pd.DataFrame) -> float:

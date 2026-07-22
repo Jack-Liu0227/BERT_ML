@@ -30,23 +30,37 @@ _ENGLISH_TEMPLATE_REPLACEMENTS = {
     '<html lang="zh-CN">': '<html lang="en">',
     (
         "GPT 有 ${data.gpt.complete_three_tier_cases}/${data.gpt.case_total} "
-        "个完整三层案例、${data.gpt.high_low_paired_cases}/${data.gpt.case_total} "
+        "个完整三层案例、${data.gpt.high_medium_paired_cases}/${data.gpt.case_total} "
+        "个 High/Medium、${data.gpt.medium_low_paired_cases}/${data.gpt.case_total} "
+        "个 Medium/Low、${data.gpt.high_low_paired_cases}/${data.gpt.case_total} "
         "个 High/Low 可配对案例，以及 ${data.gpt.valid_spearman_cases}/"
         "${data.gpt.case_total} 个有效 tier-Spearman 案例。"
     ): (
         "GPT has ${data.gpt.complete_three_tier_cases}/${data.gpt.case_total} "
-        "cases with all three tiers, ${data.gpt.high_low_paired_cases}/"
-        "${data.gpt.case_total} cases with paired High and Low tiers, and "
+        "cases with all three tiers, ${data.gpt.high_medium_paired_cases}/"
+        "${data.gpt.case_total} paired High/Medium cases, "
+        "${data.gpt.medium_low_paired_cases}/${data.gpt.case_total} paired "
+        "Medium/Low cases, ${data.gpt.high_low_paired_cases}/"
+        "${data.gpt.case_total} paired High/Low cases, and "
         "${data.gpt.valid_spearman_cases}/${data.gpt.case_total} cases with a "
         "valid tier-Spearman correlation."
     ),
     "${task} calibration 按协议对比图": "${task} calibration comparison by protocol",
+    "${task} 相邻置信层级诊断图": "${task} adjacent confidence-tier diagnostics",
     (
         "当前展示任务 ${task}：逐协议比较六种方法的 High、Medium、Low "
         "normalized MAE。"
     ): (
         "Task shown: ${task}. The figure compares High, Medium, and Low "
         "normalized MAE across all six methods within each protocol."
+    ),
+    (
+        "当前展示任务 ${task}：左图为 Medium-minus-High，右图为 "
+        "Low-minus-Medium，逐协议比较六种方法；所有逐任务图统一使用 ±4 色标。"
+    ): (
+        "Task shown: ${task}. The left panel is Medium-minus-High and the "
+        "right panel is Low-minus-Medium across six methods and seven protocols; "
+        "all task-level figures use a shared ±4 color range."
     ),
 }
 
@@ -77,6 +91,8 @@ FIGURE_SOURCES = {
     "calibration_by_protocol.png": FINAL_REL
     / "overview/calibration_by_protocol.png",
     "calibration_by_method.png": FINAL_REL / "overview/calibration_by_method.png",
+    "calibration_adjacent_tier_diagnostics.png": FINAL_REL
+    / "overview/calibration_adjacent_tier_diagnostics.png",
 }
 
 
@@ -310,6 +326,10 @@ def build_payload(project_root: str | Path) -> dict[str, Any]:
         raise ValueError("Calibration explainer requires a passed full verification report.")
     if frozen.get("snapshot_id") != manifest.get("snapshot_id"):
         raise ValueError("Frozen v1 and final figure snapshot IDs do not match.")
+    if int(manifest.get("logical_figure_count", 0)) != 20:
+        raise ValueError("Calibration explainer requires 20 logical GPT figures.")
+    if int(manifest.get("figure_output_count", 0)) != 60:
+        raise ValueError("Calibration explainer requires 60 GPT figure files.")
     if len(parameter_entries) != 110:
         raise ValueError(f"Expected 110 frozen parameter entries, found {len(parameter_entries)}.")
     if len(representatives) != 112:
@@ -347,6 +367,12 @@ def build_payload(project_root: str | Path) -> dict[str, Any]:
             "discrimination_mean",
             "discrimination_valid_count",
             "discrimination_total_count",
+            "medium_minus_high_mean",
+            "medium_minus_high_valid_count",
+            "medium_minus_high_total_count",
+            "low_minus_medium_mean",
+            "low_minus_medium_valid_count",
+            "low_minus_medium_total_count",
             "tier_spearman_mean",
             "tier_spearman_valid_count",
             "tier_spearman_total_count",
@@ -387,6 +413,8 @@ def build_payload(project_root: str | Path) -> dict[str, Any]:
             ),
             "integrated_sample_count": sample_total,
             "sample_count_by_method": sample_counts,
+            "logical_figure_count": int(manifest.get("logical_figure_count", 0)),
+            "figure_output_count": int(manifest.get("figure_output_count", 0)),
         },
         "parameters": {
             "entry_count": len(parameter_entries),
@@ -440,6 +468,12 @@ def build_payload(project_root: str | Path) -> dict[str, Any]:
             "complete_three_tier_cases": int(
                 manifest.get("gpt_complete_three_tier_cases", 0)
             ),
+            "high_medium_paired_cases": int(
+                manifest.get("gpt_high_medium_paired_cases", 0)
+            ),
+            "medium_low_paired_cases": int(
+                manifest.get("gpt_medium_low_paired_cases", 0)
+            ),
             "high_low_paired_cases": int(
                 manifest.get("gpt_high_low_paired_cases", 0)
             ),
@@ -454,6 +488,10 @@ def build_payload(project_root: str | Path) -> dict[str, Any]:
         "sample_examples": sample_examples,
         "task_figures": {
             task_id: f"assets/by_task/{task_id}.png"
+            for task_id in manifest.get("common_tasks", [])
+        },
+        "task_adjacent_figures": {
+            task_id: f"assets/by_task_adjacent/{task_id}.png"
             for task_id in manifest.get("common_tasks", [])
         },
         "evidence": [
@@ -515,7 +553,16 @@ def build_explainer(
         / "calibration_by_protocol.png"
         for task_id in payload["scope"]["common_tasks"]
     }
+    task_adjacent_figure_sources = {
+        task_id: root
+        / FINAL_REL
+        / "by_task"
+        / task_id
+        / "calibration_adjacent_tier_diagnostics.png"
+        for task_id in payload["scope"]["common_tasks"]
+    }
     source_paths.extend(task_figure_sources.values())
+    source_paths.extend(task_adjacent_figure_sources.values())
     _require_files(source_paths)
     source_hashes_before = {str(path.resolve()): _sha256(path) for path in source_paths}
 
@@ -526,6 +573,7 @@ def build_explainer(
         shutil.rmtree(ready)
     (ready / "assets").mkdir(parents=True)
     (ready / "assets" / "by_task").mkdir(parents=True)
+    (ready / "assets" / "by_task_adjacent").mkdir(parents=True)
     (ready / "data").mkdir(parents=True)
     (ready / "evidence").mkdir(parents=True)
 
@@ -539,6 +587,11 @@ def build_explainer(
         shutil.copy2(root / relative, ready / "assets" / name)
     for task_id, source_path in task_figure_sources.items():
         shutil.copy2(source_path, ready / "assets" / "by_task" / f"{task_id}.png")
+    for task_id, source_path in task_adjacent_figure_sources.items():
+        shutil.copy2(
+            source_path,
+            ready / "assets" / "by_task_adjacent" / f"{task_id}.png",
+        )
     for name, relative in EVIDENCE_SOURCES.items():
         shutil.copy2(root / relative, ready / "evidence" / name)
 
