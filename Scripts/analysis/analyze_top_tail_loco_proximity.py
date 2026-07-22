@@ -31,6 +31,11 @@ from src.data_processing.strength_ood_common import (  # noqa: E402
     HYBRID_OUTER_TEST_SET_NAME,
     select_numeric_x_space_columns,
 )
+from Scripts.analysis.export_three_space_w_ood_report import (  # noqa: E402
+    DEFAULT_EMBEDDING_DATA_DIR,
+    load_embedding_backgrounds,
+    nd_w1_sample_contributions,
+)
 
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -43,6 +48,9 @@ DEFAULT_OUTPUT_PARENT = Path("output") / "top_tail_loco_proximity"
 DEFAULT_OUTPUT_ROOT = Path("output") / "top_tail_loco_proximity" / "xspace"
 DEFAULT_CONFIG_PATH = Path("configs") / "analysis" / "top_tail_loco_proximity_outliers.yaml"
 DEFAULT_FINE_COMPARISON_ROOT = DEFAULT_OUTPUT_PARENT / "sensitivity_comparison_1pct"
+DEFAULT_SUPPLEMENTAL_EMBEDDING_DATA_DIR = (
+    DEFAULT_OUTPUT_PARENT / "wx_wz_tail_bin_distribution" / "zspace_embedding_data"
+)
 DEFAULT_THRESHOLDS = tuple(i / 100 for i in range(5, 100, 5))
 DEFAULT_JUMP_DETECTION_THRESHOLDS = tuple(i / 100 for i in range(5, 100, 5))
 CASE_COLUMNS = ["alloy_family", "dataset_name", "property"]
@@ -138,6 +146,16 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--thresholds", nargs="+", type=float, default=None)
     parser.add_argument("--random-state", type=int, default=42)
     parser.add_argument("--sliced-projections", type=int, default=None)
+    parser.add_argument(
+        "--embedding-data-dir",
+        default=str(DEFAULT_EMBEDDING_DATA_DIR),
+        help="Directory containing stable Z-space embedding coordinate files.",
+    )
+    parser.add_argument(
+        "--supplemental-embedding-data-dir",
+        default=str(DEFAULT_SUPPLEMENTAL_EMBEDDING_DATA_DIR),
+        help="Directory containing locally generated supplemental Z-space coordinates.",
+    )
     parser.add_argument("--case-contains", default=None)
     parser.add_argument("--include-matbench", action="store_true", help="Deprecated no-op; Matbench Steel is included by default.")
     parser.add_argument("--exclude-matbench", action="store_true", help="Exclude Matbench Steel and run only the 9 strength tasks.")
@@ -334,7 +352,10 @@ def select_top_tail(frame: pd.DataFrame, target_col: str, threshold: float) -> t
 
 
 def _numeric_feature_frame(frame: pd.DataFrame, feature_columns: list[str]) -> pd.DataFrame:
-    return pd.DataFrame({column: pd.to_numeric(frame.get(column), errors="coerce") for column in feature_columns})
+    return pd.DataFrame(
+        {column: pd.to_numeric(frame.get(column), errors="coerce") for column in feature_columns},
+        dtype=float,
+    )
 
 
 def _scaled_frames(
@@ -408,14 +429,37 @@ def _sliced_wasserstein_distance(
     feature_count = int(background_x.shape[1])
     if feature_count == 0:
         raise ValueError("X arrays must contain at least one feature")
-    if feature_count == 1:
-        return finite_float(wasserstein_distance(background_x[:, 0], top_x[:, 0]))
+    directions = _fixed_projection_directions(feature_count, projections, random_state)
+    return _sliced_wasserstein_distance_with_directions(background_x, top_x, directions)
 
+
+def _fixed_projection_directions(
+    feature_count: int,
+    projections: int,
+    random_state: int,
+) -> np.ndarray:
+    if int(feature_count) <= 0:
+        raise ValueError("feature_count must be positive")
+    if int(feature_count) == 1:
+        return np.ones((1, 1), dtype=float)
     rng = np.random.default_rng(random_state)
     projection_count = max(1, int(projections))
-    directions = rng.normal(size=(projection_count, feature_count))
+    directions = rng.normal(size=(projection_count, int(feature_count)))
     norms = np.linalg.norm(directions, axis=1, keepdims=True)
-    directions = directions / np.where(norms <= 1e-12, 1.0, norms)
+    return directions / np.where(norms <= 1e-12, 1.0, norms)
+
+
+def _sliced_wasserstein_distance_with_directions(
+    background_x: np.ndarray,
+    top_x: np.ndarray,
+    directions: np.ndarray,
+) -> float:
+    if background_x.ndim != 2 or top_x.ndim != 2:
+        raise ValueError("X arrays must be two-dimensional")
+    if background_x.shape[1] != top_x.shape[1]:
+        raise ValueError("background and top-tail X arrays must have the same feature count")
+    if directions.ndim != 2 or directions.shape[1] != background_x.shape[1]:
+        raise ValueError("projection directions must match the X feature count")
     distances = [
         wasserstein_distance(background_x @ direction, top_x @ direction)
         for direction in directions
@@ -525,29 +569,193 @@ def compute_space_shift_curve(
     sliced_projections: int,
     mode: str,
 ) -> pd.DataFrame:
-    feature_columns = fallback_feature_columns(frame, spec.target_col, spec.feature_columns)
+    work = frame.copy()
+    work[spec.target_col] = pd.to_numeric(work[spec.target_col], errors="coerce")
+    work = work.dropna(subset=[spec.target_col]).reset_index(drop=True)
+    if len(work) < 2:
+        raise ValueError("at least two rows with finite target values are required")
+
+    feature_columns = fallback_feature_columns(work, spec.target_col, spec.feature_columns)
+    if not feature_columns:
+        raise ValueError("feature_columns must not be empty")
+
+    imputer = SimpleImputer(strategy="constant", fill_value=0.0)
+    scaler = StandardScaler()
+    standardized_x = scaler.fit_transform(
+        imputer.fit_transform(_numeric_feature_frame(work, feature_columns))
+    )
+    target_values = work[spec.target_col].to_numpy(dtype=float)
+    target_mean = float(np.mean(target_values))
+    target_std = float(np.std(target_values, ddof=0))
+    if not math.isfinite(target_std) or target_std <= 1e-12:
+        target_std = 1.0
+    standardized_y = (target_values - target_mean) / target_std
+    directions = _fixed_projection_directions(
+        standardized_x.shape[1],
+        sliced_projections,
+        random_state,
+    )
+    ranked_indices = np.argsort(-target_values, kind="stable")
+
     rows: list[dict[str, Any]] = []
     for threshold in thresholds:
-        top_tail, background = select_top_tail(frame, spec.target_col, threshold)
+        top_count = threshold_count(len(work), threshold)
+        top_mask = np.zeros(len(work), dtype=bool)
+        top_mask[ranked_indices[:top_count]] = True
         rows.append(
-            compute_space_shift_metrics(
-                top_tail=top_tail,
-                background=background,
-                feature_columns=feature_columns,
-                target_col=spec.target_col,
-                metadata={
-                    "alloy_family": spec.alloy_family,
-                    "dataset_name": spec.dataset_name,
-                    "property": spec.property_name,
-                    "target_col": spec.target_col,
-                    "case_key": case_key(spec.alloy_family, spec.dataset_name, spec.property_name),
-                    "threshold": float(threshold),
-                    "threshold_pct": threshold_to_pct(threshold),
-                    "mode": mode,
-                },
-                sliced_projections=sliced_projections,
-                random_state=random_state,
+            {
+                "alloy_family": spec.alloy_family,
+                "dataset_name": spec.dataset_name,
+                "property": spec.property_name,
+                "target_col": spec.target_col,
+                "case_key": case_key(spec.alloy_family, spec.dataset_name, spec.property_name),
+                "threshold": float(threshold),
+                "threshold_pct": threshold_to_pct(threshold),
+                "mode": mode,
+                "source_mode": mode,
+                "top_tail_size": int(top_count),
+                "background_size": int(len(work) - top_count),
+                "feature_count": int(len(feature_columns)),
+                "reference_size": int(len(work)),
+                "Wx": _sliced_wasserstein_distance_with_directions(
+                    standardized_x[~top_mask],
+                    standardized_x[top_mask],
+                    directions,
+                ),
+                "Wy": finite_float(
+                    wasserstein_distance(
+                        standardized_y[~top_mask],
+                        standardized_y[top_mask],
+                    )
+                ),
+                "normalization_mode": "fixed_full_task",
+                "projection_mode": "fixed_per_task",
+                "x_distance_method": "sliced_wasserstein_fixed_standardized_x",
+                "x_sliced_projections": int(len(directions)),
+                "y_distance_method": "wasserstein_1_fixed_standardized_y",
+            }
+        )
+    return pd.DataFrame(rows)
+
+
+def _merge_fixed_zspace_coordinates(
+    frame: pd.DataFrame,
+    embedding_background: pd.DataFrame,
+    target_col: str,
+) -> pd.DataFrame:
+    work = frame.copy()
+    work[target_col] = pd.to_numeric(work[target_col], errors="coerce")
+    work["__z_merge_order__"] = np.arange(len(work), dtype=int)
+    background = embedding_background.copy()
+
+    if "__id_key__" in background.columns and "ID" in work.columns:
+        work["__id_key__"] = pd.to_numeric(work["ID"], errors="coerce")
+        coordinates = background[["__id_key__", "x", "y"]].copy()
+        merged = work.merge(coordinates, on="__id_key__", how="left", sort=False)
+    elif "__source_index_key__" in background.columns and "__source_index__" in work.columns:
+        work["__source_index_key__"] = pd.to_numeric(work["__source_index__"], errors="coerce")
+        coordinates = background[["__source_index_key__", "x", "y"]].copy()
+        merged = work.merge(coordinates, on="__source_index_key__", how="left", sort=False)
+    else:
+        raise ValueError("Z-space embedding does not share an ID or source-index key with the task data")
+
+    merged = merged.sort_values("__z_merge_order__", kind="stable")
+    merged["z_x"] = pd.to_numeric(merged["x"], errors="coerce")
+    merged["z_y"] = pd.to_numeric(merged["y"], errors="coerce")
+    merged = merged.dropna(subset=[target_col, "z_x", "z_y"]).reset_index(drop=True)
+    if len(merged) < 2:
+        raise ValueError("at least two task samples with finite target and Z-space coordinates are required")
+    return merged
+
+
+def load_top_tail_zspace_backgrounds(
+    embedding_data_dir: Path,
+    supplemental_embedding_data_dir: Path | None = None,
+) -> dict[str, pd.DataFrame]:
+    backgrounds = load_embedding_backgrounds(Path(embedding_data_dir))
+    supplemental_dir = Path(supplemental_embedding_data_dir) if supplemental_embedding_data_dir else None
+    supplemental_specs = {
+        "Steel__steel__YSMPa": ("Steel", "steel", "YS(MPa)"),
+    }
+    if supplemental_dir is not None:
+        for dataset_key, values in supplemental_specs.items():
+            path = supplemental_dir / f"{dataset_key}__all_panel_test_points.csv"
+            if not path.exists():
+                continue
+            frame = read_csv(path)
+            if not {"ID", "x", "y"}.issubset(frame.columns):
+                continue
+            current = frame[["ID", "x", "y"]].copy()
+            current["__id_key__"] = pd.to_numeric(current["ID"], errors="coerce")
+            current["x"] = pd.to_numeric(current["x"], errors="coerce")
+            current["y"] = pd.to_numeric(current["y"], errors="coerce")
+            current = (
+                current.dropna(subset=["__id_key__", "x", "y"])
+                .sort_values("__id_key__", kind="stable")
+                .drop_duplicates("__id_key__", keep="first")
             )
+            if not current.empty:
+                backgrounds[case_key(*values)] = current[["__id_key__", "x", "y"]].reset_index(drop=True)
+    return backgrounds
+
+
+def compute_z_space_shift_curve(
+    spec: TaskSpec,
+    frame: pd.DataFrame,
+    embedding_background: pd.DataFrame,
+    thresholds: list[float],
+    mode: str,
+) -> pd.DataFrame:
+    work = _merge_fixed_zspace_coordinates(frame, embedding_background, spec.target_col)
+    z_values = work[["z_x", "z_y"]].to_numpy(dtype=float)
+    z_means = np.mean(z_values, axis=0)
+    z_stds = np.std(z_values, axis=0, ddof=1)
+    if not np.isfinite(z_stds).all() or np.any(z_stds <= 1e-12):
+        raise ValueError("Z-space coordinates must have positive finite standard deviations")
+    standardized_z = (z_values - z_means) / z_stds
+
+    target_values = work[spec.target_col].to_numpy(dtype=float)
+    target_mean = float(np.mean(target_values))
+    target_std = float(np.std(target_values, ddof=0))
+    if not math.isfinite(target_std) or target_std <= 1e-12:
+        target_std = 1.0
+    standardized_y = (target_values - target_mean) / target_std
+    ranked_indices = np.argsort(-target_values, kind="stable")
+    rows: list[dict[str, Any]] = []
+    for threshold in thresholds:
+        top_count = threshold_count(len(work), threshold)
+        top_mask = np.zeros(len(work), dtype=bool)
+        top_mask[ranked_indices[:top_count]] = True
+        wz, _, _ = nd_w1_sample_contributions(
+            standardized_z[~top_mask],
+            standardized_z[top_mask],
+        )
+        rows.append(
+            {
+                "alloy_family": spec.alloy_family,
+                "dataset_name": spec.dataset_name,
+                "property": spec.property_name,
+                "target_col": spec.target_col,
+                "case_key": case_key(spec.alloy_family, spec.dataset_name, spec.property_name),
+                "threshold": float(threshold),
+                "threshold_pct": threshold_to_pct(threshold),
+                "mode": mode,
+                "source_mode": mode,
+                "top_tail_size": int(top_count),
+                "background_size": int(len(work) - top_count),
+                "reference_size": int(len(work)),
+                "Wy": finite_float(
+                    wasserstein_distance(
+                        standardized_y[~top_mask],
+                        standardized_y[top_mask],
+                    )
+                ),
+                "Wz": finite_float(wz),
+                "normalization_mode": "fixed_full_task_zspace",
+                "y_distance_method": "wasserstein_1_fixed_standardized_y",
+                "z_distance_method": "exact_2d_wasserstein_euclidean",
+                "z_standardization_ddof": 1,
+            }
         )
     return pd.DataFrame(rows)
 
@@ -1230,63 +1438,114 @@ def clear_existing_figures(output_dir: Path, formats: Iterable[str]) -> None:
 def plot_top20(cluster_top20: pd.DataFrame, output_root: Path, formats: list[str], dpi: int) -> None:
     figure_dir = output_root / "figures" / "top20_cluster_distance_by_task"
     clear_existing_figures(figure_dir, formats)
-    increase_color = "#d62728"
-    for _, group in cluster_top20.groupby(CASE_COLUMNS, sort=True):
-        ordered = group.sort_values("distance_rank", kind="stable")
-        label = f"{ordered.iloc[0]['alloy_family']} / {ordered.iloc[0]['property']}"
-        fig, ax = plt.subplots(figsize=(7.2, 4.6))
-        x = np.arange(len(ordered), dtype=float)
-        distances = pd.to_numeric(ordered["mean_distance_to_top_tail"], errors="coerce").to_numpy(dtype=float)
-        min_distance = float(np.nanmin(distances))
-        ax.plot(
-            x,
-            distances,
-            marker="o",
-            linewidth=1.8,
-            color="#4c78a8",
-        )
-        ax.margins(y=0.12)
-        ax.set_xticks(x)
-        ax.set_xticklabels([f"cluster {cluster_id}" for cluster_id in ordered["cluster_id"].astype(str)])
-        ax.set_xlabel("LOCO cluster ranked by proximity")
-        ax.set_ylabel("Mean standardized X-space Euclidean distance\nto cluster centroid")
-        ax.set_title(label)
-        ax.grid(axis="y", color="#e6e6e6")
-        ax.spines["top"].set_visible(False)
-        ax.spines["right"].set_visible(False)
-        if math.isfinite(min_distance) and min_distance > 1e-12:
-            increase_rates = ((distances - min_distance) / min_distance) * 100.0
-            for x_value, distance, increase_rate in zip(x, distances, increase_rates, strict=True):
-                if not (math.isfinite(distance) and math.isfinite(increase_rate)):
-                    continue
-                ax.annotate(
-                    f"{increase_rate:.1f}%",
-                    xy=(x_value, distance),
-                    xytext=(0, 9),
-                    textcoords="offset points",
-                    ha="center",
-                    va="bottom",
-                    color=increase_color,
-                    fontsize=9,
-                )
-            secondary = ax.secondary_yaxis(
-                "right",
-                functions=(
-                    lambda distance, baseline=min_distance: ((distance - baseline) / baseline) * 100.0,
-                    lambda increase, baseline=min_distance: baseline * (1.0 + (increase / 100.0)),
-                ),
+    nature_rc = {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans", "sans-serif"],
+        "font.size": 7,
+        "axes.linewidth": 0.8,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "legend.frameon": False,
+        "svg.fonttype": "none",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+    with plt.rc_context(nature_rc):
+        for _, group in cluster_top20.groupby(CASE_COLUMNS, sort=True):
+            ordered = group.sort_values("distance_rank", kind="stable").reset_index(drop=True)
+            distances = pd.to_numeric(
+                ordered["mean_distance_to_top_tail"], errors="coerce"
+            ).to_numpy(dtype=float)
+            min_distance = float(np.nanmin(distances))
+            relative_increase = (
+                ((distances - min_distance) / min_distance) * 100.0
+                if math.isfinite(min_distance) and min_distance > 1e-12
+                else np.full(len(distances), np.nan)
             )
-            secondary.set_ylabel("Increase relative to nearest cluster (%)")
-            secondary.spines["top"].set_visible(False)
-            secondary.spines["right"].set_color(increase_color)
-            secondary.tick_params(axis="y", colors=increase_color)
-            secondary.yaxis.label.set_color(increase_color)
-        out = figure_dir / case_key(
-            ordered.iloc[0]["alloy_family"],
-            ordered.iloc[0]["dataset_name"],
-            ordered.iloc[0]["property"],
-        )
-        save_figure(fig, out, formats, dpi)
+            y = np.arange(len(ordered), dtype=float)
+            colors = ["#0F4D92", *(["#B4C0E4"] * max(0, len(ordered) - 1))]
+
+            fig, ax = plt.subplots(figsize=(7.2, 4.4))
+            bars = ax.barh(
+                y,
+                distances,
+                height=0.62,
+                color=colors,
+                edgecolor="white",
+                linewidth=0.6,
+                zorder=2,
+            )
+            ax.invert_yaxis()
+            ax.set_yticks(y)
+            ax.set_yticklabels(
+                [f"Cluster {cluster_id}" for cluster_id in ordered["cluster_id"].astype(str)]
+            )
+            ax.set_xlabel("Mean Euclidean distance to cluster centroid")
+            ax.set_ylabel("LOCO cluster (ranked by proximity)")
+            ax.grid(axis="x", color="#D7D7D7", linewidth=0.5, alpha=0.55, zorder=0)
+            ax.tick_params(axis="both", direction="out", width=0.7, length=3, pad=2)
+
+            finite_max = float(np.nanmax(distances))
+            ax.set_xlim(0, finite_max * 1.28 if finite_max > 0 else 1.0)
+            for bar, distance, increase in zip(
+                bars, distances, relative_increase, strict=True
+            ):
+                if not math.isfinite(distance):
+                    continue
+                increase_label = (
+                    "0.0%"
+                    if math.isfinite(increase) and abs(increase) < 0.05
+                    else f"+{increase:.1f}%"
+                )
+                label_x = distance + finite_max * 0.025
+                label_y = bar.get_y() + bar.get_height() / 2
+                ax.text(
+                    label_x,
+                    label_y,
+                    f"{distance:.3f}",
+                    ha="left",
+                    va="center",
+                    fontsize=6.5,
+                    color="#272727",
+                )
+                ax.annotate(
+                    f"({increase_label})",
+                    xy=(label_x, label_y),
+                    xytext=(38, 0),
+                    textcoords="offset points",
+                    ha="left",
+                    va="center",
+                    fontsize=6.5,
+                    color="#B64342",
+                )
+
+            property_label = re.sub(
+                r"\s*\(([^)]+)\)", r" (\1)", str(ordered.iloc[0]["property"])
+            )
+            fig.suptitle(
+                f"{ordered.iloc[0]['alloy_family']} | {property_label}",
+                x=0.105,
+                y=0.98,
+                ha="left",
+                fontsize=9,
+                fontweight="bold",
+            )
+            fig.text(
+                0.98,
+                0.92,
+                "Percentages: increase relative to nearest cluster",
+                ha="right",
+                va="bottom",
+                fontsize=6.2,
+                color="#5A5A5A",
+            )
+            fig.subplots_adjust(left=0.22, right=0.98, bottom=0.15, top=0.88)
+            out = figure_dir / case_key(
+                ordered.iloc[0]["alloy_family"],
+                ordered.iloc[0]["dataset_name"],
+                ordered.iloc[0]["property"],
+            )
+            save_figure(fig, out, formats, dpi)
 
 
 def plot_space_shift_sweep(space_shift: pd.DataFrame, output_root: Path, formats: list[str], dpi: int) -> None:
@@ -1294,33 +1553,82 @@ def plot_space_shift_sweep(space_shift: pd.DataFrame, output_root: Path, formats
         return
     figure_dir = output_root / "figures" / "threshold_sweep_space_shift_by_task"
     clear_existing_figures(figure_dir, formats)
-    for _, group in space_shift.groupby(CASE_COLUMNS, sort=True):
-        work = group.sort_values("threshold_pct", kind="stable")
-        x = work["top_tail_size"].to_numpy(dtype=float)
-        labels = [f"{int(row.top_tail_size)}\n({int(row.threshold_pct)}%)" for row in work.itertuples()]
-        fig, axes = plt.subplots(2, 1, figsize=(7.4, 6.1), sharex=True)
-        series_specs = [
-            ("Wy", "#d95f02", "Y-space Wasserstein distance"),
-            ("Wx", "#4c78a8", "X-space sliced Wasserstein distance"),
-        ]
-        for ax, (column, color, ylabel) in zip(axes, series_specs):
-            ax.plot(x, work[column], marker="o", linewidth=1.8, color=color, label=column)
-            ax.set_ylabel(ylabel)
-            ax.legend(frameon=False, loc="upper left")
-            ax.grid(axis="y", color="#e6e6e6")
-            ax.spines["top"].set_visible(False)
-            ax.spines["right"].set_visible(False)
-        axes[-1].set_xticks(x)
-        axes[-1].set_xticklabels(labels)
-        axes[-1].set_xlabel("Top-tail sample count")
-        fig.suptitle(f"{work.iloc[0]['alloy_family']} / {work.iloc[0]['property']}", fontsize=12, fontweight="bold")
-        fig.tight_layout(rect=(0, 0, 1, 0.96))
-        out = figure_dir / case_key(
-            work.iloc[0]["alloy_family"],
-            work.iloc[0]["dataset_name"],
-            work.iloc[0]["property"],
-        )
-        save_figure(fig, out, formats, dpi)
+    nature_rc = {
+        "font.family": "sans-serif",
+        "font.sans-serif": ["Arial", "Helvetica", "DejaVu Sans", "sans-serif"],
+        "font.size": 7,
+        "axes.linewidth": 0.8,
+        "axes.spines.top": False,
+        "axes.spines.right": False,
+        "legend.frameon": False,
+        "svg.fonttype": "none",
+        "pdf.fonttype": 42,
+        "ps.fonttype": 42,
+    }
+    with plt.rc_context(nature_rc):
+        for _, group in space_shift.groupby(CASE_COLUMNS, sort=True):
+            work = group.sort_values("threshold_pct", kind="stable")
+            x = work["threshold_pct"].to_numpy(dtype=float)
+            fig, axes = plt.subplots(
+                2,
+                1,
+                figsize=(7.2, 5.2),
+                sharex=True,
+            )
+            series_specs = [
+                ("Wy", "#B45F5F", r"$W_y$"),
+                ("Wz", "#3F6F8F", r"$W_z$"),
+            ]
+            for panel_label, ax, (column, color, ylabel) in zip(
+                ("a", "b"), axes, series_specs, strict=True
+            ):
+                ax.plot(
+                    x,
+                    pd.to_numeric(work[column], errors="coerce"),
+                    color=color,
+                    linewidth=1.5,
+                    marker="o",
+                    markersize=4.0,
+                    markerfacecolor="white",
+                    markeredgecolor=color,
+                    markeredgewidth=0.9,
+                    zorder=3,
+                )
+                ax.set_ylabel(ylabel, labelpad=6)
+                ax.margins(y=0.12)
+                ax.grid(axis="y", color="#D7D7D7", linewidth=0.5, alpha=0.55, zorder=0)
+                ax.tick_params(axis="both", direction="out", width=0.7, length=3, pad=2)
+                ax.text(
+                    -0.095,
+                    1.02,
+                    panel_label,
+                    transform=ax.transAxes,
+                    fontsize=9,
+                    fontweight="bold",
+                    ha="left",
+                    va="bottom",
+                )
+            ticks = np.arange(5, 100, 5, dtype=float)
+            axes[-1].set_xlim(3, 97)
+            axes[-1].set_xticks(ticks)
+            axes[-1].set_xticklabels([f"{int(value)}%" for value in ticks], fontsize=6)
+            axes[-1].set_xlabel("Top-tail fraction (%)", labelpad=6)
+            property_label = re.sub(r"\s*\(([^)]+)\)", r" (\1)", str(work.iloc[0]["property"]))
+            fig.suptitle(
+                f"{work.iloc[0]['alloy_family']} | {property_label}",
+                x=0.075,
+                y=0.995,
+                ha="left",
+                fontsize=9,
+                fontweight="bold",
+            )
+            fig.subplots_adjust(left=0.14, right=0.985, bottom=0.13, top=0.91, hspace=0.18)
+            out = figure_dir / case_key(
+                work.iloc[0]["alloy_family"],
+                work.iloc[0]["dataset_name"],
+                work.iloc[0]["property"],
+            )
+            save_figure(fig, out, formats, dpi)
 
 
 def policy_output_suffix(config: dict[str, Any], policy_name: str) -> str:
@@ -1836,9 +2144,9 @@ def write_report(
         )
     ].copy()
     lines = [
-        "# X-space top-tail LOCO proximity report",
+        "# Top-tail LOCO centroid proximity and Y/Z-space shift report",
         "",
-        "This analysis uses X-space only: composition plus numeric processing features.",
+        "LOCO proximity is measured by centroid distance in standardized composition/processing feature space; threshold shifts are measured in Y- and Z-space.",
         "",
         f"This run used outlier policy `{outlier_policy}`.",
         "",
@@ -1864,15 +2172,17 @@ def write_report(
         "",
         "## Top-20 cluster proximity metric",
         "",
-        "- The top-20 figure y-axis is the mean standardized X-space Euclidean distance from top-tail samples to each LOCO cluster centroid.",
-        "- X-space means composition plus numeric processing features, with imputer/scaler fit on the remaining background samples only.",
+        "- The top-20 figure x-axis is the mean Euclidean distance from top-tail samples to each LOCO cluster centroid.",
+        "- The centroid distance is evaluated in standardized composition plus numeric-processing feature space, with imputer/scaler fit on the remaining background samples only.",
         "- Clusters are ordered by proximity rank, from nearest to farthest.",
+        "- Bar labels report the exact mean centroid distance and its percentage increase relative to the nearest cluster.",
         "",
         "## Threshold space-shift metrics",
         "",
-        "- `Wy`: Wasserstein-1 distance between background and top-tail target values after standardizing the target with background-only mean/std.",
-        "- `Wx`: sliced Wasserstein distance between background and top-tail X-space features after fitting imputer/scaler on background only.",
-        "- Figures are written to `figures/threshold_sweep_space_shift_by_task/` and use top-tail sample count on the x-axis.",
+        "- `Wy`: Wasserstein-1 distance between background and top-tail target values in one fixed full-task standardized Y-space.",
+        "- `Wz`: exact two-dimensional Wasserstein-1 distance between background and top-tail samples in the stable Z-space embedding.",
+        "- Z-space coordinates are standardized once per full task (sample standard deviation, ddof=1); across thresholds only top-tail/background membership changes.",
+        "- Figures are written to `figures/threshold_sweep_space_shift_by_task/` and use top-tail percentage (5% increments) on the x-axis.",
         "",
     ]
     if not focus.empty:
@@ -1941,9 +2251,26 @@ def run_analysis(args: argparse.Namespace) -> None:
             for action in ("drop", "flag")
         }
 
+    zspace_backgrounds = load_top_tail_zspace_backgrounds(
+        Path(args.embedding_data_dir),
+        Path(args.supplemental_embedding_data_dir)
+        if args.supplemental_embedding_data_dir
+        else None,
+    )
+    missing_zspace_cases = sorted(
+        case_key(spec.alloy_family, spec.dataset_name, spec.property_name)
+        for spec in specs
+        if case_key(spec.alloy_family, spec.dataset_name, spec.property_name)
+        not in zspace_backgrounds
+    )
+    if missing_zspace_cases:
+        raise FileNotFoundError(
+            "Missing stable Z-space embeddings for: " + ", ".join(missing_zspace_cases)
+        )
+
     cluster_parts: list[pd.DataFrame] = []
     sample_parts: list[pd.DataFrame] = []
-    space_shift_rows: list[dict[str, Any]] = []
+    space_shift_parts: list[pd.DataFrame] = []
     for spec in specs:
         current_key = case_key(spec.alloy_family, spec.dataset_name, spec.property_name)
         existing_payload = payload_by_case.get(current_key)
@@ -1958,33 +2285,32 @@ def run_analysis(args: argparse.Namespace) -> None:
             )
             cluster_parts.append(cluster_summary)
             sample_parts.append(sample_level)
-            space_shift_rows.append(
-                run_space_shift_threshold(
-                    spec,
-                    float(threshold),
-                    int(args.random_state),
-                    sliced_projections,
-                    existing_payload=existing_payload,
-                    task_frame=task_frames[current_key],
-                    policy=policy,
-                )
+        space_shift_parts.append(
+            compute_z_space_shift_curve(
+                spec=spec,
+                frame=task_frames[current_key],
+                embedding_background=zspace_backgrounds[current_key],
+                thresholds=[float(threshold) for threshold in thresholds],
+                mode="fixed_task_zspace_reference",
             )
+        )
 
     cluster_all = pd.concat(cluster_parts, ignore_index=True)
     sample_all = pd.concat(sample_parts, ignore_index=True)
-    space_shift = pd.DataFrame(space_shift_rows)
+    space_shift = pd.concat(space_shift_parts, ignore_index=True) if space_shift_parts else pd.DataFrame()
     sweep_summary = summarize_threshold(cluster_all)
     if not space_shift.empty:
         merge_cols = [*CASE_COLUMNS, "case_key", "threshold", "threshold_pct"]
         space_cols = [
             *merge_cols,
             "background_size",
-            "feature_count",
             "Wy",
-            "Wx",
-            "x_distance_method",
-            "x_sliced_projections",
             "y_distance_method",
+            "Wz",
+            "z_distance_method",
+            "z_standardization_ddof",
+            "normalization_mode",
+            "reference_size",
         ]
         sweep_summary = sweep_summary.merge(space_shift[space_cols], on=merge_cols, how="left")
     top20 = cluster_all[cluster_all["threshold_pct"].eq(20)].copy()
@@ -2022,6 +2348,12 @@ def run_analysis(args: argparse.Namespace) -> None:
             "thresholds": thresholds,
             "include_matbench": include_matbench,
             "sliced_projections": sliced_projections,
+            "space_shift_metric": "Wz",
+            "normalization_mode": "fixed_full_task_zspace",
+            "z_distance_method": "exact_2d_wasserstein_euclidean",
+            "z_standardization_ddof": 1,
+            "embedding_data_dir": str(Path(args.embedding_data_dir)),
+            "supplemental_embedding_data_dir": str(Path(args.supplemental_embedding_data_dir)),
             "output_root": str(output_root),
         },
         csv_dir / "analysis_config_resolved.json",
