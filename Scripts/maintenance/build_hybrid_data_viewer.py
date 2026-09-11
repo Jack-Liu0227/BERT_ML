@@ -8,6 +8,9 @@ from pathlib import Path
 import pandas as pd
 
 
+EXTERNAL_ANALYSES = {"w_error_relationship"}
+
+
 HTML_TEMPLATE = r'''<!doctype html>
 <html lang="zh-CN">
 <head>
@@ -158,7 +161,7 @@ HTML_TEMPLATE = r'''<!doctype html>
     const CATALOG=window.HYBRID_VIEWER_CATALOG;
     window.HYBRID_TABLE_DATA=window.HYBRID_TABLE_DATA||{};
     const byId=(id)=>document.getElementById(id); const text=(value)=>String(value??'');
-    const ANALYSES={panel_distribution:{label:'Panel distribution',color:'#38598a'},triptych:{label:'Triptych',color:'#c45b18'},yz_severity_map:{label:'YZ severity map',color:'#087f78'},w_error_relationship:{label:'W-error relationship',color:'#9d3d4e'}};
+    const ANALYSES={panel_distribution:{label:'Panel distribution',color:'#38598a'},triptych:{label:'Triptych',color:'#c45b18'},confidence_ood_relationship:{label:'Confidence–OOD relationship',color:'#5c6b35'},yz_severity_map:{label:'YZ severity map',color:'#087f78'},w_error_relationship:{label:'W-error relationship',color:'#9d3d4e',href:'w_error_relationship/'}};
     const LABELS={combined:'Combined',test_extrapolation_high20:'Extrapolation high20',test_inner_ood:'Inner OOD',main:'Main',subset_comparison:'Subset comparison',panel_distribution:'Panel distribution',overview:'Overview',set_ab_comparison:'Set A vs Set B (B-RandCV baseline)',by_task:'By task',by_task_model:'By task & model',by_method:'By method',phase_diagram:'Phase diagram',all_methods:'All methods',all_models:'All models','RandCV+LOCO':'Core protocols (RandCV + LOCO)'};
     const filterOrder=['scope','category','task_id','method','model','rep_space'];
     const state={analysis:CATALOG.entries[0].analysis,scope:'',category:'',task_id:'',method:'',model:'',rep_space:'',figure_id:'',page:1,pageSize:250,query:'',loadToken:0};
@@ -189,7 +192,7 @@ HTML_TEMPLATE = r'''<!doctype html>
       if(figures.some((item)=>item.figure_id===state.figure_id))byId('figureSelect').value=state.figure_id; else if(figures.length){state.figure_id=figures[0].figure_id;byId('figureSelect').value=state.figure_id;}
       renderEntry();
     }
-    function buildTabs(){const tabs=byId('categoryTabs');tabs.innerHTML='';Object.entries(ANALYSES).forEach(([key,meta])=>{if(!CATALOG.entries.some((item)=>item.analysis===key))return;const button=document.createElement('button');button.type='button';button.dataset.analysis=key;button.textContent=meta.label;button.style.setProperty('--cat-color',meta.color);button.setAttribute('aria-selected',String(key===state.analysis));button.onclick=()=>{state.analysis=key;state.figure_id='';document.documentElement.style.setProperty('--accent',meta.color);document.documentElement.style.setProperty('--accent-soft',meta.color+'1c');tabs.querySelectorAll('button').forEach((node)=>node.setAttribute('aria-selected',String(node===button)));cascade(0);};tabs.append(button);});}
+    function buildTabs(){const tabs=byId('categoryTabs');tabs.innerHTML='';Object.entries(ANALYSES).forEach(([key,meta])=>{if(!meta.href&&!CATALOG.entries.some((item)=>item.analysis===key))return;const button=document.createElement('button');button.type='button';button.dataset.analysis=key;button.textContent=meta.label;button.style.setProperty('--cat-color',meta.color);button.setAttribute('aria-selected',String(key===state.analysis));button.onclick=()=>{if(meta.href){window.location.href=meta.href;return;}state.analysis=key;state.figure_id='';document.documentElement.style.setProperty('--accent',meta.color);document.documentElement.style.setProperty('--accent-soft',meta.color+'1c');tabs.querySelectorAll('button').forEach((node)=>node.setAttribute('aria-selected',String(node===button)));cascade(0);};tabs.append(button);});}
     function currentEntry(){return CATALOG.entries.find((item)=>item.figure_id===state.figure_id);}
     function chips(entry){const values=[entry.scope,entry.category,entry.task_id,entry.method,entry.model,entry.rep_space].filter(Boolean);byId('metaChips').innerHTML='';values.forEach((value)=>{const span=document.createElement('span');span.className='chip';span.textContent=label(value);byId('metaChips').append(span);});}
     function renderEntry(){const entry=currentEntry();if(!entry)return;state.page=1;state.query='';byId('searchInput').value='';byId('figureTitle').textContent=entry.title;byId('figurePath').textContent=entry.figure_path;byId('figureImage').src=CATALOG.image_root+entry.figure_path;byId('figureImage').alt=entry.title;byId('imageLink').href=CATALOG.image_root+entry.figure_path;byId('csvLink').href=CATALOG.image_root+entry.csv_path;byId('tableTitle').textContent=entry.csv_path.split('/').pop();byId('csvPath').textContent=entry.csv_path;byId('pairPath').textContent=entry.csv_path;byId('pairRows').textContent=entry.row_count+' rows';byId('matchedRows').textContent=entry.row_count;chips(entry);loadTable(entry);}
@@ -218,6 +221,12 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--index-name", default="index.html")
     parser.add_argument("--image-root", default="../hybrid/")
     parser.add_argument("--skip-data", action="store_true")
+    parser.add_argument(
+        "--refresh-analysis",
+        action="append",
+        default=[],
+        help="Refresh data modules only for the named analysis while keeping the complete viewer catalog.",
+    )
     return parser.parse_args()
 
 
@@ -236,12 +245,31 @@ def main() -> None:
     data_dir.mkdir(parents=True, exist_ok=True)
 
     catalog = pd.read_csv(hybrid_root / "figure_catalog.csv", low_memory=False)
+    catalog = catalog[~catalog["analysis"].isin(EXTERNAL_ANALYSES)].copy()
     entries = catalog.where(pd.notna(catalog), "").to_dict(orient="records")
     for item in entries:
         item["data_script"] = f"{args.data_dir.replace('\\', '/')}/{item['figure_id']}.js"
 
+    if not args.skip_data and not args.refresh_analysis:
+        expected_modules = {f"{item['figure_id']}.js" for item in entries}
+        for module_path in data_dir.glob("hybrid_*.js"):
+            if module_path.name not in expected_modules:
+                module_path.unlink()
+        legacy_data_dir = viewer_root / "data"
+        if legacy_data_dir.resolve() != data_dir.resolve():
+            for module_path in legacy_data_dir.glob("hybrid_*.js"):
+                module_path.unlink()
+            legacy_catalog = legacy_data_dir / args.catalog_name
+            if legacy_catalog.exists():
+                legacy_catalog.unlink()
+
+    refreshed_entries = entries
+    if args.refresh_analysis:
+        selected = set(args.refresh_analysis)
+        refreshed_entries = [item for item in entries if item["analysis"] in selected]
+
     if not args.skip_data:
-        for index, item in enumerate(entries, start=1):
+        for index, item in enumerate(refreshed_entries, start=1):
             csv_path = hybrid_root / item["csv_path"]
             frame = pd.read_csv(csv_path, low_memory=False)
             payload = js_table_payload(frame)
@@ -251,7 +279,7 @@ def main() -> None:
                 encoding="utf-8",
             )
             if index % 250 == 0:
-                print(f"viewer data: {index}/{len(entries)}")
+                print(f"viewer data: {index}/{len(refreshed_entries)}")
 
     catalog_payload = {
         "image_root": args.image_root,
@@ -267,6 +295,7 @@ def main() -> None:
         "index": str(index_path),
         "catalog": str(catalog_path),
         "entries": len(entries),
+        "refreshed_entries": 0 if args.skip_data else len(refreshed_entries),
         "data_modules": len(list(data_dir.glob("hybrid_*.js"))),
         "data_size_bytes": sum(path.stat().st_size for path in data_dir.glob("*.js")),
     }

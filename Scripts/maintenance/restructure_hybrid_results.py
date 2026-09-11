@@ -11,6 +11,8 @@ import pandas as pd
 
 
 SCOPES = ("combined", "test_extrapolation_high20", "test_inner_ood")
+EXCLUDED_TASK_IDS = frozenset({"HEA-YS", "Steel-YS"})
+EXCLUDED_TASK_KEYS = frozenset({"HEA__hea__YS_MPa", "Steel__steel__YS_MPa"})
 
 PANEL_TASKS = {
     "ood_al_aluminum_utsmpa": "Al-UTS",
@@ -101,6 +103,20 @@ COLUMN_DESCRIPTIONS = {
     "Rz": ("Z-space severity relative to the plotted baseline.", "ratio"),
     "Wy": ("Y-space split severity.", "W"),
     "Wz": ("Z-space split severity.", "W"),
+    "Wx": ("GPT-5.4 X-space split severity, averaged across folds by test-set size.", "W"),
+    "RandCV_Wx": ("Task-specific RandCV baseline for X-space split severity.", "W"),
+    "Wx_RandCV_ratio": ("X-space split severity relative to the task RandCV baseline.", "ratio"),
+    "axis": ("Wasserstein space used to order the confidence figure.", ""),
+    "axis_ratio": ("Selected-space severity relative to the task RandCV baseline.", "ratio"),
+    "log2_axis_ratio": ("Base-2 logarithm of the selected-space severity ratio.", "log2 ratio"),
+    "axis_sort_order": ("Within-task order by selected-space severity ratio.", "rank"),
+    "high_count": ("Number of high-confidence predictions.", "samples"),
+    "medium_count": ("Number of medium-confidence predictions.", "samples"),
+    "low_count": ("Number of low-confidence predictions.", "samples"),
+    "high_pct": ("Fraction of predictions labelled high confidence.", "fraction"),
+    "medium_pct": ("Fraction of predictions labelled medium confidence.", "fraction"),
+    "low_pct": ("Fraction of predictions labelled low confidence.", "fraction"),
+    "outlier_rule": ("Relative-error filtering rule used by confidence error panels.", ""),
     "projection_x": ("Displayed t-SNE horizontal coordinate.", ""),
     "projection_y": ("Displayed t-SNE vertical coordinate.", ""),
     "plot_group_label": ("Panel highlight group shown in the figure.", ""),
@@ -153,6 +169,60 @@ def nonempty_text(value: Any) -> str:
 def canonical_task_id(value: Any) -> str:
     text = nonempty_text(value)
     return {"Matbench Steel-YS": "Matbench_Steel-YS"}.get(text, text)
+
+
+def canonical_hybrid_method(value: Any) -> str:
+    raw = nonempty_text(value)
+    key = raw.lower().replace("-", "_").replace(" ", "_").replace("+", "_")
+    key = key.replace("randcv", "random_cv")
+    for prefix in ("hybridhigh20_", "hybrid_high20_", "hybrid_extrapolation_"):
+        if key.startswith(prefix):
+            key = key[len(prefix) :]
+    mapping = {
+        "random_cv": "RandCV",
+        "random_cv_k5": "RandCV",
+        "loco": "LOCO",
+        "loco_k5": "LOCO",
+        "sparse_x_cluster": "SX-cls",
+        "sparsexcluster": "SX-cls",
+        "sx_cls": "SX-cls",
+        "sparse_x_single": "SX-sgl",
+        "sparsexsingle": "SX-sgl",
+        "sx_sgl": "SX-sgl",
+        "sparse_y_cluster": "SY-cls",
+        "sparseycluster": "SY-cls",
+        "sy_cls": "SY-cls",
+        "sparse_y_single": "SY-sgl",
+        "sparseysingle": "SY-sgl",
+        "sy_sgl": "SY-sgl",
+    }
+    return mapping.get(key, raw)
+
+
+def prepare_published_hybrid_frame(frame: pd.DataFrame) -> pd.DataFrame:
+    result = frame.copy()
+    if "task_id" in result.columns:
+        result["task_id"] = result["task_id"].map(canonical_task_id)
+        result = result[~result["task_id"].isin(EXCLUDED_TASK_IDS)].copy()
+    if "task" in result.columns:
+        result["task"] = result["task"].map(canonical_task_id)
+        result = result[~result["task"].isin(EXCLUDED_TASK_IDS)].copy()
+    if "task_key" in result.columns:
+        result = result[~result["task_key"].astype(str).isin(EXCLUDED_TASK_KEYS)].copy()
+    if "method_short" in result.columns:
+        result["method_short"] = result["method_short"].map(canonical_hybrid_method)
+    if "method" in result.columns:
+        result["method"] = result["method"].map(canonical_hybrid_method)
+    for column in result.select_dtypes(include=["object", "string"]).columns:
+        values = result[column].astype("string")
+        values = values.str.replace(
+            "hybrid_extrapolation_random_cv_k5",
+            "hybrid_extrapolation_random_cv",
+            regex=False,
+        )
+        values = values.mask(values.str.lower().eq("random_cv_k5"), "RandCV")
+        result[column] = values
+    return result.reset_index(drop=True)
 
 
 def entry(
@@ -343,18 +413,28 @@ def manifest_relative_figure(value: str) -> Path:
     path = PureWindowsPath(str(value))
     parts = list(path.parts)
     lowered = [part.lower() for part in parts]
-    try:
-        index = lowered.index("figures")
-    except ValueError as exc:
-        raise ValueError(f"Manifest path has no figures segment: {value}") from exc
+    indices = [index for index, part in enumerate(lowered) if part == "figures"]
+    if not indices:
+        raise ValueError(f"Manifest path has no figures segment: {value}")
+    # The staging root itself may live below a parent directory named "Figures".
+    # The final occurrence is the managed figure directory inside the W-error result.
+    index = indices[-1]
     return Path(*parts[index + 1 :])
 
 
-def compact_w_error(source: Path, output: Path, catalog: list[dict[str, Any]]) -> None:
+def compact_w_error(
+    source: Path,
+    output: Path,
+    catalog: list[dict[str, Any]],
+    *,
+    scope_roots: dict[str, Path] | None = None,
+) -> None:
     root = source / "w_error_relationship"
     for scope in SCOPES:
-        scope_root = root / scope
-        manifest = pd.read_csv(scope_root / "csv" / "figure_manifest.csv", low_memory=False)
+        scope_root = Path(scope_roots[scope]) if scope_roots and scope in scope_roots else root / scope
+        manifest = prepare_published_hybrid_frame(
+            pd.read_csv(scope_root / "csv" / "figure_manifest.csv", low_memory=False)
+        )
         manifest = manifest[
             manifest["format"].astype(str).str.lower().eq("png")
             & manifest["figure_group"].astype(str).isin(["by_task_model", "by_method", "phase_diagram"])
@@ -398,6 +478,7 @@ def compact_w_error(source: Path, output: Path, catalog: list[dict[str, Any]]) -
         sample_header = pd.read_csv(samples_path, nrows=0).columns.tolist()
         sample_columns = [column for column in SCATTER_COLUMNS if column in sample_header]
         samples = pd.read_csv(samples_path, usecols=sample_columns, low_memory=False)
+        samples = prepare_published_hybrid_frame(samples)
         samples["task_id"] = samples["task_id"].astype(str)
         samples["model"] = samples["model"].astype(str)
         samples["method_short"] = samples["method_short"].astype(str)
@@ -457,6 +538,7 @@ def compact_w_error(source: Path, output: Path, catalog: list[dict[str, Any]]) -
         phase_header = pd.read_csv(phase_path, nrows=0).columns.tolist()
         phase_columns = [column for column in [*PHASE_META_COLUMNS, "X_space_w", "Y_space_w", "Z_space_w"] if column in phase_header]
         phase = pd.read_csv(phase_path, usecols=phase_columns, low_memory=False)
+        phase = prepare_published_hybrid_frame(phase)
         phase["task_id"] = phase["task_id"].astype(str)
         phase["method_short"] = phase["method_short"].astype(str)
         for (task_id, method), group_frame in phase.groupby(["task_id", "method_short"], dropna=False, sort=False):
@@ -498,7 +580,9 @@ def compact_w_error(source: Path, output: Path, catalog: list[dict[str, Any]]) -
 
         summary_out = output / "w_error_relationship" / scope / "csv" / "summary"
         for filename in ("w_error_correlations.csv", "w_error_join_coverage.csv", "prediction_source_inventory.csv"):
-            frame = pd.read_csv(scope_root / "csv" / filename, low_memory=False)
+            frame = prepare_published_hybrid_frame(
+                pd.read_csv(scope_root / "csv" / filename, low_memory=False)
+            )
             if filename == "prediction_source_inventory.csv":
                 frame = frame.drop(columns=[column for column in ("prediction_file",) if column in frame.columns])
             write_csv(frame, summary_out / filename)
@@ -631,7 +715,8 @@ def main() -> None:
     compact_panel_distribution(source, output, catalog)
     compact_triptych(source, output, catalog)
     compact_yz_severity(source, output, catalog)
-    compact_w_error(source, output, catalog)
+    # W-error is maintained as an independent compressed-data explorer and is
+    # intentionally excluded from the static PNG/CSV catalog.
     write_catalog(catalog, output)
     result = validate(output)
     print(json.dumps(result, ensure_ascii=False, indent=2))

@@ -1183,7 +1183,11 @@ def load_embedding_backgrounds(embedding_data_dir: Path) -> dict[str, pd.DataFra
         frame = read_csv(path)
         if not {"x", "y"}.issubset(frame.columns) or not ({"ID", "__source_index__"} & set(frame.columns)):
             continue
-        columns = [column for column in ["ID", "__source_index__", "x", "y"] if column in frame.columns]
+        columns = [
+            column
+            for column in ["ID", "__source_index__", "composition", "x", "y"]
+            if column in frame.columns
+        ]
         background = frame[columns].copy()
         if "ID" in background.columns:
             background["__id_key__"] = pd.to_numeric(background["ID"], errors="coerce")
@@ -1203,7 +1207,11 @@ def load_embedding_backgrounds(embedding_data_dir: Path) -> dict[str, pd.DataFra
                 .sort_values("__source_index_key__")
                 .drop_duplicates("__source_index_key__", keep="first")
             )
-        keep_columns = [column for column in ["__id_key__", "__source_index_key__", "x", "y"] if column in background.columns]
+        keep_columns = [
+            column
+            for column in ["__id_key__", "__source_index_key__", "composition", "x", "y"]
+            if column in background.columns
+        ]
         backgrounds[case_key_from_values(*case_values)] = background[keep_columns].copy()
     return backgrounds
 

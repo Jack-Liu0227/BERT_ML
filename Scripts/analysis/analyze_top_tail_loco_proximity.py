@@ -51,6 +51,7 @@ DEFAULT_FINE_COMPARISON_ROOT = DEFAULT_OUTPUT_PARENT / "sensitivity_comparison_1
 DEFAULT_SUPPLEMENTAL_EMBEDDING_DATA_DIR = (
     DEFAULT_OUTPUT_PARENT / "wx_wz_tail_bin_distribution" / "zspace_embedding_data"
 )
+DEFAULT_WAX_SRC_ROOT = REPO_ROOT.parent / "WAX" / "src"
 DEFAULT_THRESHOLDS = tuple(i / 100 for i in range(5, 100, 5))
 DEFAULT_JUMP_DETECTION_THRESHOLDS = tuple(i / 100 for i in range(5, 100, 5))
 CASE_COLUMNS = ["alloy_family", "dataset_name", "property"]
@@ -82,6 +83,8 @@ SENSITIVITY_FOCUS_CASES = {
         "annotation": "Auto-drop set: Matbench top-5% X-space extremes",
     },
 }
+
+_WAX_COMPONENTS: tuple[Any, Any, Any, Any] | None = None
 SENSITIVITY_POLICY_LABELS = {
     "none": "baseline",
     AUTO_JUMP_POLICY_NAME: "auto-drop jump drivers",
@@ -356,6 +359,80 @@ def _numeric_feature_frame(frame: pd.DataFrame, feature_columns: list[str]) -> p
         {column: pd.to_numeric(frame.get(column), errors="coerce") for column in feature_columns},
         dtype=float,
     )
+
+
+def _load_wax_components() -> tuple[Any, Any, Any, Any]:
+    """Load the sibling WAX implementation used for the formal X-space metric."""
+
+    global _WAX_COMPONENTS
+    if _WAX_COMPONENTS is not None:
+        return _WAX_COMPONENTS
+    if not DEFAULT_WAX_SRC_ROOT.exists():
+        raise FileNotFoundError(f"WAX source directory not found: {DEFAULT_WAX_SRC_ROOT}")
+    wax_src = str(DEFAULT_WAX_SRC_ROOT)
+    if wax_src not in sys.path:
+        sys.path.insert(0, wax_src)
+    from wax import OTConfig, PreprocessConfig  # type: ignore
+    from wax.ot import solve_transport  # type: ignore
+    from wax.preprocessing import prepare_inputs  # type: ignore
+
+    _WAX_COMPONENTS = OTConfig, PreprocessConfig, prepare_inputs, solve_transport
+    return _WAX_COMPONENTS
+
+
+def _fixed_wax_standardized_x(
+    frame: pd.DataFrame,
+    feature_columns: list[str],
+) -> tuple[np.ndarray, tuple[str, ...], dict[str, Any]]:
+    """Return the fixed full-task X representation defined by WAX.
+
+    WAX fits joint median imputation and ``StandardScaler`` on the union of the
+    two empirical distributions.  At every threshold that union is the same
+    full task, so the transformed coordinates can be computed once and reused.
+    """
+
+    if len(frame) < 2:
+        raise ValueError("WAX X-space needs at least two task rows")
+    if not feature_columns:
+        raise ValueError("WAX X-space feature_columns must not be empty")
+    _, PreprocessConfig, prepare_inputs, _ = _load_wax_components()
+    numeric = _numeric_feature_frame(frame, feature_columns).reset_index(drop=True)
+    split_at = len(numeric) - 1
+    prepared = prepare_inputs(
+        numeric.iloc[:split_at],
+        numeric.iloc[split_at:],
+        feature_cols=feature_columns,
+        config=PreprocessConfig(
+            scaler="standard",
+            missing="median",
+            fit_scope="joint",
+        ),
+    )
+    standardized = np.vstack([prepared.source, prepared.target])
+    if standardized.shape[0] != len(frame):
+        raise ValueError("WAX preprocessing changed the full-task row count")
+    return standardized, tuple(prepared.feature_names), dict(prepared.preprocess_metadata)
+
+
+def _exact_wax_w1(background_x: np.ndarray, top_x: np.ndarray) -> float:
+    """Exact uniform-mass W1 with Euclidean ground cost, as defined in WAX."""
+
+    if background_x.ndim != 2 or top_x.ndim != 2:
+        raise ValueError("WAX X-space inputs must be two-dimensional")
+    if len(background_x) == 0 or len(top_x) == 0:
+        raise ValueError("WAX X-space inputs must both be non-empty")
+    if background_x.shape[1] != top_x.shape[1]:
+        raise ValueError("WAX X-space inputs must have the same feature count")
+    OTConfig, _, _, solve_transport = _load_wax_components()
+    result = solve_transport(
+        np.asarray(background_x, dtype=float),
+        np.asarray(top_x, dtype=float),
+        np.full(len(background_x), 1.0 / len(background_x), dtype=float),
+        np.full(len(top_x), 1.0 / len(top_x), dtype=float),
+        OTConfig(solver="exact", p=1.0, q=2.0, max_iter=1_000_000),
+        device="cpu",
+    )
+    return finite_float(result.distance)
 
 
 def _scaled_frames(
@@ -706,7 +783,14 @@ def compute_z_space_shift_curve(
     thresholds: list[float],
     mode: str,
 ) -> pd.DataFrame:
+    feature_columns = fallback_feature_columns(frame, spec.target_col, spec.feature_columns)
+    if not feature_columns:
+        raise ValueError("feature_columns must not be empty")
     work = _merge_fixed_zspace_coordinates(frame, embedding_background, spec.target_col)
+    standardized_x, active_x_features, x_preprocess = _fixed_wax_standardized_x(
+        work,
+        feature_columns,
+    )
     z_values = work[["z_x", "z_y"]].to_numpy(dtype=float)
     z_means = np.mean(z_values, axis=0)
     z_stds = np.std(z_values, axis=0, ddof=1)
@@ -744,15 +828,29 @@ def compute_z_space_shift_curve(
                 "top_tail_size": int(top_count),
                 "background_size": int(len(work) - top_count),
                 "reference_size": int(len(work)),
+                "feature_count": int(len(active_x_features)),
                 "Wy": finite_float(
                     wasserstein_distance(
                         standardized_y[~top_mask],
                         standardized_y[top_mask],
                     )
                 ),
+                "Wx": _exact_wax_w1(
+                    standardized_x[~top_mask],
+                    standardized_x[top_mask],
+                ),
                 "Wz": finite_float(wz),
                 "normalization_mode": "fixed_full_task_zspace",
                 "y_distance_method": "wasserstein_1_fixed_standardized_y",
+                "x_distance_method": "wax_exact_wasserstein1_euclidean",
+                "x_fit_scope": str(x_preprocess.get("fit_scope", "joint")),
+                "x_missing": str(x_preprocess.get("missing", "median")),
+                "x_scaler": str(x_preprocess.get("scaler", "standard")),
+                "x_standardization_ddof": 0,
+                "x_transport_p": 1.0,
+                "x_ground_metric_q": 2.0,
+                "x_solver": "exact",
+                "x_weights": "uniform",
                 "z_distance_method": "exact_2d_wasserstein_euclidean",
                 "z_standardization_ddof": 1,
             }
@@ -1570,17 +1668,18 @@ def plot_space_shift_sweep(space_shift: pd.DataFrame, output_root: Path, formats
             work = group.sort_values("threshold_pct", kind="stable")
             x = work["threshold_pct"].to_numpy(dtype=float)
             fig, axes = plt.subplots(
-                2,
+                3,
                 1,
-                figsize=(7.2, 5.2),
+                figsize=(7.2, 7.0),
                 sharex=True,
             )
             series_specs = [
                 ("Wy", "#B45F5F", r"$W_y$"),
+                ("Wx", "#4F8575", r"$W_x$"),
                 ("Wz", "#3F6F8F", r"$W_z$"),
             ]
             for panel_label, ax, (column, color, ylabel) in zip(
-                ("a", "b"), axes, series_specs, strict=True
+                ("a", "b", "c"), axes, series_specs, strict=True
             ):
                 ax.plot(
                     x,
@@ -1622,7 +1721,7 @@ def plot_space_shift_sweep(space_shift: pd.DataFrame, output_root: Path, formats
                 fontsize=9,
                 fontweight="bold",
             )
-            fig.subplots_adjust(left=0.14, right=0.985, bottom=0.13, top=0.91, hspace=0.18)
+            fig.subplots_adjust(left=0.14, right=0.985, bottom=0.10, top=0.94, hspace=0.20)
             out = figure_dir / case_key(
                 work.iloc[0]["alloy_family"],
                 work.iloc[0]["dataset_name"],
@@ -2144,9 +2243,9 @@ def write_report(
         )
     ].copy()
     lines = [
-        "# Top-tail LOCO centroid proximity and Y/Z-space shift report",
+        "# Top-tail LOCO centroid proximity and Y/X/Z-space shift report",
         "",
-        "LOCO proximity is measured by centroid distance in standardized composition/processing feature space; threshold shifts are measured in Y- and Z-space.",
+        "LOCO proximity is measured by centroid distance in standardized composition/processing feature space; threshold shifts are measured in Y-, X-, and Z-space.",
         "",
         f"This run used outlier policy `{outlier_policy}`.",
         "",
@@ -2180,6 +2279,8 @@ def write_report(
         "## Threshold space-shift metrics",
         "",
         "- `Wy`: Wasserstein-1 distance between background and top-tail target values in one fixed full-task standardized Y-space.",
+        "- `Wx`: WAX exact Wasserstein-1 distance over all native X-space features with uniform empirical weights and Euclidean ground cost (`p=1`, `q=2`).",
+        "- X-space uses joint full-task median imputation and `StandardScaler` (`ddof=0`); because background and top-tail always partition the same task, the transformed coordinates are fixed across thresholds.",
         "- `Wz`: exact two-dimensional Wasserstein-1 distance between background and top-tail samples in the stable Z-space embedding.",
         "- Z-space coordinates are standardized once per full task (sample standard deviation, ddof=1); across thresholds only top-tail/background membership changes.",
         "- Figures are written to `figures/threshold_sweep_space_shift_by_task/` and use top-tail percentage (5% increments) on the x-axis.",
@@ -2306,6 +2407,17 @@ def run_analysis(args: argparse.Namespace) -> None:
             "background_size",
             "Wy",
             "y_distance_method",
+            "Wx",
+            "feature_count",
+            "x_distance_method",
+            "x_fit_scope",
+            "x_missing",
+            "x_scaler",
+            "x_standardization_ddof",
+            "x_transport_p",
+            "x_ground_metric_q",
+            "x_solver",
+            "x_weights",
             "Wz",
             "z_distance_method",
             "z_standardization_ddof",
@@ -2348,8 +2460,11 @@ def run_analysis(args: argparse.Namespace) -> None:
             "thresholds": thresholds,
             "include_matbench": include_matbench,
             "sliced_projections": sliced_projections,
-            "space_shift_metric": "Wz",
+            "space_shift_metrics": ["Wy", "Wx", "Wz"],
             "normalization_mode": "fixed_full_task_zspace",
+            "x_distance_method": "wax_exact_wasserstein1_euclidean",
+            "x_preprocessing": "joint_full_task_median_imputation_standard_scaler_ddof0",
+            "x_transport": {"p": 1.0, "q": 2.0, "solver": "exact", "weights": "uniform"},
             "z_distance_method": "exact_2d_wasserstein_euclidean",
             "z_standardization_ddof": 1,
             "embedding_data_dir": str(Path(args.embedding_data_dir)),

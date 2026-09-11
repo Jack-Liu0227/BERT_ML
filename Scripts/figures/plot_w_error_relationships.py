@@ -78,7 +78,9 @@ NATURE_YZ_METHOD_COLORS = {
     "SY-sgl": "#2A9D8F",
     "SY-cls": "#147D75",
 }
-EXCLUDED_YZ_TASKS = frozenset({"HEA-YS", "Steel-YS"})
+EXCLUDED_HYBRID_TASKS = frozenset({"HEA-YS", "Steel-YS"})
+# Backward-compatible alias used by the Y-Z severity helpers and tests.
+EXCLUDED_YZ_TASKS = EXCLUDED_HYBRID_TASKS
 PURE_YZ_JOINT_HIGH_REGION = (8.0, 5.0)
 YZ_HIGH_SEVERITY_REGION_FACE = "#D7E3F0"
 YZ_HIGH_SEVERITY_REGION_EDGE = "#6B8097"

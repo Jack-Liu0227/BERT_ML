@@ -55,6 +55,85 @@ def paths_match(left: Path, right: Path) -> bool:
     return left.resolve() == right.resolve()
 
 
+def filter_hybrid_publication_sources(
+    samples: pd.DataFrame,
+    w_inventory: pd.DataFrame,
+) -> tuple[pd.DataFrame, pd.DataFrame, int]:
+    """Remove only the two explicitly excluded Hybrid yield-strength tasks."""
+    required = {"alloy_family", "property", "task_key"}
+    missing = sorted(required.difference(samples.columns))
+    if missing:
+        raise ValueError(f"Hybrid samples are missing task filter columns: {missing}")
+
+    task_ids = pd.Series(
+        [
+            plotter.task_id_from_values(row["alloy_family"], row["property"])
+            for _, row in samples.iterrows()
+        ],
+        index=samples.index,
+    )
+    keep = ~task_ids.isin(plotter.EXCLUDED_HYBRID_TASKS)
+    filtered_samples = samples.loc[keep].copy()
+    allowed_task_keys = set(filtered_samples["task_key"].dropna().astype(str))
+    filtered_inventory = w_inventory[
+        w_inventory["task_key"].astype(str).isin(allowed_task_keys)
+    ].copy()
+    return filtered_samples, filtered_inventory, int((~keep).sum())
+
+
+def normalize_hybrid_publication_table(
+    frame: pd.DataFrame,
+    *,
+    allowed_task_keys: set[str],
+) -> pd.DataFrame:
+    result = frame.copy()
+    if "task_key" in result.columns:
+        result = result[result["task_key"].astype(str).isin(allowed_task_keys)].copy()
+    if "task_id" in result.columns:
+        result = result[
+            ~result["task_id"].astype(str).isin(plotter.EXCLUDED_HYBRID_TASKS)
+        ].copy()
+    if "method_short" in result.columns:
+        result["method_short"] = result["method_short"].map(plotter.normalize_hybrid_method)
+    if "method" in result.columns:
+        result["method"] = result["method"].map(plotter.normalize_hybrid_method)
+
+    for column in result.select_dtypes(include=["object", "string"]).columns:
+        values = result[column].astype("string")
+        values = values.str.replace(
+            "hybrid_extrapolation_random_cv_k5",
+            "hybrid_extrapolation_random_cv",
+            regex=False,
+        )
+        values = values.mask(values.str.lower().eq("random_cv_k5"), "RandCV")
+        result[column] = values
+    return result.reset_index(drop=True)
+
+
+def write_hybrid_publication_summaries(
+    *,
+    input_csv_dir: Path,
+    output_dir: Path,
+    joined: pd.DataFrame,
+    allowed_task_keys: set[str],
+) -> None:
+    output_csv_dir = output_dir / "csv"
+    write_csv(plotter.build_correlations(joined), output_csv_dir / "w_error_correlations.csv")
+    for filename in (
+        "w_error_join_coverage.csv",
+        "prediction_source_inventory.csv",
+        "w_source_inventory.csv",
+    ):
+        source_path = input_csv_dir / filename
+        if not source_path.exists():
+            continue
+        source = normalize_hybrid_publication_table(
+            read_csv(source_path),
+            allowed_task_keys=allowed_task_keys,
+        )
+        write_csv(source, output_csv_dir / filename)
+
+
 def clean_managed_figure_outputs(output_dir: Path) -> None:
     for child in ["figures", "yz_severity_map"]:
         path = output_dir / child
@@ -205,6 +284,18 @@ def z_arrays_for_source(
         test_keys = pd.DataFrame({"__source_index_key__": pd.to_numeric(test["__source_index__"], errors="coerce")})
         train_z = train_keys.merge(background, on="__source_index_key__", how="left", sort=False)
         test_z = test_keys.merge(background, on="__source_index_key__", how="left", sort=False)
+    elif "composition" in background.columns and "composition" in train.columns and "composition" in test.columns:
+        coordinates = (
+            background[["composition", "x", "y"]]
+            .dropna(subset=["composition"])
+            .drop_duplicates("composition", keep="first")
+        )
+        train_keys = pd.DataFrame({"composition": train["composition"].astype(str).str.strip()})
+        test_keys = pd.DataFrame({"composition": test["composition"].astype(str).str.strip()})
+        coordinates = coordinates.copy()
+        coordinates["composition"] = coordinates["composition"].astype(str).str.strip()
+        train_z = train_keys.merge(coordinates, on="composition", how="left", sort=False)
+        test_z = test_keys.merge(coordinates, on="composition", how="left", sort=False)
     else:
         return None, None, "missing_embedding_join_key"
     if train_z[["x", "y"]].isna().any().any() or test_z[["x", "y"]].isna().any().any():
@@ -239,8 +330,17 @@ def yz_rows_for_source(
     y["w_status"] = "ok" if np.isfinite(y_split_w) else "invalid_target_distribution"
     rows.append(y)
 
-    case_key = three_space.case_key_from_values(first["alloy_family"], first["dataset_name"], first["property"])
-    z_train, z_test, z_status = z_arrays_for_source(train, base, backgrounds.get(case_key))
+    case_key = three_space.case_key_from_values(
+        first["alloy_family"], first["dataset_name"], first["property"]
+    )
+    background = backgrounds.get(case_key)
+    if background is None:
+        task_id = plotter.task_id_from_values(first["alloy_family"], first["property"])
+        canonical_case = plotter.TASK_ID_TO_CASE.get(task_id)
+        if canonical_case is not None:
+            canonical_key = three_space.case_key_from_values(*canonical_case)
+            background = backgrounds.get(canonical_key)
+    z_train, z_test, z_status = z_arrays_for_source(train, base, background)
     z = ordered_ids.copy()
     z["source_split_dir"] = first["source_split_dir"]
     z["test_set"] = first["test_set"]
@@ -344,6 +444,7 @@ def build_and_write_figures(
     dpi: int,
     include_hybrid_yz_severity: bool,
     include_standard_yz_severity: bool = False,
+    write_hybrid_summaries: bool = False,
     embedding_override_dir: Path | None = None,
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     clean_managed_figure_outputs(output_dir)
@@ -376,6 +477,14 @@ def build_and_write_figures(
         phase_wide=phase_wide,
         figures=figures,
     )
+    if write_hybrid_summaries:
+        allowed_task_keys = set(samples["task_key"].dropna().astype(str))
+        write_hybrid_publication_summaries(
+            input_csv_dir=input_csv_dir,
+            output_dir=output_dir,
+            joined=joined,
+            allowed_task_keys=allowed_task_keys,
+        )
     return joined, phase_wide, figures
 
 
@@ -390,6 +499,10 @@ def read_subset_three_space_joined(
     csv_dir = hybrid_csv_dir(full_root, subset)
     samples = read_csv(csv_dir / "w_error_samples_long.csv")
     w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    samples, w_inventory, _excluded_rows = filter_hybrid_publication_sources(
+        samples,
+        w_inventory,
+    )
     if canonical_only:
         samples, w_inventory = select_canonical_standard_ood_sources(samples, w_inventory)
     if max_rows is not None:
@@ -503,12 +616,17 @@ def publish_hybrid_subset(
     formats: list[str],
     dpi: int,
     max_rows: int | None = None,
+    include_yz_severity: bool = True,
 ) -> dict[str, object]:
     csv_dir = hybrid_csv_dir(full_root, subset)
     samples = read_csv(csv_dir / "w_error_samples_long.csv")
+    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
+    samples, w_inventory, excluded_rows = filter_hybrid_publication_sources(
+        samples,
+        w_inventory,
+    )
     if max_rows is not None:
         samples = samples.head(max_rows).copy()
-    w_inventory = read_csv(csv_dir / "w_source_inventory.csv")
     output_dir = output_root / subset
     joined, _phase_wide, figures = build_and_write_figures(
         samples=samples,
@@ -518,10 +636,11 @@ def publish_hybrid_subset(
         embedding_data_dir=embedding_data_dir,
         formats=formats,
         dpi=dpi,
-        include_hybrid_yz_severity=True,
+        include_hybrid_yz_severity=include_yz_severity,
+        write_hybrid_summaries=True,
     )
     set_ab_figures = pd.DataFrame(columns=plotter.FIGURE_MANIFEST_COLUMNS)
-    if subset == "combined":
+    if subset == "combined" and include_yz_severity:
         set_a_joined = read_subset_three_space_joined(
             full_root=full_root,
             subset="test_extrapolation_high20",
@@ -548,9 +667,11 @@ def publish_hybrid_subset(
         "status": "ok",
         "subset": subset,
         "input_rows": int(len(samples)),
+        "excluded_task_rows": excluded_rows,
         "three_space_rows": int(len(joined)),
         "figures": int(len(figures)),
         "set_ab_yz_figures": int(len(set_ab_figures)),
+        "included_yz_severity": include_yz_severity,
         "models": sorted(str(value) for value in joined["model"].dropna().unique()),
         "spaces": sorted(str(value) for value in joined["space"].dropna().unique()),
         "embedding_data_dir": str(embedding_data_dir),
@@ -640,6 +761,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dpi", type=int, default=300)
     parser.add_argument("--max-rows", type=int, default=None)
     parser.add_argument("--only-yz-severity", action="store_true")
+    parser.add_argument(
+        "--skip-yz-severity",
+        action="store_true",
+        help="Publish W-error figures without rebuilding YZ severity maps.",
+    )
     return parser.parse_args()
 
 
@@ -676,6 +802,7 @@ def main() -> None:
                 formats=args.formats,
                 dpi=args.dpi,
                 max_rows=args.max_rows,
+                include_yz_severity=not args.skip_yz_severity,
             )
         else:
             audit = publish_hybrid_subset(

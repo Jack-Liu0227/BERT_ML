@@ -701,6 +701,122 @@ def _build_task_curve_pair(
     return fig
 
 
+def render_combined_task_curve_figures(
+    degradation_summary: pd.DataFrame,
+    absolute_mae_summary: pd.DataFrame,
+    *,
+    output_dir: str | Path,
+    display_methods: Sequence[str] = tuple(DISPLAY_METHOD_ORDER),
+    dpi: int = 600,
+) -> list[Path]:
+    """Render one 2x2 degradation/absolute-MAE overview PNG per task."""
+    degradation_tasks = set(
+        degradation_summary["task_id"].dropna().astype(str).unique()
+    )
+    absolute_tasks = set(absolute_mae_summary["task_id"].dropna().astype(str).unique())
+    if degradation_tasks != absolute_tasks:
+        raise ValueError(
+            "Degradation and absolute-MAE summaries must contain identical tasks: "
+            f"degradation_only={sorted(degradation_tasks - absolute_tasks)}, "
+            f"absolute_only={sorted(absolute_tasks - degradation_tasks)}"
+        )
+
+    target = Path(output_dir).resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    for stale in target.glob("*.png"):
+        stale.unlink()
+
+    outputs: list[Path] = []
+    for task_id in sorted(degradation_tasks):
+        figure = _build_combined_task_curve_figure(
+            task_id=task_id,
+            degradation_summary=degradation_summary,
+            absolute_mae_summary=absolute_mae_summary,
+            display_methods=display_methods,
+        )
+        output_base = target / _safe_filename(task_id)
+        _save_png(figure, output_base, dpi=dpi)
+        plt.close(figure)
+        outputs.append(output_base.with_suffix(".png"))
+    return outputs
+
+
+def _build_combined_task_curve_figure(
+    *,
+    task_id: str,
+    degradation_summary: pd.DataFrame,
+    absolute_mae_summary: pd.DataFrame,
+    display_methods: Sequence[str],
+) -> plt.Figure:
+    degradation = degradation_summary[degradation_summary["task_id"].eq(task_id)]
+    absolute = absolute_mae_summary[absolute_mae_summary["task_id"].eq(task_id)]
+    fig, axes = plt.subplots(2, 2, figsize=(12.6, 8.4), constrained_layout=True)
+    panels = [
+        (
+            axes[0, 0],
+            degradation,
+            FAILURE_AXIS_LOCO,
+            "(a) Farthest LOCO",
+            "mean_degradation_ratio",
+            "Performance-degradation ratio\n(OOD MAE / Random-CV MAE)",
+            1.0,
+        ),
+        (
+            axes[0, 1],
+            degradation,
+            FAILURE_AXIS_TOP20,
+            "(b) Top-20% property extreme",
+            "mean_degradation_ratio",
+            "Performance-degradation ratio\n(OOD MAE / Random-CV MAE)",
+            1.0,
+        ),
+        (
+            axes[1, 0],
+            absolute,
+            FAILURE_AXIS_LOCO,
+            "(c) Farthest LOCO",
+            "mean_ood_mae",
+            "Absolute OOD MAE\n(native task units)",
+            None,
+        ),
+        (
+            axes[1, 1],
+            absolute,
+            FAILURE_AXIS_TOP20,
+            "(d) Top-20% property extreme",
+            "mean_ood_mae",
+            "Absolute OOD MAE\n(native task units)",
+            None,
+        ),
+    ]
+    for ax, summary, failure_axis, title, value_column, ylabel, reference in panels:
+        _draw_curve_panel(
+            ax,
+            summary[summary["failure_axis"].eq(failure_axis)],
+            title=title,
+            value_column=value_column,
+            ylabel=ylabel,
+            reference_line=reference,
+            display_methods=display_methods,
+            show_legend=False,
+        )
+    handles, labels = axes[0, 0].get_legend_handles_labels()
+    fig.legend(
+        handles,
+        labels,
+        loc="outside lower center",
+        ncol=min(len(display_methods), 6),
+        frameon=False,
+        fontsize=8,
+    )
+    fig.suptitle(
+        f"Training-size OOD overview | {task_id}",
+        fontsize=14,
+        fontweight="bold",
+    )
+    return fig
+
+
 def _draw_curve_panel(
     ax: plt.Axes,
     panel: pd.DataFrame,
