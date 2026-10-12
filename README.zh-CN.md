@@ -86,11 +86,12 @@ python -m src.LLMProp.run_llmprop_ood --help
 
 生成特征、日志、图和模型输出写入被忽略的目录，例如 `Features/`、`Features_extrapolation/`、`output/` 和 `logs/`。
 
-## 汇总与绘图脚本
+## 数据处理脚本
 
-当前仍在使用的分析和绘图脚本保留在 `Scripts/`。示例：
+`Scripts/` 只保留数据处理脚本，以及可复现流程仍需调用的绘图入口。生成 Word 文档、演示文稿、Excel 工作簿和独立 HTML 查看器/画廊的脚本已移除；这些交付物请基于 `.csv`/`.png` 结果在本仓库之外生成。示例：
 
 ```bash
+python Scripts/analysis/generate_ood_splits.py --alloys Aluminum_2 --execute
 python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
@@ -100,6 +101,8 @@ python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figure
 ```
 
 外部 OOD 结果源由 `configs/ood_reporting/external_ood_model_sources.yaml` 配置。如需合并外部 LLM 结果，运行 combined summary 前设置 `EXTERNAL_OOD_ROOT`。
+
+目录结构与已移除脚本的完整清单见 [Scripts/README.md](./Scripts/README.md)。
 
 ## 文档
 

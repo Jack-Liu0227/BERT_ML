@@ -86,11 +86,12 @@ Tracked input datasets are under `datasets/`. The active configuration files ref
 
 Generated features, logs, figures, and model outputs are written to ignored directories such as `Features/`, `Features_extrapolation/`, `output/`, and `logs/`.
 
-## Reporting Scripts
+## Data-Processing Scripts
 
-Active analysis and figure scripts remain in `Scripts/`. Examples:
+`Scripts/` keeps data-processing and reproducible figure entrypoints only. It no longer ships generators for Word documents, presentation slides, Excel workbooks, or standalone HTML viewers/galleries; those deliverables are produced outside this repository from the `.csv`/`.png` outputs. Examples:
 
 ```bash
+python Scripts/analysis/generate_ood_splits.py --alloys Aluminum_2 --execute
 python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
@@ -100,6 +101,8 @@ python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figure
 ```
 
 Optional external OOD sources are configured in `configs/ood_reporting/external_ood_model_sources.yaml`. Set `EXTERNAL_OOD_ROOT` before running combined summaries if external LLM results should be merged.
+
+See [Scripts/README.md](./Scripts/README.md) for the full directory layout and the exact list of removed document/presentation generators.
 
 ## Documentation
 
