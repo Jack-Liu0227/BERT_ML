@@ -129,8 +129,51 @@ datasets/Ti_alloys/Titanium data (Ti BERT).xlsx
 
 outputs/manual-xspace-w-ppt/
 
-# Local-only working folders: kept on disk, never published to the remote
-Scripts/
+# Local-only working folders: kept on disk, never published to the remote.
+#
+# Scripts/ publishes ONLY the modules the tracked pipeline imports:
+#   * src/training_size_ood/cli.py -> Scripts.figures.ood_figures_3_4.{config,figure4}
+#   * README entrypoints: analysis/generate_ood_splits.py, reporting/batch_summarize_*.py,
+#     figures/build_bestplus_tabpfn_triptych.py, plus their Scripts/lib/ helpers
+# Everything else in Scripts/ (one-off analyses, maintenance, W-error rebuild,
+# extra figure builds) stays local. Recompute the allowlist with
+# archive/legacy_al/_analyse_scripts_publish_set2.py after changing imports.
+Scripts/*
+!Scripts/README.md
+!Scripts/__init__.py
+!Scripts/analysis/
+Scripts/analysis/*
+!Scripts/analysis/__init__.py
+!Scripts/analysis/generate_ood_splits.py
+!Scripts/figures/
+Scripts/figures/*
+!Scripts/figures/__init__.py
+!Scripts/figures/build_bestplus_tabpfn_triptych.py
+!Scripts/figures/ood_figures_3_4/
+Scripts/figures/ood_figures_3_4/*
+!Scripts/figures/ood_figures_3_4/__init__.py
+!Scripts/figures/ood_figures_3_4/common.py
+!Scripts/figures/ood_figures_3_4/config.py
+!Scripts/figures/ood_figures_3_4/figure4.py
+!Scripts/figures/ood_figures_3_4/figure4_panel_a.py
+!Scripts/figures/ood_figures_3_4/manifest.py
+!Scripts/figures/ood_figures_3_4/training_size_task_figures.py
+!Scripts/lib/
+Scripts/lib/*
+!Scripts/lib/__init__.py
+!Scripts/lib/_bestplus_tabpfn_triptych_config.py
+!Scripts/lib/_bestplus_tabpfn_triptych_plotting.py
+!Scripts/lib/_external_ood_sources.py
+!Scripts/lib/_ood_summary_common.py
+!Scripts/lib/_raw_prediction_stats.py
+!Scripts/reporting/
+Scripts/reporting/*
+!Scripts/reporting/__init__.py
+!Scripts/reporting/batch_summarize_bert_extrapolation_results.py
+!Scripts/reporting/batch_summarize_combined_ood_reports.py
+!Scripts/reporting/batch_summarize_extrapolation_results.py
+!Scripts/reporting/batch_summarize_llmprop_ood_results.py
+!Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
 
 # Tests are kept local only
 tests/
