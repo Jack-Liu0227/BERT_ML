@@ -128,6 +128,11 @@ element_embeddings/
 datasets/Ti_alloys/Titanium data (Ti BERT).xlsx
 
 outputs/manual-xspace-w-ppt/
+
+# Local-only working folders: kept on disk, never published to the remote
+Scripts/
+
+# Tests are kept local only
 tests/
 tests/*
 # !tests/test_ood_figures_3_4.py

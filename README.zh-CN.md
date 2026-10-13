@@ -91,7 +91,7 @@ python -m src.LLMProp.run_llmprop_ood --help
 `Scripts/` 只保留数据处理脚本，以及可复现流程仍需调用的绘图入口。生成 Word 文档、演示文稿、Excel 工作簿和独立 HTML 查看器/画廊的脚本已移除；这些交付物请基于 `.csv`/`.png` 结果在本仓库之外生成。示例：
 
 ```bash
-python Scripts/analysis/generate_ood_splits.py --alloys Aluminum_2 --execute
+python Scripts/analysis/generate_ood_splits.py --alloys Al --execute
 python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py

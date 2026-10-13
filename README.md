@@ -91,7 +91,7 @@ Generated features, logs, figures, and model outputs are written to ignored dire
 `Scripts/` keeps data-processing and reproducible figure entrypoints only. It no longer ships generators for Word documents, presentation slides, Excel workbooks, or standalone HTML viewers/galleries; those deliverables are produced outside this repository from the `.csv`/`.png` outputs. Examples:
 
 ```bash
-python Scripts/analysis/generate_ood_splits.py --alloys Aluminum_2 --execute
+python Scripts/analysis/generate_ood_splits.py --alloys Al --execute
 python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
 python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py

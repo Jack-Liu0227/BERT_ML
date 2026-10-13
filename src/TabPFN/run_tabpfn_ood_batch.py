@@ -114,6 +114,11 @@ def make_task_key(alloy_type: str, target_col: str) -> str:
     return f"{alloy_type}_{target_col}"
 
 
+def make_progress_scope(config_name: str, feature_mode: str | None) -> str:
+    """Keep numeric and text batch progress independent."""
+    return f"{config_name}__{feature_mode or 'default'}"
+
+
 def format_command(cmd: List[str]) -> str:
     formatted = []
     for part in cmd:
@@ -348,6 +353,7 @@ def run_batch_config(
     feature_mode: str | None,
 ) -> Dict[str, str]:
     results: Dict[str, str] = {}
+    progress_scope = make_progress_scope(config_name, feature_mode)
     alloy_types = resolve_alloy_types(
         batch_config,
         backend=backend,
@@ -376,7 +382,7 @@ def run_batch_config(
         logger.info("Processing alloy %s with targets %s", alloy_type, alloy_config["targets"])
         for target_col in alloy_config["targets"]:
             task_key = make_task_key(alloy_type, target_col)
-            if resume and progress_manager.is_task_completed(config_name, task_key):
+            if resume and progress_manager.is_task_completed(progress_scope, task_key):
                 if not is_hybrid_batch_config(batch_config) or task_artifacts_complete(
                     alloy_type=alloy_type,
                     target_col=target_col,
@@ -390,7 +396,7 @@ def run_batch_config(
                     logger.info("[SKIP] %s already completed", task_key)
                     continue
                 logger.info("[RERUN] %s progress=success but hybrid metrics are incomplete", task_key)
-            if resume and not progress_manager.is_task_completed(config_name, task_key) and task_artifacts_complete(
+            if resume and not progress_manager.is_task_completed(progress_scope, task_key) and task_artifacts_complete(
                 alloy_type=alloy_type,
                 target_col=target_col,
                 batch_config=batch_config,
@@ -402,10 +408,10 @@ def run_batch_config(
                 results[task_key] = "skipped"
                 logger.info("[SKIP] %s existing output artifacts", task_key)
                 if not dry_run:
-                    progress_manager.update_task_status(config_name, task_key, "success")
+                    progress_manager.update_task_status(progress_scope, task_key, "success")
                 continue
             results[task_key] = run_single_task(
-                config_name=config_name,
+                config_name=progress_scope,
                 alloy_type=alloy_type,
                 target_col=target_col,
                 batch_config=batch_config,

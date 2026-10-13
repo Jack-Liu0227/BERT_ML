@@ -27,7 +27,6 @@ COMMON_DATASET_CONFIGS: Dict[str, Dict[str, Any]] = {
     "Al": {
         "raw_data": "datasets/Al_Alloys/aluminum.csv",
         "targets": ["UTS(MPa)"],
-        "align_reference_predictions_csv": "output/new_results_withuncertainty/Al/aluminum/tradition/model_comparison/catboost_results/predictions/all_predictions.csv",
         "description": "铝合金力学性能数据集 / Aluminum alloy mechanical properties dataset",
         "test_size": 0.2,
         "random_state": 42,
