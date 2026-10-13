@@ -2687,7 +2687,6 @@ def create_repair_argument_parser() -> argparse.ArgumentParser:
             "verify-tabpfn-v1",
             "rerun",
             "verify",
-            "summarize",
             "_run-item",
         ],
     )
@@ -4586,89 +4585,6 @@ def run_verify_stage(
     return report
 
 
-def run_summarize_stage(
-    *,
-    workspace_root: str | Path,
-    output_root: str | Path,
-) -> dict[str, Any]:
-    workspace = Path(workspace_root).resolve()
-    output, manifest, _, _ = _load_locked_state(workspace, output_root)
-    if not manifest.get("verification_complete"):
-        raise ValueError("All repaired outputs must pass verification before summaries are rebuilt")
-    commands = [
-        [
-            sys.executable,
-            str(workspace / "Scripts" / "reporting" / "batch_summarize_bert_extrapolation_results.py"),
-            "--base-dir",
-            str(workspace / "output" / "ood_results"),
-            "--output-dir",
-            str(workspace / "output" / "ood_summary_reports" / "BERT"),
-        ],
-        [
-            sys.executable,
-            str(workspace / "Scripts" / "reporting" / "batch_summarize_tabpfn_extrapolation_results.py"),
-            "--base-dirs",
-            str(workspace / "output" / "ood_results_TabPFN-2.5-Plus-Numeric"),
-            str(workspace / "output" / "ood_results_TabPFN-2.5-Plus-Text"),
-            "--output-dir",
-            str(workspace / "output" / "ood_summary_reports" / "TabPFN"),
-        ],
-        [
-            sys.executable,
-            str(workspace / "Scripts" / "reporting" / "batch_summarize_combined_ood_reports.py"),
-            "--reports-root",
-            str(workspace / "output" / "ood_summary_reports"),
-            "--output-dir",
-            str(workspace / "output" / "ood_summary_reports" / "Combined"),
-        ],
-    ]
-    records = []
-    for command in commands:
-        completed = subprocess.run(
-            command,
-            cwd=workspace,
-            text=True,
-            capture_output=True,
-        )
-        records.append(
-            {
-                "command": command,
-                "returncode": completed.returncode,
-                "stdout": completed.stdout,
-                "stderr": completed.stderr,
-            }
-        )
-        if completed.returncode != 0:
-            (output / "summary_commands.json").write_text(
-                json.dumps(records, indent=2, ensure_ascii=True),
-                encoding="utf-8",
-            )
-            raise RuntimeError(
-                f"Summary command failed ({completed.returncode}): {' '.join(command)}\n{completed.stderr}"
-            )
-    combined_path = (
-        workspace
-        / "output"
-        / "ood_summary_reports"
-        / "Combined"
-        / "data"
-        / "all_model_families_ood_summary.csv"
-    )
-    if not combined_path.exists():
-        raise FileNotFoundError(f"Combined summary was not generated: {combined_path}")
-    (output / "summary_commands.json").write_text(
-        json.dumps(records, indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
-    manifest["summaries_completed_at"] = datetime.now(timezone.utc).isoformat()
-    manifest["combined_summary"] = str(combined_path)
-    (output / "manifest.json").write_text(
-        json.dumps(manifest, indent=2, ensure_ascii=True),
-        encoding="utf-8",
-    )
-    return {"combined_summary": str(combined_path), "commands": len(records)}
-
-
 def require_llm_python() -> None:
     current = Path(sys.executable).resolve()
     if current != LLM_PYTHON.resolve():
@@ -4829,11 +4745,8 @@ def main() -> int:
             "count": len(report),
             "statuses": dict(Counter(report["verification_status"].astype(str))),
         }
-    else:
-        result = run_summarize_stage(
-            workspace_root=workspace,
-            output_root=args.output_root,
-        )
+    else:  # pragma: no cover - argparse restricts --stage to the handled values
+        raise ValueError(f"Unsupported repair stage: {args.stage}")
     print(json.dumps(result, indent=2, ensure_ascii=True), flush=True)
     if args.stage == "rerun" and int(result.get("failed", 0)) > 0:
         return 1
