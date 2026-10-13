@@ -1,4 +1,9 @@
-"""Command-line entrypoint for the Figure 4 training-size OOD experiment."""
+"""Command-line entrypoint for the Figure 4 training-size OOD experiment.
+
+Runs the training/scoring/aggregation stages and writes the CSV/JSON artifacts the
+Figure 4 plots consume. Rendering the figures themselves is a local-only step and is
+not exposed here.
+"""
 
 from __future__ import annotations
 
@@ -96,7 +101,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--stage",
         required=True,
-        choices=["preflight", "smoke", "run", "status", "aggregate", "figure"],
+        choices=["preflight", "smoke", "run", "status", "aggregate"],
     )
     parser.add_argument("--config", default=str(DEFAULT_CONFIG))
     parser.add_argument("--tasks", nargs="*")
@@ -175,13 +180,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.jobs < 1:
         raise ValueError("jobs must be positive")
     settings = load_settings(args.config)
-    if args.stage == "figure":
-        from Scripts.figures.ood_figures_3_4.config import load_config as load_figure_config
-        from Scripts.figures.ood_figures_3_4.figure4 import run_figure4
-
-        result = run_figure4(load_figure_config(settings.config_path))
-        print(f"Figure 4 complete: rows={result.row_count}, output={result.output_dir}")
-        return 0
     all_tasks = discover_task_ids(settings.training_config.proximity_csv)
     tasks = list(args.tasks or all_tasks)
     unknown_tasks = sorted(set(tasks).difference(all_tasks))
