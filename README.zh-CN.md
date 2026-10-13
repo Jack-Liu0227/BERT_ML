@@ -2,7 +2,7 @@
 
 [English](./README.md)
 
-本仓库包含面向合金性能预测的 Python 工作流，覆盖传统机器学习、BERT 嵌入、TabPFN 和 LLMProp。项目按“全部实验可复现”整理：所有可运行入口均为 Python 模块或 Python 脚本，基础模型资产统一放在 `models/`，历史修复脚本单独归档。
+本仓库包含面向合金性能预测的 Python 工作流，覆盖传统机器学习、BERT 嵌入、TabPFN 和 LLMProp。项目按“全部实验可复现”整理：所有可运行入口均为 Python 模块，基础模型资产统一放在 `models/`。
 
 ## 快速开始
 
@@ -86,31 +86,7 @@ python -m src.LLMProp.run_llmprop_ood --help
 
 生成特征、日志、图和模型输出写入被忽略的目录，例如 `Features/`、`Features_extrapolation/`、`output/` 和 `logs/`。
 
-## 数据处理脚本
-
-`Scripts/` 只保留数据处理脚本，以及可复现流程仍需调用的绘图入口。生成 Word 文档、演示文稿、Excel 工作簿和独立 HTML 查看器/画廊的脚本已移除；这些交付物请基于 `.csv`/`.png` 结果在本仓库之外生成。示例：
-
-```bash
-python Scripts/analysis/generate_ood_splits.py --alloys Al --execute
-python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
-python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
-python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/reporting/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
-python Scripts/reporting/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
-python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
-```
-
-外部 OOD 结果源由 `configs/ood_reporting/external_ood_model_sources.yaml` 配置。如需合并外部 LLM 结果，运行 combined summary 前设置 `EXTERNAL_OOD_ROOT`。
-
-目录结构与已移除脚本的完整清单见 [Scripts/README.md](./Scripts/README.md)。
-
 ## 文档
 
-- [英文复现指南](./docs/reproducibility.md)
-- [中文复现指南](./docs/reproducibility.zh-CN.md)
-- [英文脚本清单](./docs/script_inventory.md)
-- [中文脚本清单](./docs/script_inventory.zh-CN.md)
 - [批量运行指南](./src/pipelines/BATCH_RUN_GUIDE.md)
 - [TabPFN 指南](./src/TabPFN/README.md)
-
-历史本机修复和迁移工具保存在 `archive/legacy_scripts/`。它们不是推荐复现入口。

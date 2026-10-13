@@ -2,7 +2,7 @@
 
 [中文说明](./README.zh-CN.md)
 
-This repository contains Python workflows for alloy property prediction with traditional ML, BERT-based embeddings, TabPFN, and LLMProp. The project is organized for full experiment reproducibility: all runnable experiment entrypoints are Python modules or Python scripts, model assets live under `models/`, and historical repair utilities are archived separately.
+This repository contains Python workflows for alloy property prediction with traditional ML, BERT-based embeddings, TabPFN, and LLMProp. The project is organized for full experiment reproducibility: all runnable experiment entrypoints are Python modules and model assets live under `models/`.
 
 ## Quick Start
 
@@ -86,31 +86,7 @@ Tracked input datasets are under `datasets/`. The active configuration files ref
 
 Generated features, logs, figures, and model outputs are written to ignored directories such as `Features/`, `Features_extrapolation/`, `output/`, and `logs/`.
 
-## Data-Processing Scripts
-
-`Scripts/` keeps data-processing and reproducible figure entrypoints only. It no longer ships generators for Word documents, presentation slides, Excel workbooks, or standalone HTML viewers/galleries; those deliverables are produced outside this repository from the `.csv`/`.png` outputs. Examples:
-
-```bash
-python Scripts/analysis/generate_ood_splits.py --alloys Al --execute
-python Scripts/reporting/batch_summarize_extrapolation_results.py --base-dir output/ood_results
-python Scripts/reporting/batch_summarize_bert_extrapolation_results.py --base-dir output/ood_results
-python Scripts/reporting/batch_summarize_tabpfn_extrapolation_results.py
-python Scripts/reporting/batch_summarize_llmprop_ood_results.py --base-dir output/ood_results
-python Scripts/reporting/batch_summarize_combined_ood_reports.py --reports-root output/ood_summary_reports
-python Scripts/figures/build_bestplus_tabpfn_triptych.py --config configs/figures/build_bestplus_tabpfn_triptych.paper.config.yaml
-```
-
-Optional external OOD sources are configured in `configs/ood_reporting/external_ood_model_sources.yaml`. Set `EXTERNAL_OOD_ROOT` before running combined summaries if external LLM results should be merged.
-
-See [Scripts/README.md](./Scripts/README.md) for the full directory layout and the exact list of removed document/presentation generators.
-
 ## Documentation
 
-- [English reproducibility guide](./docs/reproducibility.md)
-- [中文复现指南](./docs/reproducibility.zh-CN.md)
-- [Script inventory](./docs/script_inventory.md)
-- [脚本清单](./docs/script_inventory.zh-CN.md)
 - [Batch run guide](./src/pipelines/BATCH_RUN_GUIDE.md)
 - [TabPFN guide](./src/TabPFN/README.md)
-
-Historical local repair and migration utilities are preserved in `archive/legacy_scripts/`. They are not recommended reproduction entrypoints.
