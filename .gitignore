@@ -109,7 +109,6 @@ catboost_info/
 
 # Datasets (默认忽略所有数据集，但保留配置中使用的特定文件)
 # datasets/*
-datasets/HEA_data/Pitting_potential_data_xiongjie.csv
 # 白名单：保留项目配置中使用的数据集
 
 

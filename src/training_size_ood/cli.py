@@ -20,7 +20,7 @@ from .core import TrainingSizeOODConfig, iter_training_run_keys
 from .runner import TrainingSizeOODRunner
 
 
-DEFAULT_CONFIG = Path("configs/figures/ood_figures_3_4.config.yaml")
+DEFAULT_CONFIG = Path("scripts/figures/configs/ood_figures_3_4.config.yaml")
 EXPECTED_TASK_COUNT = 10
 FIGURE4_MODEL_SPECS = frozenset(
     {

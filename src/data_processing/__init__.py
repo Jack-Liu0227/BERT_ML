@@ -2,11 +2,6 @@
 Alloy data processing module initialization.
 """
 
-from .data_processor import DataProcessor
-from .json_processor import JsonProcessor
-from .description_generator import DescriptionGenerator
-from .data_filter import DataFilter
-from .data_merger import DataMerger
 from .utils import (
     normalize_composition,
     calculate_entropy,
@@ -22,11 +17,6 @@ from .constants import (
 )
 
 __all__ = [
-    'DataProcessor',
-    'JsonProcessor',
-    'DescriptionGenerator',
-    'DataFilter',
-    'DataMerger',
     'normalize_composition',
     'calculate_entropy',
     'validate_composition',

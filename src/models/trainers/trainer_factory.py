@@ -11,7 +11,6 @@ from .base_trainer import BaseTrainer
 from .nn_trainer import NNTrainer
 from .bert_trainer import BERTTrainer
 from .ml_trainer import MLTrainer
-from .cnn_trainer import CnnTrainer
 
 class TrainerFactory:
     """
@@ -32,7 +31,7 @@ class TrainerFactory:
         Create a trainer instance
         
         Args:
-            model_type (str): Type of model ('nn', 'ml', 'bert', 'cnn')
+            model_type (str): Type of model ('nn', 'ml', 'bert')
             model: Any: Model object
             result_dir (str): Directory to save results
             model_name (str): Name of the model
@@ -49,7 +48,6 @@ class TrainerFactory:
             'nn': NNTrainer,
             'bert': BERTTrainer,
             'ml': MLTrainer,
-            'cnn': CnnTrainer,
         }
         
         if model_type not in trainer_map:
@@ -66,11 +64,10 @@ class TrainerFactory:
         }
         
         # Add model-specific arguments
-        if model_type in ['nn', 'bert', 'cnn']:
+        if model_type in ['nn', 'bert']:
             trainer_args['model'] = model
-            if model_type in ['nn', 'bert']: # Keep old behavior for nn, bert
-                trainer_args['train_data'] = train_data
-                trainer_args['val_data'] = val_data
+            trainer_args['train_data'] = train_data
+            trainer_args['val_data'] = val_data
         elif model_type == 'ml':
             trainer_args['model_type'] = model_name # In MLTrainer, model_type is the specific algorithm
             trainer_args['model_params'] = model_params or {}
@@ -150,7 +147,7 @@ class TrainerFactory:
         Returns:
             List[str]: List of supported trainer types
         """
-        return ['nn', 'ml', 'bert', 'cnn']
+        return ['nn', 'ml', 'bert']
     
     @staticmethod
     def get_trainer_description(trainer_type: str) -> str:
@@ -170,7 +167,6 @@ class TrainerFactory:
             'nn': 'Neural network trainer for traditional ML models',
             'ml': 'Machine learning trainer for traditional ML models',
             'bert': 'BERT trainer for text classification',
-            'cnn': 'CNN trainer for models with 1D/2D convolutions'
         }
         
         if trainer_type not in descriptions:
@@ -196,7 +192,6 @@ class TrainerFactory:
             'nn': NNTrainer,
             'ml': MLTrainer,
             'bert': BERTTrainer,
-            'cnn': CnnTrainer
         }
         
         if trainer_type not in trainer_classes:

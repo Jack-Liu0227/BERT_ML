@@ -89,17 +89,6 @@ ALLOY_CONFIGS = {
         "processing_text_column": "Processing_Description",
         "description": "钢铁力学性能数据集 / Steel mechanical properties dataset"
     },
-
-# 高熵合金腐蚀 / HEA Corrosion
-    "HEA_corrosion": {
-        "raw_data": "datasets/HEA_data/Pitting_potential_data_xiongjie.csv",
-        "targets": ["Ep(mV)"],
-        "processing_cols": [
-            "Temperature", "Cl Concentration", "PH"
-        ],
-        "processing_text_column": None,  # 该数据集无文本描述列
-        "description": "高熵合金点蚀电位数据集 / HEA pitting potential dataset"
-    }
 }
 
 

@@ -18,8 +18,8 @@ import yaml
 
 FROZEN_REL = Path("output/calibration/parameter_freeze/frozen_model_params_v1.yaml")
 FINAL_REL = Path("output/calibration/figures/final_with_gpt")
-TEMPLATE_REL = Path("src/calibration/templates/calibration_explainer.html")
-ENGLISH_TEXT_REL = Path("src/calibration/templates/calibration_explainer_english.js")
+TEMPLATE_REL = Path("scripts/figures/calibration/templates/calibration_explainer.html")
+ENGLISH_TEXT_REL = Path("scripts/figures/calibration/templates/calibration_explainer_english.js")
 
 _CJK_PATTERN = re.compile(r"[\u3400-\u9fff]")
 _TRANSLATION_PAIR_PATTERN = re.compile(

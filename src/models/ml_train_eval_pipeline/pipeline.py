@@ -848,6 +848,15 @@ class MLTrainingPipeline:
             if self.args.model_type == 'mlp':
                 model_params = {'max_iter': self.args.mlp_max_iter}
 
+        model_threads = getattr(self.args, 'model_threads', None)
+        if model_threads is not None:
+            model_params = dict(model_params)
+            if self.trainer_model_type == 'catboost':
+                model_params['thread_count'] = model_threads
+                model_params['allow_writing_files'] = False
+            elif self.trainer_model_type in {'xgb', 'rf', 'lightgbm'}:
+                model_params['n_jobs'] = model_threads
+
         # 确保随机种子被传递给模型参数
         # Ensure random seed is passed to model parameters
         if self.trainer_model_type == 'catboost':

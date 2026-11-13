@@ -12,10 +12,10 @@ from typing import Any, Iterable, Sequence
 import numpy as np
 import pandas as pd
 
-from .confidence import TIER_ORDER
-from .metrics import mean_ci95
-from .parameter_registry import FrozenParameterRegistry
-from .schemas import STANDARD_SAMPLE_COLUMNS, CalibrationConfig
+from Scripts.calibration.confidence import TIER_ORDER
+from Scripts.calibration.metrics import mean_ci95
+from Scripts.calibration.parameter_registry import FrozenParameterRegistry
+from Scripts.calibration.schemas import STANDARD_SAMPLE_COLUMNS, CalibrationConfig
 
 
 TI_TASKS = ("Ti__titanium__El", "Ti__titanium__UTS_MPa")

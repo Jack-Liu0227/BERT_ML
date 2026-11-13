@@ -12,7 +12,7 @@ def get_args():
     parser.add_argument('--result_dir', type=str, required=True, help='Directory to save training results')
     
     # Model Selection
-    parser.add_argument('--model_type', type=str, default='nn', choices=['nn', 'bert', 'cnn'], help='Type of model to train')
+    parser.add_argument('--model_type', type=str, default='nn', choices=['nn', 'bert'], help='Type of model to train')
 
     # Model Architecture
     parser.add_argument('--emb_hidden_dim', type=int, default=256, help='Hidden dimension for embedding features')

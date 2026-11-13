@@ -9,8 +9,8 @@ from typing import Any
 import pandas as pd
 import yaml
 
-from .parameter_audit import build_parameter_audit
-from .parameter_registry import (
+from Scripts.calibration.parameter_audit import build_parameter_audit
+from Scripts.calibration.parameter_registry import (
     assert_scoped_entries_unchanged,
     build_entries_from_audit,
     build_frozen_payload,
@@ -18,7 +18,7 @@ from .parameter_registry import (
     preserve_scoped_entries,
     validate_matbench_canonical_snapshot,
 )
-from .schemas import CalibrationConfig
+from Scripts.calibration.schemas import CalibrationConfig
 
 
 SNAPSHOT_PATTERN = re.compile(r"(?<![0-9a-f])[0-9a-f]{64}(?![0-9a-f])")

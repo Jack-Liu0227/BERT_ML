@@ -8,23 +8,23 @@ calibration summaries.
 ## Commands
 
 ```powershell
-python -m src.calibration.cli --stage audit-parameters
-python -m src.calibration.cli --stage select-best-parameters
-python -m src.calibration.cli --stage uncertainty
-python -m src.calibration.cli --stage calibration
-python -m src.calibration.cli --stage all
+python -m scripts.calibration.cli --stage audit-parameters
+python -m scripts.calibration.cli --stage select-best-parameters
+python -m scripts.calibration.cli --stage uncertainty
+python -m scripts.calibration.cli --stage calibration
+python -m scripts.calibration.cli --stage all
 ```
 
 The rebuilt full workflow uses only the frozen v1 task/model registry and the
 canonical files below `output/ood_splits`:
 
 ```powershell
-python -m src.calibration.cli --stage reset-output
-python -m src.calibration.cli --stage reset-output --execute
-python -m src.calibration.cli --stage full-index --scope ti
-python -m src.calibration.cli --stage full-run --scope ti --resume --jobs 1
-python -m src.calibration.cli --stage full-aggregate --scope ti
-python -m src.calibration.cli --stage full-verify --scope ti
+python -m scripts.calibration.cli --stage reset-output
+python -m scripts.calibration.cli --stage reset-output --execute
+python -m scripts.calibration.cli --stage full-index --scope ti
+python -m scripts.calibration.cli --stage full-run --scope ti --resume --jobs 1
+python -m scripts.calibration.cli --stage full-aggregate --scope ti
+python -m scripts.calibration.cli --stage full-verify --scope ti
 ```
 
 Run the same four `full-*` stages with `--scope all` after the Ti gate passes.
@@ -60,17 +60,17 @@ resume fail and requires another protected reset/rebuild.
 Ti-only frozen-snapshot pilot:
 
 ```powershell
-python -m src.calibration.cli --stage ti-index --snapshot-version v1
-python -m src.calibration.cli --stage ti-uncertainty --snapshot-version v1 --resume --ti-adapters reuse
-python -m src.calibration.cli --stage ti-uncertainty --snapshot-version v1 --resume --ti-adapters llmprop
-python -m src.calibration.cli --stage ti-uncertainty --snapshot-version v1 --resume --ti-adapters tabpfn
-python -m src.calibration.cli --stage ti-calibration --snapshot-version v1
+python -m scripts.calibration.cli --stage ti-index --snapshot-version v1
+python -m scripts.calibration.cli --stage ti-uncertainty --snapshot-version v1 --resume --ti-adapters reuse
+python -m scripts.calibration.cli --stage ti-uncertainty --snapshot-version v1 --resume --ti-adapters llmprop
+python -m scripts.calibration.cli --stage ti-uncertainty --snapshot-version v1 --resume --ti-adapters tabpfn
+python -m scripts.calibration.cli --stage ti-calibration --snapshot-version v1
 ```
 
 The combined command is:
 
 ```powershell
-python -m src.calibration.cli --stage ti-pilot --snapshot-version v1 --resume
+python -m scripts.calibration.cli --stage ti-pilot --snapshot-version v1 --resume
 ```
 
 The pilot reads model parameters only from `frozen_model_params_v1.yaml`. The

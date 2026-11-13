@@ -78,19 +78,12 @@ ALLOY_CONFIGS_OOD: Dict[str, Dict[str, Any]] = {
         "source_data": "datasets/matbench_convert/matbench_steels.csv",
         "element_cols": MATBENCH_STEELS_AT_PERCENT_COLS,
     },
-    # "HEA_corrosion": {
-    #     "raw_data": "datasets/HEA_data/Pitting_potential_data_xiongjie.csv",
-    #     "targets": ["Ep(mV)"],
-    #     "processing_cols": ["Temperature", "Cl Concentration", "PH"],
-    #     "processing_text_column": None,
-    #     "description": "HEA corrosion OOD dataset",
-    # },
 }
 
 
 COMMON_OOD_DEFAULTS: Dict[str, Any] = {
     "alloy_types": None,
-    "exclude_alloys": ["HEA_corrosion"],
+    "exclude_alloys": [],
     "processing_cols": [],
     "cross_validate": True,
     "num_folds": 9,

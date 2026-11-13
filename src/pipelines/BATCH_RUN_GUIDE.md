@@ -98,7 +98,6 @@ Standard configs currently use:
 | `Al` | `datasets/Al_Alloys/aluminum.csv` | `UTS(MPa)` |
 | `HEA` | `datasets/HEA_data/hea.csv` | `YS(MPa)`, `UTS(MPa)`, `El(%)` |
 | `Steel` | `datasets/Steel/steel.csv` | `YS(MPa)`, `UTS(MPa)`, `El(%)` |
-| `HEA_corrosion` | `datasets/HEA_data/Pitting_potential_data_xiongjie.csv` | `Ep(mV)` |
 
 OOD configs additionally include:
 

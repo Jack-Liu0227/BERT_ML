@@ -22,7 +22,7 @@ if hasattr(sys.stderr, "reconfigure"):
 
 
 MODULE_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = MODULE_DIR / "high_w_sample_export.config.yaml"
+DEFAULT_CONFIG_PATH = MODULE_DIR / "configs" / "high_w_sample_export.config.yaml"
 SPACE_TO_W = {"X-space": "Wx", "Y-space": "Wy", "Z-space": "Wz"}
 W_TO_SPACE = {value: key for key, value in SPACE_TO_W.items()}
 GROUP_COLUMNS = ["case_key", "case_label", "method", "fold_id", "source_split_dir", "space"]

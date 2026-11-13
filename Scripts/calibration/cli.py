@@ -17,11 +17,11 @@ from .full_pipeline import (
     run_full_units,
 )
 from .full_verification import verify_full_results
-from .full_plotting import build_full_calibration_figures
-from .gpt_plotting import build_gpt_calibration_figures
+from Scripts.figures.calibration.full_plotting import build_full_calibration_figures
+from Scripts.figures.calibration.gpt_plotting import build_gpt_calibration_figures
 from .adapters import tabpfn_source_artifacts
 from .metrics import run_calibration
-from .output_reset import reset_calibration_output
+from Scripts.maintenance.output_reset import reset_calibration_output
 from .parameter_audit import write_parameter_audit
 from .parameter_evaluation import run_parameter_evaluation_queue
 from .parameter_registry import FrozenParameterRegistry, freeze_parameters
@@ -30,8 +30,8 @@ from .parameter_selection import (
     write_randomcv_parameter_selection,
 )
 from .schemas import default_config_path, load_config
-from .snapshot_repair import repair_v1_matbench_snapshot
-from .ti_pilot import (
+from Scripts.maintenance.snapshot_repair import repair_v1_matbench_snapshot
+from Scripts.maintenance.ti_pilot import (
     build_uncertainty_source_index,
     run_ti_calibration,
     run_ti_pilot,

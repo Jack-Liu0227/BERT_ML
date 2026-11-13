@@ -34,7 +34,6 @@ DEFAULT_PROPERTY_RANGES = {
     'elongation': (0, 50),            # %
     'hardness': (100, 800),           # HV
     'fracture_toughness': (10, 100),  # MPa·m^1/2
-    'corrosion_rate': (0, 10),        # mm/year
     'wear_rate': (0, 1)               # mm^3/N·m
 }
 
@@ -76,7 +75,6 @@ PROPERTY_TYPES = [
     'elongation',
     'hardness',
     'fracture_toughness',
-    'corrosion_resistance',
     'wear_resistance'
 ]
 

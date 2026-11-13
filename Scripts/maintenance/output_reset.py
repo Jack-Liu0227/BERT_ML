@@ -9,7 +9,7 @@ import shutil
 import stat
 from typing import Any
 
-from .schemas import CalibrationConfig
+from Scripts.calibration.schemas import CalibrationConfig
 
 
 CLEANUP_MANIFEST_NAME = "pre_rebuild_cleanup_manifest.json"

@@ -15,7 +15,10 @@ import re
 import numpy as np
 import pandas as pd
 
-from src.data_processing.compute_wx_mixed_ot import solve_exact_ot
+try:
+    from Scripts.analysis.compute_wx_mixed_ot import solve_exact_ot
+except ImportError:
+    from .compute_wx_mixed_ot import solve_exact_ot
 
 
 _SPLIT_KEYS = [

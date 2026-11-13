@@ -9,9 +9,12 @@ batch runner/progress files. It creates an isolated experiment tree under
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
+import contextlib
 import json
 import logging
 import math
+import os
 import sys
 import time
 import traceback
@@ -156,6 +159,7 @@ def _build_training_args(
     seed: int,
     mlp_max_iter: int,
     evaluate_after_train: bool,
+    model_threads: int | None = None,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         data_file=str(task.data_file),
@@ -180,6 +184,7 @@ def _build_training_args(
         use_optuna=False,
         n_trials=0,
         mlp_max_iter=mlp_max_iter,
+        model_threads=model_threads,
         evaluate_after_train=evaluate_after_train,
         run_shap_analysis=False,
         split_strategy=method,
@@ -308,6 +313,7 @@ def _run_task(
     alloy_config: Dict[str, Any],
     mlp_max_iter: int,
     evaluate_after_train: bool,
+    model_threads: int | None = None,
 ) -> Dict[str, Any]:
     task.task_root.mkdir(parents=True, exist_ok=True)
     raw_df = pd.read_csv(task.data_file)
@@ -326,6 +332,7 @@ def _run_task(
         seed=task.seed,
         mlp_max_iter=mlp_max_iter,
         evaluate_after_train=evaluate_after_train,
+        model_threads=model_threads,
     )
 
     prediction_frames: List[pd.DataFrame] = []
@@ -382,6 +389,49 @@ def _run_task(
     }
     save_json(_metrics_json_path(task.task_root), metrics_payload)
     return metrics_payload
+
+
+def _run_task_worker(
+    task: SweepTask,
+    alloy_config: Dict[str, Any],
+    mlp_max_iter: int,
+    evaluate_after_train: bool,
+    model_threads: int,
+    verbose: bool,
+) -> tuple[Dict[str, Any], float]:
+    """Process-pool entrypoint for one independent sweep task."""
+    from threadpoolctl import threadpool_limits
+
+    task.task_root.mkdir(parents=True, exist_ok=True)
+    started = time.monotonic()
+    try:
+        with (task.task_root / "training.log").open("a", encoding="utf-8") as log_file:
+            with contextlib.redirect_stdout(log_file), contextlib.redirect_stderr(log_file):
+                _configure_logging(verbose)
+                LOGGER.info("Starting task in worker PID %d", os.getpid())
+                try:
+                    with threadpool_limits(limits=model_threads):
+                        metrics = _run_task(
+                            task=task,
+                            alloy_config=alloy_config,
+                            mlp_max_iter=mlp_max_iter,
+                            evaluate_after_train=evaluate_after_train,
+                            model_threads=model_threads,
+                        )
+                except Exception:
+                    LOGGER.exception("Task failed")
+                    raise
+                LOGGER.info("Task completed in %.3f seconds", time.monotonic() - started)
+    finally:
+        _configure_logging(verbose)
+    return metrics, time.monotonic() - started
+
+
+def _configure_thread_environment(thread_count: int) -> None:
+    # Spawned workers inherit these limits before importing numerical libraries.
+    for name in ("OMP_NUM_THREADS", "OPENBLAS_NUM_THREADS", "MKL_NUM_THREADS", "NUMEXPR_NUM_THREADS", "BLIS_NUM_THREADS"):
+        os.environ[name] = str(thread_count)
+    os.environ["MPLBACKEND"] = "Agg"
 
 
 def _build_tasks(args: argparse.Namespace, output_root: Path, base_path: Path) -> List[SweepTask]:
@@ -607,6 +657,14 @@ def _write_manifest(
         "alloy_types": list(args.alloy_types) if args.alloy_types is not None else list_available_alloys_ood(),
         "targets": list(args.targets) if args.targets is not None else "all configured targets",
         "models": list(args.models),
+        "workers": args.workers,
+        "threads_per_worker": args.threads_per_worker,
+        "performance_cases": (
+            None if tasks is None else [
+                {"alloy_type": alloy, "target_column": target}
+                for alloy, target in sorted({(task.alloy_type, task.target_column) for task in tasks})
+            ]
+        ),
         "metric_primary": "pooled held-out Pearson R",
         "auxiliary_metrics": ["sklearn_r2", "rmse", "mae"],
         "training_protocol": {
@@ -642,6 +700,13 @@ def create_argument_parser() -> argparse.ArgumentParser:
     parser.add_argument("--alloy_types", nargs="+", default=None, choices=list_available_alloys_ood())
     parser.add_argument("--targets", nargs="+", default=None, help="Optional target-name filter applied to each alloy.")
     parser.add_argument("--mlp_max_iter", type=int, default=300)
+    parser.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Number of independent task processes. Use 1 for the original serial behavior.",
+    )
+    parser.add_argument("--threads_per_worker", type=int, default=2, help="CPU threads per model/numerical library when running in parallel.")
     parser.add_argument("--resume", action="store_true", help="Skip tasks with existing seed_metrics.json.")
     parser.add_argument("--dry_run", action="store_true", help="Print planned tasks without training or writing outputs.")
     parser.add_argument("--summarize_only", action="store_true", help="Only summarize existing seed_metrics.json files.")
@@ -656,6 +721,8 @@ def main() -> None:
     parser = create_argument_parser()
     args = parser.parse_args()
     _configure_logging(args.verbose)
+    if args.workers < 1 or args.threads_per_worker < 1:
+        parser.error("--workers and --threads_per_worker must both be >= 1")
 
     base_path = Path(args.base_path).resolve()
     output_root = _resolve_path(base_path, args.output_root).resolve()
@@ -671,6 +738,8 @@ def main() -> None:
     tasks = _build_tasks(args, output_root, base_path)
     if args.max_tasks is not None:
         tasks = tasks[: max(0, int(args.max_tasks))]
+    if not tasks:
+        parser.error("No tasks selected; --max_tasks must be positive")
 
     if args.dry_run:
         LOGGER.info("Dry run: %d tasks would be executed", len(tasks))
@@ -686,7 +755,17 @@ def main() -> None:
             }
             for task in tasks[:20]
         ]
-        print(json.dumps({"task_count": len(tasks), "preview": preview}, indent=2, ensure_ascii=False))
+        cases = sorted({(task.alloy_type, task.target_column) for task in tasks})
+        print(json.dumps({
+            "task_count": len(tasks),
+            "outer_fold_count": sum(task.k for task in tasks),
+            "workers": args.workers,
+            "threads_per_worker": args.threads_per_worker,
+            "seeds": sorted({task.seed for task in tasks}),
+            "performance_case_count": len(cases),
+            "performance_cases": [{"alloy_type": alloy, "target_column": target} for alloy, target in cases],
+            "preview": preview,
+        }, indent=2, ensure_ascii=False))
         return
 
     output_root.mkdir(parents=True, exist_ok=True)
@@ -695,7 +774,53 @@ def main() -> None:
     seed_metrics: List[Dict[str, Any]] = []
     status_rows: List[Dict[str, Any]] = []
     started = time.time()
-    for index, task in enumerate(tasks, start=1):
+
+    def record_status(
+        *,
+        task: SweepTask,
+        status: str,
+        error: str,
+        task_started: float,
+        elapsed_seconds: float | None = None,
+    ) -> None:
+        status_rows.append(
+            {
+                "status": status,
+                "error": error,
+                "elapsed_seconds": round(time.time() - task_started if elapsed_seconds is None else elapsed_seconds, 3),
+                "method": task.method,
+                "k": task.k,
+                "seed": task.seed,
+                "alloy_type": task.alloy_type,
+                "dataset_name": task.dataset_name,
+                "target_column": task.target_column,
+                "model": task.model_name,
+                "data_file": str(task.data_file),
+                "task_root": str(task.task_root),
+            }
+        )
+        _write_status(output_root, status_rows)
+
+    def log_success(index: int, task: SweepTask, status: str, metrics_payload: Dict[str, Any]) -> None:
+        LOGGER.info(
+            "[%d/%d] %s method=%s k=%d seed=%d alloy=%s target=%s model=%s | Pearson R=%.4f R2=%.4f RMSE=%.4f MAE=%.4f n=%s",
+            index,
+            len(tasks),
+            status,
+            task.method,
+            task.k,
+            task.seed,
+            task.alloy_type,
+            task.target_column,
+            task.model_name,
+            metrics_payload.get("pearson_r", float("nan")),
+            metrics_payload.get("sklearn_r2", float("nan")),
+            metrics_payload.get("rmse", float("nan")),
+            metrics_payload.get("mae", float("nan")),
+            metrics_payload.get("n_test", "NA"),
+        )
+
+    def run_one_serial(index: int, task: SweepTask) -> None:
         task_started = time.time()
         LOGGER.info(
             "[%d/%d] method=%s k=%d seed=%d alloy=%s target=%s model=%s",
@@ -725,15 +850,7 @@ def main() -> None:
                     evaluate_after_train=not args.no_evaluate_after_train,
                 )
             seed_metrics.append(metrics_payload)
-            LOGGER.info(
-                "  %s | Pearson R=%.4f R2=%.4f RMSE=%.4f MAE=%.4f n=%s",
-                status,
-                metrics_payload.get("pearson_r", float("nan")),
-                metrics_payload.get("sklearn_r2", float("nan")),
-                metrics_payload.get("rmse", float("nan")),
-                metrics_payload.get("mae", float("nan")),
-                metrics_payload.get("n_test", "NA"),
-            )
+            log_success(index, task, status, metrics_payload)
         except Exception as exc:
             status = "failed"
             error = f"{type(exc).__name__}: {exc}"
@@ -741,33 +858,70 @@ def main() -> None:
             if args.verbose:
                 LOGGER.error(traceback.format_exc())
             if args.stop_on_error:
-                status_rows.append(
-                    {
-                        "status": status,
-                        "error": error,
-                        "elapsed_seconds": round(time.time() - task_started, 3),
-                        **task.__dict__,
-                    }
-                )
-                _write_status(output_root, status_rows)
                 raise
         finally:
-            row = {
-                "status": status,
-                "error": error,
-                "elapsed_seconds": round(time.time() - task_started, 3),
-                "method": task.method,
-                "k": task.k,
-                "seed": task.seed,
-                "alloy_type": task.alloy_type,
-                "dataset_name": task.dataset_name,
-                "target_column": task.target_column,
-                "model": task.model_name,
-                "data_file": str(task.data_file),
-                "task_root": str(task.task_root),
-            }
-            status_rows.append(row)
-            _write_status(output_root, status_rows)
+            record_status(task=task, status=status, error=error, task_started=task_started)
+
+    if args.workers == 1:
+        for index, task in enumerate(tasks, start=1):
+            run_one_serial(index, task)
+    else:
+        _configure_thread_environment(args.threads_per_worker)
+        LOGGER.info("Running %d tasks with %d worker processes", len(tasks), args.workers)
+        future_to_task: Dict[concurrent.futures.Future, tuple[int, SweepTask, float]] = {}
+        with concurrent.futures.ProcessPoolExecutor(max_workers=args.workers) as executor:
+            for index, task in enumerate(tasks, start=1):
+                task_started = time.time()
+                existing = _read_existing_metrics(task.task_root) if args.resume else None
+                if existing is not None:
+                    seed_metrics.append(existing)
+                    log_success(index, task, "skipped", existing)
+                    record_status(task=task, status="skipped", error="", task_started=task_started)
+                    continue
+                LOGGER.info(
+                    "[%d/%d] queued method=%s k=%d seed=%d alloy=%s target=%s model=%s",
+                    index,
+                    len(tasks),
+                    task.method,
+                    task.k,
+                    task.seed,
+                    task.alloy_type,
+                    task.target_column,
+                    task.model_name,
+                )
+                alloy_config = get_alloy_config_ood(task.alloy_type)
+                future = executor.submit(
+                    _run_task_worker,
+                    task,
+                    alloy_config,
+                    args.mlp_max_iter,
+                    not args.no_evaluate_after_train,
+                    args.threads_per_worker,
+                    args.verbose,
+                )
+                future_to_task[future] = (index, task, task_started)
+
+            for future in concurrent.futures.as_completed(future_to_task):
+                index, task, task_started = future_to_task[future]
+                status = "success"
+                error = ""
+                elapsed_seconds = None
+                try:
+                    metrics_payload, elapsed_seconds = future.result()
+                    seed_metrics.append(metrics_payload)
+                    log_success(index, task, status, metrics_payload)
+                except Exception as exc:
+                    status = "failed"
+                    error = f"{type(exc).__name__}: {exc}"
+                    LOGGER.error("[%d/%d] failed method=%s k=%d seed=%d alloy=%s target=%s model=%s: %s", index, len(tasks), task.method, task.k, task.seed, task.alloy_type, task.target_column, task.model_name, error)
+                    if args.verbose:
+                        LOGGER.error(traceback.format_exc())
+                    if args.stop_on_error:
+                        for pending in future_to_task:
+                            pending.cancel()
+                        record_status(task=task, status=status, error=error, task_started=task_started)
+                        raise
+                record_status(task=task, status=status, error=error, task_started=task_started, elapsed_seconds=elapsed_seconds)
 
     summary_paths = _write_summaries(seed_metrics, output_root)
     _write_manifest(args=args, output_root=output_root, base_path=base_path, tasks=tasks, summary_paths=summary_paths)

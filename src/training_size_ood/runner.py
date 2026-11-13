@@ -15,8 +15,7 @@ from typing import Any, Iterable
 
 import pandas as pd
 
-from src.calibration.parameter_registry import FrozenParameterRegistry
-from src.calibration.parameter_selection import build_parameter_hash
+from src.models.utils.frozen_params import FrozenParameterRegistry, build_parameter_hash
 from src.data_processing.strength_ood_common import save_json
 from src.pipelines.batch_configs_ood import ALLOY_CONFIGS_OOD
 

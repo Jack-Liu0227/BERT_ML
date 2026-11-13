@@ -910,6 +910,7 @@ def build_ml_args(base_args: Any) -> SimpleNamespace:
         n_trials=base_args.n_trials,
         study_name="ml_hyperparameter_optimization",
         mlp_max_iter=getattr(base_args, "mlp_max_iter", 300),
+        model_threads=getattr(base_args, "model_threads", None),
         optuna_n_trials=base_args.n_trials,
         optuna_timeout=None,
     )

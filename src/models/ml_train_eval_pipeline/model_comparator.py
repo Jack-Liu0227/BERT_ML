@@ -25,18 +25,27 @@ try:
     # 尝试相对导入（当作为模块运行时）
     from .pipeline import MLTrainingPipeline
     from .utils import to_long_path
-    from .model_comparison_plots import create_model_comparison_plots
+    try:
+        from Scripts.figures.model_comparison_plots import create_model_comparison_plots
+    except ImportError:
+        def create_model_comparison_plots(*args, **kwargs): return {}
 except ImportError:
     # 尝试直接导入（当直接运行时）
     try:
         from pipeline import MLTrainingPipeline
         from utils import to_long_path
-        from model_comparison_plots import create_model_comparison_plots
+        try:
+            from Scripts.figures.model_comparison_plots import create_model_comparison_plots
+        except ImportError:
+            def create_model_comparison_plots(*args, **kwargs): return {}
     except ImportError:
         # 使用完整路径导入
         from src.models.ml_train_eval_pipeline.pipeline import MLTrainingPipeline
         from src.models.ml_train_eval_pipeline.utils import to_long_path
-        from src.models.ml_train_eval_pipeline.model_comparison_plots import create_model_comparison_plots
+        try:
+            from Scripts.figures.model_comparison_plots import create_model_comparison_plots
+        except ImportError:
+            def create_model_comparison_plots(*args, **kwargs): return {}
 
 
 class ModelComparator:

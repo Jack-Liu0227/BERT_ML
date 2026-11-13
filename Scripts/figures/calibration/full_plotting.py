@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from .full_pipeline import _replace_with_retry
+from Scripts.calibration.full_pipeline import _replace_with_retry
 
 
 TIER_ORDER = ("High", "Medium", "Low")

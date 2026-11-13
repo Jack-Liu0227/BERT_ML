@@ -66,9 +66,6 @@ class TrainingPipeline:
         # elif self.args.model_type == 'bert':
         #     # Placeholder for BERT model instantiation
         #     pass
-        # elif self.args.model_type == 'cnn':
-        #     # Placeholder for CNN model instantiation
-        #     pass
         else:
             raise ValueError(f"Unknown model_type: {self.args.model_type}")
 
